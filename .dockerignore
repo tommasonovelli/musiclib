@@ -1,0 +1,11 @@
+# Keep the build context small, reproducible and free of secrets.
+.git
+.env
+.env.*
+**/*.test
+**/*.out
+coverage.html
+/bin/
+/musiclibd
+/import/
+/.claude/

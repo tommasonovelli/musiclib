@@ -9,3 +9,6 @@ coverage.html
 
 # Local environment
 .env
+
+# Default import directory mounted read-only on /import (compose.yaml)
+/import/

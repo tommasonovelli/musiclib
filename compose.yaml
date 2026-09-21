@@ -1,0 +1,175 @@
+# musiclib: Compose project for deployment (DESIGN.md §2.1, §11.1) and for the
+# containerized development toolchain. See docs/docker.md.
+#
+#   docker compose up -d                       postgres only (no profile)
+#   docker compose --profile app up -d         + app (needs ./cmd/musiclibd)
+#   scripts/check.sh                           full gate in the `test` service
+#   scripts/dev.sh                             shell in the `dev` service
+#
+# Every image is pinned by version and digest (DESIGN.md §2.1).
+
+name: musiclib
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232
+    restart: unless-stopped
+    <<: *hardening
+    # The entrypoint starts as root, chowns PGDATA and drops to `postgres`
+    # with gosu: these are the only capabilities it needs.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      POSTGRES_USER: musiclib
+      POSTGRES_DB: musiclib
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-musiclib}
+      # Only used by initdb, i.e. when the volume is empty. Data checksums and
+      # the builtin C.UTF-8 provider (PostgreSQL 17): collation does not depend
+      # on the glibc of the image, so a base-image bump cannot silently
+      # invalidate text indexes. See NOTES.md.
+      POSTGRES_INITDB_ARGS: --data-checksums --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8
+    # DESIGN.md §11.1: these three stay on. They are the defaults; setting them
+    # explicitly makes the requirement visible and overrides any stray
+    # postgresql.conf / ALTER SYSTEM.
+    command:
+      - postgres
+      - -c
+      - fsync=on
+      - -c
+      - full_page_writes=on
+      - -c
+      - synchronous_commit=on
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No published port (DESIGN.md §10.4): the app reaches it on the Compose
+    # network; for a psql session use `docker compose exec postgres psql -U musiclib`.
+    healthcheck:
+      # TCP on 127.0.0.1, not the Unix socket: during first initialization the
+      # entrypoint runs a temporary server on the socket only, which must not
+      # be reported as healthy.
+      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--port=5432", "--username=musiclib", "--dbname=musiclib"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+      start_interval: 1s
+    # The image stops with SIGINT (fast shutdown); leave time for the final
+    # checkpoint instead of SIGKILL after the default 10s.
+    stop_grace_period: 60s
+
+  # -------------------------------------------------------------------------
+  # The application (DESIGN.md §11.1). Behind a profile because ./cmd/musiclibd
+  # does not exist yet: plain `docker compose up` / `build` must not build it.
+  app:
+    profiles: [app]
+    build:
+      context: .
+      target: runtime
+      args:
+        APP_UID: ${MUSICLIB_UID:-1000}
+        APP_GID: ${MUSICLIB_GID:-1000}
+    image: musiclib-app:local
+    init: true
+    restart: unless-stopped
+    user: "${MUSICLIB_UID:-1000}:${MUSICLIB_GID:-1000}"
+    <<: *hardening
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      DATABASE_URL: postgres://musiclib:${POSTGRES_PASSWORD:-musiclib}@postgres:5432/musiclib?sslmode=disable
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:${MUSICLIB_PORT:-8080}}
+      HTTP_ADDR: ":8080"
+      WORKERS: ${WORKERS:-2}
+    ports:
+      # DESIGN.md §10.4: loopback by default; LAN access needs an explicit
+      # MUSICLIB_BIND (and a matching PUBLIC_ORIGIN).
+      - "${MUSICLIB_BIND:-127.0.0.1}:${MUSICLIB_PORT:-8080}:8080"
+    volumes:
+      # /data must be ext4 (DESIGN.md §3.1). MUSICLIB_DATA may be a named
+      # volume (default) or an absolute host path on ext4 owned by MUSICLIB_UID.
+      - ${MUSICLIB_DATA:-musiclib-data}:/data
+      - type: bind
+        source: ${MUSICLIB_IMPORT:-./import}
+        target: /import
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # DESIGN.md §11.1: a prepared publication gets up to 30 s to finish.
+    stop_grace_period: 45s
+    # TODO(phase 1): healthcheck on /health/ready once musiclibd exists; the
+    # slim image has no curl, so it should be a `musiclibd` subcommand.
+
+  # -------------------------------------------------------------------------
+  # Hermetic gate: tests a read-only snapshot of the sources baked into the
+  # image, without network, with TMPDIR on the ext4 test volume.
+  test:
+    profiles: [tools]
+    build:
+      context: .
+      target: test
+      args:
+        DEV_UID: ${MUSICLIB_DEV_UID:-10001}
+        DEV_GID: ${MUSICLIB_DEV_GID:-10001}
+    image: musiclib-test:local
+    init: true
+    network_mode: none
+    read_only: true
+    <<: *hardening
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
+    environment:
+      # Ctrl-C reaches `go test`, not only the wrapper script.
+      TINI_KILL_PROCESS_GROUP: "1"
+    volumes:
+      - go-build-cache:/home/dev/.cache/go-build
+      - testdata:/testdata
+
+  # -------------------------------------------------------------------------
+  # Interactive toolchain on the live sources (bind mount), with network for
+  # `go get`. Used by scripts/dev.sh and scripts/fuzz.sh (fuzz crashers must be
+  # written back into the repository's testdata/fuzz).
+  dev:
+    profiles: [tools]
+    build:
+      context: .
+      target: deps
+      args:
+        DEV_UID: ${MUSICLIB_DEV_UID:-10001}
+        DEV_GID: ${MUSICLIB_DEV_GID:-10001}
+    image: musiclib-dev:local
+    init: true
+    <<: *hardening
+    cap_drop: [ALL]
+    environment:
+      TINI_KILL_PROCESS_GROUP: "1"
+    entrypoint: ["/src/docker/with-testdata.sh"]
+    command: ["bash"]
+    working_dir: /src
+    volumes:
+      - type: bind
+        source: .
+        target: /src
+      - go-mod-cache:/home/dev/go/pkg/mod
+      - go-build-cache:/home/dev/.cache/go-build
+      - testdata:/testdata
+
+volumes:
+  pgdata:
+  musiclib-data:
+  # Go build cache (also holds the fuzzing cache), shared by test and dev.
+  go-build-cache:
+  # Module cache for `dev`; seeded from the image on first use.
+  go-mod-cache:
+  # ext4 filesystem for TMPDIR of the tests (see docker/with-testdata.sh).
+  testdata:
