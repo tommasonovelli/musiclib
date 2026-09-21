@@ -41,3 +41,28 @@ export MUSICLIB_DEV_UID MUSICLIB_DEV_GID="${MUSICLIB_DEV_GID:-${MUSICLIB_DEV_UID
 compose() {
   docker compose --project-directory "${REPO_ROOT}" -f "${REPO_ROOT}/compose.yaml" "$@"
 }
+
+# sqlc (DESIGN.md §2.1), pinned like every other image; see docs/docker.md.
+readonly SQLC_IMAGE='sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537'
+
+# run_sqlc <ro|rw> <sqlc args...>: sqlc on the repository, as the host user,
+# without network. `ro` mounts the sources read-only (diff); `rw` lets
+# `generate` write internal/store.
+run_sqlc() {
+  local mode="$1"
+  shift
+  local mount="type=bind,source=${REPO_ROOT},target=/src"
+  [[ "${mode}" == ro ]] && mount+=",readonly"
+  docker run --rm --network none --read-only --tmpfs /tmp --env HOME=/tmp \
+    --user "${MUSICLIB_DEV_UID}:${MUSICLIB_DEV_GID}" --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --mount "${mount}" --workdir /src "${SQLC_IMAGE}" "$@"
+}
+
+# Starts the throwaway PostgreSQL of the tests (NOTES.md N-024) and waits
+# until it is healthy. It keeps running for the next runs; its data is tmpfs.
+start_test_db() {
+  info "starting postgres-test"
+  compose --profile tools up --detach --wait postgres-test \
+    || die "postgres-test did not become healthy (docker compose logs postgres-test)"
+}

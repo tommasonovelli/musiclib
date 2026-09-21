@@ -1,0 +1,31 @@
+# sqlc configuration (DESIGN.md §2.1, §2.3): queries in sql/, schema from the
+# goose migrations, generated Go in internal/store (committed).
+# Run through Docker only: scripts/sqlc.sh (generate) and scripts/check.sh (diff).
+version: "2"
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: sql
+    gen:
+      go:
+        package: store
+        out: internal/store
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true

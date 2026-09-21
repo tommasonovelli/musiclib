@@ -47,7 +47,7 @@ RUN groupadd --non-unique --gid "${DEV_GID}" dev \
  && useradd --non-unique --uid "${DEV_UID}" --gid "${DEV_GID}" \
       --create-home --home-dir /home/dev --shell /bin/bash dev \
  && install -d -o dev -g dev -m 0755 \
-      /home/dev/go /home/dev/go/pkg/mod /home/dev/.cache /home/dev/.cache/go-build \
+      /home/dev/go /home/dev/go/pkg /home/dev/go/pkg/mod /home/dev/.cache /home/dev/.cache/go-build \
       /testdata /src
 
 WORKDIR /src

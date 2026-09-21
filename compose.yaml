@@ -4,6 +4,7 @@
 #   docker compose up -d                       postgres only (no profile)
 #   docker compose --profile app up -d         + app (needs ./cmd/musiclibd)
 #   scripts/check.sh                           full gate in the `test` service
+#                                              (+ postgres-test on tmpfs)
 #   scripts/dev.sh                             shell in the `dev` service
 #
 # Every image is pinned by version and digest (DESIGN.md §2.1).
@@ -14,53 +15,68 @@ x-hardening: &hardening
   security_opt:
     - no-new-privileges:true
 
+x-postgres: &postgres
+  image: postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232
+  <<: *hardening
+  # The entrypoint starts as root, chowns PGDATA and drops to `postgres`
+  # with gosu: these are the only capabilities it needs.
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+  # DESIGN.md §11.1: these three stay on. They are the defaults; setting them
+  # explicitly makes the requirement visible and overrides any stray
+  # postgresql.conf / ALTER SYSTEM.
+  command:
+    - postgres
+    - -c
+    - fsync=on
+    - -c
+    - full_page_writes=on
+    - -c
+    - synchronous_commit=on
+  # No published port (DESIGN.md §10.4): clients use the Compose network; for
+  # a psql session use `docker compose exec postgres psql -U musiclib`.
+  healthcheck:
+    # TCP on 127.0.0.1, not the Unix socket: during first initialization the
+    # entrypoint runs a temporary server on the socket only, which must not
+    # be reported as healthy.
+    test: ["CMD", "pg_isready", "--host=127.0.0.1", "--port=5432", "--username=musiclib", "--dbname=musiclib"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 60s
+    start_interval: 1s
+  # The image stops with SIGINT (fast shutdown); leave time for the final
+  # checkpoint instead of SIGKILL after the default 10s.
+  stop_grace_period: 60s
+
 services:
   # -------------------------------------------------------------------------
   postgres:
-    image: postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232
+    <<: *postgres
     restart: unless-stopped
-    <<: *hardening
-    # The entrypoint starts as root, chowns PGDATA and drops to `postgres`
-    # with gosu: these are the only capabilities it needs.
-    cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     environment:
       POSTGRES_USER: musiclib
       POSTGRES_DB: musiclib
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-musiclib}
-      # Only used by initdb, i.e. when the volume is empty. Data checksums and
-      # the builtin C.UTF-8 provider (PostgreSQL 17): collation does not depend
-      # on the glibc of the image, so a base-image bump cannot silently
-      # invalidate text indexes. See NOTES.md.
-      POSTGRES_INITDB_ARGS: --data-checksums --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8
-    # DESIGN.md §11.1: these three stay on. They are the defaults; setting them
-    # explicitly makes the requirement visible and overrides any stray
-    # postgresql.conf / ALTER SYSTEM.
-    command:
-      - postgres
-      - -c
-      - fsync=on
-      - -c
-      - full_page_writes=on
-      - -c
-      - synchronous_commit=on
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # No published port (DESIGN.md §10.4): the app reaches it on the Compose
-    # network; for a psql session use `docker compose exec postgres psql -U musiclib`.
-    healthcheck:
-      # TCP on 127.0.0.1, not the Unix socket: during first initialization the
-      # entrypoint runs a temporary server on the socket only, which must not
-      # be reported as healthy.
-      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--port=5432", "--username=musiclib", "--dbname=musiclib"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
-      start_interval: 1s
-    # The image stops with SIGINT (fast shutdown); leave time for the final
-    # checkpoint instead of SIGKILL after the default 10s.
-    stop_grace_period: 60s
+
+  # -------------------------------------------------------------------------
+  # Throwaway server of the PostgreSQL tests (DESIGN.md §12.1, NOTES.md
+  # N-024): same image and settings as `postgres`, data on tmpfs, reachable
+  # only on the internal `testdb` network. Each test creates and drops its
+  # own database (internal/store/pgtest). Started by scripts/check.sh and
+  # scripts/dev.sh; `docker compose stop postgres-test` discards everything.
+  postgres-test:
+    <<: *postgres
+    profiles: [tools]
+    environment:
+      POSTGRES_USER: musiclib
+      POSTGRES_DB: musiclib
+      POSTGRES_PASSWORD: musiclib-test
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks: [testdb]
 
   # -------------------------------------------------------------------------
   # The application (DESIGN.md §11.1). Behind a profile because ./cmd/musiclibd
@@ -122,7 +138,11 @@ services:
         DEV_GID: ${MUSICLIB_DEV_GID:-10001}
     image: musiclib-test:local
     init: true
-    network_mode: none
+    # No internet: the only network is the internal one of postgres-test.
+    networks: [testdb]
+    depends_on:
+      postgres-test:
+        condition: service_healthy
     read_only: true
     <<: *hardening
     cap_drop: [ALL]
@@ -131,6 +151,9 @@ services:
     environment:
       # Ctrl-C reaches `go test`, not only the wrapper script.
       TINI_KILL_PROCESS_GROUP: "1"
+      MUSICLIB_TEST_DATABASE_URL: &test-db-url postgres://musiclib:musiclib-test@postgres-test:5432/musiclib?sslmode=disable
+      # The gate fails instead of skipping the PostgreSQL tests.
+      MUSICLIB_REQUIRE_DB: "1"
     volumes:
       - go-build-cache:/home/dev/.cache/go-build
       - testdata:/testdata
@@ -153,8 +176,11 @@ services:
     cap_drop: [ALL]
     environment:
       TINI_KILL_PROCESS_GROUP: "1"
+      MUSICLIB_TEST_DATABASE_URL: *test-db-url
     entrypoint: ["/src/docker/with-testdata.sh"]
     command: ["bash"]
+    # default: internet for `go get`; testdb: postgres-test (scripts/dev.sh starts it).
+    networks: [default, testdb]
     working_dir: /src
     volumes:
       - type: bind
@@ -163,6 +189,12 @@ services:
       - go-mod-cache:/home/dev/go/pkg/mod
       - go-build-cache:/home/dev/.cache/go-build
       - testdata:/testdata
+
+networks:
+  default:
+  # No route outside: the gate stays hermetic while reaching postgres-test.
+  testdb:
+    internal: true
 
 volumes:
   pgdata:

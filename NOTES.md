@@ -45,7 +45,9 @@ key migration**, because the algorithm is frozen (§5.2).
 
 ## Ambiguities in `DESIGN.md`
 
-### N-002 · "Trim outer spaces/dots": both ends or only the trailing one? — TO CONFIRM
+### N-002 · "Trim outer spaces/dots": both ends or only the trailing one? — DECIDED
+**Decision (2026-09-21, owner rule "stick to DESIGN.md"):** follow the letter of §5.2: trim outer spaces and dots at both ends. `.hidden` becomes `hidden`.
+
 §5.2. The implementation trims **both ends**, as the letter of the spec says.
 Visible consequence: an imported file `.hidden` materializes as
 `Extras/hidden`.
@@ -139,7 +141,9 @@ The container root is overlayfs, whose rename/exchange semantics differ from
 ext4; on Docker Desktop bind mounts are `fakeowner`. Only a named volume is
 used. A loop-mounted ext4 image was rejected: it needs CAP_SYS_ADMIN.
 
-### N-019 · Go 1.25 is outside upstream support — OPEN
+### N-019 · Go 1.25 is outside upstream support — DECIDED
+**Decision (2026-09-21, owner rule "stick to DESIGN.md"):** DESIGN.md only requires pinned versions; stay on Go 1.25.x and x/text v0.41.0, so no key migration is needed.
+
 Go 1.27 and 1.26 exist, so 1.25.14 gets no more security fixes. Bumping the
 `go` directive also moves `golang.org/x/text` (v0.42+) and `x/sys` (v0.48+).
 x/text's Unicode tables feed `names.Key` (§5.2, frozen algorithm): the bump
@@ -150,12 +154,11 @@ before the first real import.
 Docker's default is 0022, but a different runtime or `--entrypoint` may
 change it. `musiclibd` calls `unix.Umask(0o022)` at startup (§11.1).
 
-### N-021 · initdb with data checksums and the builtin C.UTF-8 locale — TO CONFIRM
-Checksums catch page corruption; the `builtin` provider makes collation
-independent of the image's glibc, so a base-image bump cannot corrupt text
-indexes. Cost: `ORDER BY` on text is code-point order (natural sort is done
-in Go anyway). Cannot change later without dump/restore: decide before the
-first real init.
+### N-021 · initdb with data checksums and the builtin C.UTF-8 locale — RESOLVED
+Reverted to image defaults: not in DESIGN.md. `POSTGRES_INITDB_ARGS` was
+removed from `compose.yaml` (owner's instruction, 2026-09-21). initdb now uses
+the image defaults (no data checksums, libc `en_US.utf8` collation). An
+existing `musiclib_pgdata` volume keeps whatever it was initialized with.
 
 ### N-022 · Postgres credentials and exposure — TO CONFIRM
 `POSTGRES_PASSWORD` defaults to `musiclib`, read only at initdb. No published
@@ -168,12 +171,21 @@ inspect`, committed on their own and followed by `scripts/check.sh`. A
 PostgreSQL major bump means dump/restore. Bumping Go, TagLib or ffmpeg
 changes `render_version` (N-010).
 
-### N-024 · testcontainers (§12.1) inside the containerized gate — OPEN
-testcontainers needs the Docker socket, which is root-equivalent and breaks
-the gate's isolation. Plan: a dedicated `postgres-test` service in the
-`tools` profile; tests read `MUSICLIB_TEST_DATABASE_URL` and create a
-throwaway database per test. Real PostgreSQL is kept (§12.1); only the
-launcher changes.
+### N-024 · testcontainers (§12.1) inside the containerized gate — DECIDED (owner)
+Deviation from the letter of §12.1 (testcontainers): same real PostgreSQL 17
+image and digest, started by Compose, because testcontainers inside the gate
+would need the root-equivalent Docker socket. No container gets the socket.
+
+Built: a `postgres-test` service (profile `tools`, tmpfs data, no published
+port) on an internal network `testdb` (`internal: true`) shared with `test`,
+which lost `network_mode: none` but still has no internet. `dev` joins
+`testdb` too. `scripts/check.sh` and `scripts/dev.sh` start it and wait for
+health. The only code that knows where the database comes from is
+`internal/store/pgtest` (`EmptyDB` returns the URL of a fresh database,
+dropped `WITH (FORCE)` at the end of the test). It reads
+`MUSICLIB_TEST_DATABASE_URL`, skips without it, and fails instead of skipping
+when `MUSICLIB_REQUIRE_DB=1`, which only the `test` service sets. Swapping the
+launcher later touches only that helper.
 
 ### N-025 · How to pin ffmpeg and TagLib — OPEN
 `apt-get install ffmpeg=<ver>` is reproducible only with a pinned
@@ -266,7 +278,9 @@ catches it (`fs_cross_device`), so **boot (§11.1 step 3) must run the probe,
 not only `SameFilesystem`**. The bind-mount case is not covered by a test: it
 needs mount privileges. A candidate for the ext4 Docker test volume.
 
-### N-033 · Probe directories inside `library/` — TO CONFIRM
+### N-033 · Probe directories inside `library/` — DECIDED
+**Decision (2026-09-21, owner rule "stick to DESIGN.md"):** §3.1 only requires checking that `renameat2(RENAME_EXCHANGE)` works; the probe runs inside `work/`, never in `library/`, which is output only (§3.3). Leftover probe directories in `work/` are removed by the boot cleanup of `work/` (§11.1 step 5).
+
 §3.1 asks to verify `RENAME_EXCHANGE` between `library` and `work`, so the probe
 briefly creates `.musiclib-probe-<random>` in the root of `library/`. That
 directory is visible to players for a few milliseconds. A crash during the probe
@@ -412,3 +426,113 @@ at the next boot. It holds only the `work` root, so it cannot reach
 §11.3 hashes "all blobs present" and reports unreferenced ones. `Verify`
 covers one blob. A walk over `originals/ab/cd/` that also reports entries not
 shaped like blobs will be added together with doctor.
+
+---
+
+## `internal/store` and migrations (2026-09-21)
+
+### N-050 · Pinned versions of the store dependencies — DECIDED
+Every module below declares `go` ≤ 1.25.0 (checked on proxy.golang.org):
+
+| Module | Version | Why this one |
+|---|---|---|
+| `github.com/pressly/goose/v3` | v3.27.0 (`go 1.25.0`) | v3.27.1..v3.27.3 declare `go 1.25.7`, v3.28.0 `go 1.26.0` |
+| `github.com/jackc/pgx/v5` | v5.11.0 (`go 1.25.0`) | latest |
+| `github.com/google/uuid` | v1.6.0 | latest; has `NewV7` |
+| `golang.org/x/sync` | v0.22.0 (`go 1.25.0`) | selected by MVS, indirect |
+
+`golang.org/x/text` stays v0.41.0 and `golang.org/x/sys` v0.47.0, so the
+frozen `names.Key` tables (§5.2, N-001) are untouched. Only 12 modules are
+compiled. The other `go.sum` entries (sqlite, testify, ...) come from goose's
+own tests and are never built. sqlc is the image `sqlc/sqlc:1.31.1`, pinned
+by index digest (docs/docker.md).
+
+### N-051 · UUIDv7 from `github.com/google/uuid` — DECIDED
+§2.1 wants application-generated UUIDv7. `store.NewID` wraps `uuid.NewV7`,
+which is strictly increasing within the process (a 12-bit sub-millisecond
+counter) and fails only if `crypto/rand` does, which crashes the program since
+Go 1.24, so `uuid.Must` never panics in practice. Supersedes the plan of
+N-040. pgx encodes and decodes `uuid.UUID` natively. sqlc maps `uuid` to
+`uuid.UUID` and nullable `uuid` to `*uuid.UUID`.
+
+### N-052 · Interpretations of §4.2 in the schema — DECIDED
+Where §4.2 is silent, the simplest reading was chosen and nothing was added
+that it does not ask for:
+- **FK actions:** `ON DELETE RESTRICT` is explicit. `ON UPDATE` keeps the
+  default (NO ACTION): keys are never updated.
+- **Defaults:** only the ones §4.2 lists (`compilation false`,
+  `published_revision 0`, `overrides '{}'`, `warnings '[]'`), plus
+  `requested DEFAULT nextval('job_ticket')` from its comment. Timestamps and
+  revisions have no default: the services write them.
+- **Hash checks** (`^[0-9a-f]{64}$`) on `blobs.hash`,
+  `albums.import_fingerprint` (a SHA-256, §7.6), `albums.published_receipt_hash`
+  and `publication.receipt_hash`. The other hash columns are FKs to `blobs`.
+- **Job column combinations**, from the comments of §4.2. `render`: `album_id`
+  required; `batch_id`, `source_rel` and `result_album_id` NULL; `overrides = {}`;
+  state pending/running/failed. `scan`: `batch_id` required; `album_id`,
+  `source_rel` and `result_album_id` NULL; `overrides = {}`. `import`:
+  `batch_id` and `source_rel` required, `album_id` NULL. `result_album_id` is
+  not tied to a state, because §7.6 also uses it on `skipped`.
+- **`overrides`:** an object whose keys are a subset of `{artist, title}`,
+  with string values. §7.3 treats the two keys independently. The closed Go
+  type validates the rest.
+- **Not enforced in SQL:** non-empty names and titles, `tracks.artist <> ''`
+  (§4.1/§5.2: domain validation), `claimed <= requested`, and any coupling of
+  `error_code`/`error_message` to the state. §4.2 does not list them.
+- **`published_*` coherence:** path, build and receipt all present or all NULL.
+  A non-NULL path requires `published_revision > 0`. `published_revision > 0`
+  with no path is a completed deletion.
+- **`publication`:** `receipt_hash` NULL iff `new_path` NULL (removal);
+  `old_path` and `old_build` present together. A row with both paths NULL is
+  not forbidden.
+- **Indexes:** "every FK used for lookups" is read as every FK, blob FKs
+  included. The partial unique indexes on `jobs` cannot serve lookups without
+  their predicate, so `jobs(album_id)` and `jobs(batch_id)` also get plain
+  indexes. The single-row `publication` has none. `TestForeignKeysRestrictAndAreIndexed`
+  enforces the rule.
+- **Names:** default PostgreSQL names for single-column constraints;
+  explicit names for multi-column ones and for the partial unique indexes.
+  The column `no` is kept: `NO` is a non-reserved keyword.
+- **Forward only:** the migration has no `-- +goose Down` section (§11.4).
+
+### N-053 · Migration locking: a blocking advisory lock, not goose's locker — DECIDED
+goose's `PostgresSessionLocker` polls `pg_try_advisory_lock` every 5 s, so a
+waiting boot sleeps up to 5 s. `store.Migrate` instead takes
+`pg_advisory_lock` (blocking, cancellable through the context) on a dedicated
+connection outside the pool, then runs goose on the pool. Closing that
+connection always releases the lock, even when the process dies. The key is
+ASCII `mlmigrat`, distinct from the future catalog lock (§5.3).
+
+### N-054 · A newer schema is refused — DECIDED
+If the database's goose version is above the last embedded migration,
+`Migrate` returns `store_schema_too_new` instead of running old code on a
+newer schema (§11.4: "solo migrazioni forward supportate").
+
+### N-055 · No boot check of the PostgreSQL version and durability settings — DECIDED
+**Decision (2026-09-21, owner rule "stick to DESIGN.md"):** DESIGN.md asks PostgreSQL to keep the settings on, which compose.yaml enforces with `-c`; no additional boot check (simplest option).
+
+§11.1 requires `fsync`, `full_page_writes` and `synchronous_commit` on. Compose
+sets them, but an `ALTER ROLE ... SET synchronous_commit = off` or an
+`options=-c synchronous_commit=off` in `DATABASE_URL` would silently weaken
+§3.2. A `VerifyServer` check (settings as seen by a pool session, plus
+PostgreSQL 17) was written and tested, then removed under the owner's
+"nothing DESIGN.md does not ask for" rule. The owner decides whether to add
+it back to the boot sequence.
+
+### N-056 · `sqlc generate` does not delete stale output — ACCEPTED
+When a file of `sql/` is renamed or removed, its `internal/store/*.sql.go`
+must be deleted by hand. `sqlc diff` in the gate compares only the files that
+sqlc generates, so it does not catch a leftover file. A leftover usually
+fails the build anyway, through duplicate or dangling identifiers.
+
+### N-057 · The dev image could not run `go get` — RESOLVED
+`/home/dev/go/pkg` was created root-owned, as an implicit parent of
+`pkg/mod`, so the Go command could not create its checksum-database cache
+(`pkg/sumdb`) and every `go get` failed while verifying modules. The
+`Dockerfile` now creates it owned by `dev`.
+
+### N-058 · Leftover test databases — ACCEPTED
+A test run killed before its cleanups leaves `musiclib_test_*` databases on
+`postgres-test`. Nothing reuses them. The server's data is tmpfs, so
+`docker compose --profile tools stop postgres-test` removes them all.
+

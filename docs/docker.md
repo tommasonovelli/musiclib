@@ -7,10 +7,11 @@ gcc, PostgreSQL or ffmpeg on the host.
 | File | Role |
 |---|---|
 | `Dockerfile` | multi-stage: `toolchain` → `deps` → `test` / `build-app` → `runtime` |
-| `compose.yaml` | `postgres` (always), `app` (profile `app`), `test` and `dev` (profile `tools`) |
+| `compose.yaml` | `postgres` (always), `app` (profile `app`), `test`, `dev` and `postgres-test` (profile `tools`) |
 | `docker/with-testdata.sh` | in-container: puts `TMPDIR` on the ext4 test volume, refuses other filesystems |
 | `docker/gate.sh` | in-container: build, vet, gofmt, `go test -race` |
-| `scripts/check.sh` | the full gate |
+| `scripts/check.sh` | the full gate: `sqlc diff`, then `docker/gate.sh` with `postgres-test` |
+| `scripts/sqlc.sh` | regenerates `internal/store` from `sql/` and `migrations/` |
 | `scripts/fuzz.sh` | one fuzz target on the live sources |
 | `scripts/dev.sh` | shell or single command in the toolchain container |
 | `scripts/lint-shell.sh` | shellcheck on every script |
@@ -25,23 +26,28 @@ scripts/fuzz.sh FuzzKey 10m ./internal/names
 scripts/dev.sh                            # bash in the toolchain container
 scripts/dev.sh go test -run TestLock -v ./internal/fsops/
 scripts/lint-shell.sh
+scripts/sqlc.sh                           # regenerate internal/store after editing sql/ or migrations/
 ```
 
-`check.sh` builds the `test` image, which contains a **snapshot of the working
+`check.sh` first runs `sqlc diff` (the pinned sqlc image, no network, sources
+read-only) and fails if the committed code in `internal/store` is out of date.
+It then starts `postgres-test`, builds the `test` image, which contains a **snapshot of the working
 tree** taken at build time, and runs `docker/gate.sh` in it:
 
 ```text
 go build ./...  &&  go vet ./...  &&  test -z "$(gofmt -l .)"  &&  go test -race -count=1 ./...
 ```
 
-The `test` container has no network, a read-only root filesystem, no
+The `test` container has no internet (its only network is the internal
+`testdb` one, shared with `postgres-test`), a read-only root filesystem, no
 capabilities and runs as your uid (never root: root bypasses permission checks,
 so permission tests would pass for the wrong reason). Modules come from the image
 layer, downloaded and verified against `go.sum` when `go.mod`/`go.sum` change.
 It tests exactly the tree it was built from, even while you keep editing.
 
 `dev` and `fuzz.sh` bind-mount the live sources instead, with network access
-for `go get`. `fuzz.sh` needs that, so a failing input is written back to
+for `go get`. `dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
+so `scripts/dev.sh go test ./internal/store/...` runs the PostgreSQL tests. `fuzz.sh` needs that, so a failing input is written back to
 `<package>/testdata/fuzz/<Target>/` in your tree and can be committed.
 
 Caches persist across runs in named volumes: `musiclib_go-build-cache` (build,
@@ -102,12 +108,27 @@ docker compose down                 # keeps the volumes; add -v to delete them
 **postgres**: PostgreSQL 17, volume `musiclib_pgdata`, healthcheck with
 `pg_isready` over TCP. TCP on purpose: the temporary init-time server listens
 only on the socket and must not count as healthy. `fsync`, `full_page_writes`
-and `synchronous_commit` are set to `on` explicitly (§11.1). The cluster is
-initialized with data checksums and the PostgreSQL 17 `builtin` `C.UTF-8`
-locale, so collation does not depend on the image's glibc. **No port is
-published** (§10.4). The app reaches it on the Compose network.
+and `synchronous_commit` are set to `on` explicitly (§11.1). initdb runs with
+the image defaults. **No port is published** (§10.4). The app reaches it on the Compose network.
 `POSTGRES_PASSWORD` defaults to `musiclib`: set your own in `.env` before the
 first `up`. It is read only when the volume is initialized.
+
+**postgres-test** (profile `tools`): the PostgreSQL of the tests (§12.1,
+NOTES.md N-024). Same image, digest and settings as `postgres`, data on tmpfs,
+no published port, only on the internal `testdb` network. `check.sh` and
+`dev.sh` start it and wait for it to be healthy; it then keeps running.
+`docker compose --profile tools stop postgres-test` discards all its data.
+
+The tests get a database from `internal/store/pgtest`, the single helper that
+knows where PostgreSQL comes from:
+
+- `MUSICLIB_TEST_DATABASE_URL` (set in `test` and `dev`) points at the
+  server; each test creates its own database and drops it `WITH (FORCE)`
+  when it ends.
+- Without the variable, as in a plain `go test` on a host, the database tests
+  skip with a message.
+- `MUSICLIB_REQUIRE_DB=1`, set only in `test`, turns that skip into a failure:
+  the gate can never pass without running them.
 
 **app** (profile `app`): not built or started by plain `docker compose up` or
 `build`, because `./cmd/musiclibd` does not exist yet. Once it does:
@@ -150,8 +171,9 @@ index (DESIGN.md §2.1). The digest is what is actually used; the tag documents 
 | Dockerfile frontend | `Dockerfile` line 1 | `docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32` |
 | Go 1.25.14, Debian 13 | `Dockerfile` `GO_IMAGE` | `golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73` |
 | runtime base, Debian 13 | `Dockerfile` `RUNTIME_IMAGE` | `debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a` |
-| PostgreSQL 17.11 | `compose.yaml` | `postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232` |
+| PostgreSQL 17.11 | `compose.yaml` (`postgres`, `postgres-test`) | `postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232` |
 | shellcheck 0.11.0 | `scripts/lint-shell.sh` | `koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d` |
+| sqlc 1.31.1 | `scripts/lib/common.sh` | `sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537` |
 
 Toolchain and runtime share the same Debian release (13, glibc 2.41), so the
 future TagLib helper is built and run against the same libraries.

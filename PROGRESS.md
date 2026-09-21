@@ -29,8 +29,10 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
 - [ ] Full repository layout (§2.3): the other packages are still missing
 - [~] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §11.1) — postgres verified; `app` behind the `app` profile, waiting for `cmd/musiclibd`
-- [ ] `goose` migrations of the normative schema (§4.2)
-- [ ] `sqlc` queries (§2.1)
+- [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
+- [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
+- [x] pgx pool with `WORKERS + 8` connections (§11.1) and UUIDv7 ids (§2.1) — `store.NewPool`, `store.NewID`
+- [x] Real PostgreSQL 17 for the tests (§12.1, N-024) — `postgres-test` service, `internal/store/pgtest`
 - [x] `internal/fsops`: confined primitives (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
 - [ ] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1)
 - [x] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
@@ -198,6 +200,47 @@ and real crashes (N-044).
 ```sh
 scripts/check.sh ./internal/blobstore/...
 scripts/dev.sh go test -race -count=20 ./internal/blobstore/
+```
+
+### `internal/store` + `migrations/` — schema, pool, migrations (§2.1, §4.2, §11.1) ✔
+
+`migrations/00001_schema.sql` creates the whole normative schema of §4.2:
+the ten tables, the `job_ticket` sequence, and every constraint and index it
+lists. The interpretations of silent points are in N-052. `migrations.FS`
+embeds it.
+
+| Function | Role |
+|---|---|
+| `NewPool(ctx, url, workers)` | pgx pool, `MaxConns = workers + 8` (§11.1); no global state |
+| `Migrate(ctx, pool)` | goose `Up` under a blocking `pg_advisory_lock` on a dedicated connection (N-053); refuses a newer schema, `store_schema_too_new` (N-054); safe at every boot |
+| `NewID()` | UUIDv7 row id, strictly increasing in-process (N-051) |
+| `New(db)` / `Queries` | sqlc: `GetStoreID`, `InsertStoreID` (idempotent first init, §11.1), `LockMigrations` |
+| `Error` / `Code` | `store_schema_too_new`, `store_migrate` |
+| `pgtest.EmptyDB` / `New` / `Pool` | the only place that knows where the test PostgreSQL comes from (N-024) |
+
+sqlc: edit `sql/*.sql` or `migrations/`, run `scripts/sqlc.sh`, commit the
+generated `internal/store/*.go`. `scripts/check.sh` fails if they are stale.
+
+Tests on real PostgreSQL 17 (`postgres-test`):
+- concurrent and repeated `Migrate` on an empty database, with each migration
+  recorded exactly once;
+- refusal of a newer schema;
+- idempotent `settings.store_id` first init;
+- UUIDv7 version, variant and ordering;
+- `TestConstraints`: table-driven, one violating statement per §4.2
+  invariant, checking SQLSTATE and constraint name, plus statements that must
+  pass, so that no constraint is stricter than the spec;
+- the deferred track-number swap (§12.2);
+- every FK being `ON DELETE RESTRICT` and indexed, checked on the catalog.
+
+Mutation-checked: dropping `DEFERRABLE`, weakening the render unique index,
+`SET NULL` on a FK, a missing FK index and a weakened `published_*` check
+each make a test fail.
+
+```sh
+scripts/check.sh ./internal/store/...                     # gate, DB tests mandatory
+scripts/dev.sh go test -race -count=5 ./internal/store/...
+scripts/sqlc.sh                                           # regenerate after editing sql/ or migrations/
 ```
 
 ---
