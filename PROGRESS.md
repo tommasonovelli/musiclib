@@ -26,12 +26,12 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
 - [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
-- [ ] Containerized toolchain: build, tests and tooling run in Docker, not only the deployment (owner requirement, N-012)
+- [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
 - [ ] Full repository layout (§2.3): the other packages are still missing
-- [ ] Docker Compose: `app` + PostgreSQL 17, pinned digests (§2.1, §11.1)
+- [~] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §11.1) — postgres verified; `app` behind the `app` profile, waiting for `cmd/musiclibd`
 - [ ] `goose` migrations of the normative schema (§4.2)
 - [ ] `sqlc` queries (§2.1)
-- [ ] `internal/fsops`: confined primitives (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
+- [x] `internal/fsops`: confined primitives (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
 - [ ] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1)
 - [ ] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
 - [ ] Boot checks: same filesystem, `RENAME_EXCHANGE` available (§3.1)
@@ -113,6 +113,50 @@ properties of `Key`. Coverage 99.2%; `go vet` and `go test -race` clean.
 ```sh
 go test ./...                                    # full suite (~0.4 s)
 go test ./internal/names/ -run=XXX -fuzz=FuzzSegment -fuzztime=60s
+```
+
+### `internal/fsops` — confined filesystem primitives (§2.3, §10.4) ✔
+
+The only package that touches the filesystem. Every path is relative to a
+`Root` (a directory descriptor) and is validated with `names.SplitRelPath`
+before any syscall. It is then resolved by a single `openat2` with
+`RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`. Single-component operations act on a
+resolved directory descriptor plus a name. Every open carries
+`O_CLOEXEC|O_NONBLOCK|O_NOCTTY`. An AST test forbids path-based calls
+(`filepath.Join`, `os.Open`, `unix.Openat`, `AT_FDCWD`, ...) and confines
+`unix.Open`, `unix.Openat2` and `unix.Close` to one function each.
+
+Public API:
+
+| Function | Role |
+|---|---|
+| `OpenRoot(path)` | the only host path accepted; checks that `openat2` is usable (`fs_openat2_unsupported`, §3.1) |
+| `Root.SubRoot` / `Root.Close` / `Root.Name` | independent confined sub-root; close waits for in-flight syscalls and rejects new ones; label for errors |
+| `Root.Open` / `Root.CreateExclusive` / `Root.OpenFile` | regular files only; symlinks, FIFOs, sockets and devices rejected without blocking; explicit flag set |
+| `Root.Stat` / `Root.ReadDir` | describe without following; `ReadDir` sorted by name bytes; types reported, not rejected |
+| `Root.Mkdir` / `Root.MkdirAll` / `Root.MkdirAllSync` | never adopt a symlink; `MkdirAll` returns the directories created |
+| `Root.Rmdir` / `Root.Remove` / `Root.RemoveAll(ctx)` | `rmdir` only if empty; `Remove` unlinks symlinks without following; confined recursive removal |
+| `RenameNoReplace` / `RenameExchange` | `renameat2` NOREPLACE / EXCHANGE, same or different `Root`s; no fsync |
+| `SyncFile` / `SyncAndClose` / `Root.SyncDir` / `Root.SyncDirAndParents` | fsync of files and directories, bottom-up to the root; errors never dropped |
+| `SameFilesystem` / `ProbeRenameExchange` | `st_dev` comparison; real `RENAME_EXCHANGE` probe with content check, no fallback |
+| `Root.Lock` / `Lock.Close` | exclusive non-blocking `flock` (`fs_lock_busy`), `O_CLOEXEC` |
+| `Root.StatFS` | total and unprivileged-available bytes (§11.2) |
+| `FileType`, `FileInfo`, `DirEntry` | entry types (`IsSpecial`), identity (dev/ino), permissions |
+| `Error` / `Code` | stable `fs_*` codes plus the relative location(s); never an absolute path |
+
+Tests run on the real kernel, with no mocks: traversal, absolute paths and empty
+segments rejected before disk; leaf and intermediate symlinks (inside and
+outside the root); sequential and concurrent TOCTOU swaps; FIFO, socket and
+device rejected under a timeout guard; NOREPLACE/EXCHANGE semantics, renames
+across roots and filesystems; the probe and its cleanup; flock exclusivity and
+`O_CLOEXEC` verified in a child process; descriptor leaks; the `Root` lifetime
+protocol. The device subtest skips without `CAP_MKNOD`; see N-038 for the
+other skips.
+
+```sh
+go test -race -count=1 -timeout 180s ./internal/fsops/        # host, ~1 s
+scripts/check.sh ./internal/fsops/...                         # Docker gate, ext4 TMPDIR
+scripts/dev.sh go test -race -count=20 ./internal/fsops/      # flakiness check
 ```
 
 ---

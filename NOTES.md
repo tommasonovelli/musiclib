@@ -114,74 +114,223 @@ rules, the tag mapping and the tool versions. It must be introduced before the
 first render, and it must include an identifier of the version of the
 `internal/names` algorithm.
 
-### N-011 · No CI check on ext4 — OPEN
-§12.1 requires tests of the real primitives on a test ext4 volume. Right now
-the tests run on the developer's filesystem, with no guarantee that it is ext4.
-To be addressed with `internal/fsops` and with the CI scripts.
+### N-011 · No CI check on ext4 — RESOLVED (local), OPEN (CI)
+The Docker gate (`scripts/check.sh`) refuses to run unless `TMPDIR` is on
+ext4 (magic 0xef53, named volume `musiclib_testdata`). A CI job running the
+same scripts on a native Engine is still to be set up: see N-017.
 
-### N-012 · The whole project must be containerized — OPEN
-*New owner requirement, 2026-09-21.*
-
-Build, tests and tooling (fuzzing, `go vet`, `gofmt`, `sqlc`, `goose`, the C++
-TagLib helper, ffmpeg) must run in Docker, not only the deployment described in
-§11.1. To be planned: a pinned build/test image (Go, TagLib, ffmpeg versions as
-in N-009), how tests get a real ext4 volume inside the container (N-011), and
-which privileges the `internal/fsops` tests need (for example `CAP_MKNOD` for
-the device subtest of `TestSpecialFilesRejected`, and a seccomp profile that
-allows `openat2`).
+### N-012 · The whole project must be containerized — RESOLVED
+Build, vet, gofmt, race tests, fuzzing and shell lint run in Docker
+(`Dockerfile`, `compose.yaml`, `scripts/`, `docs/docker.md`). The TagLib
+helper and ffmpeg are still TODOs in the `Dockerfile` (N-025).
 
 ---
 
-## `internal/fsops` (work in progress, not yet committed)
+## Docker and deployment (2026-09-21)
 
-*Found on 2026-09-21 while translating the package to English. Not fixed: the
-package is being completed separately.*
+### N-017 · The development host uses Docker Desktop, which §3.1 does not support — ACCEPTED (dev), OPEN (CI)
+The tests run on real ext4, but inside Docker Desktop's VM with its kernel
+(6.12 linuxkit), not the host's. Production must be a native Engine on Ubuntu
+24.04+. A native-Engine run (CI or the host's own Engine) is needed before
+any release.
 
-### N-013 · Opening a FIFO blocks forever; `Root.Close` then deadlocks — OPEN
-The doc comment of `Root.openat2` says that O_NONBLOCK keeps the opening of a
-FIFO from blocking before the type check, and `OpenFile` clears O_NONBLOCK after
-the check. But no code ever **sets** O_NONBLOCK: `openat2` only adds
-O_CLOEXEC. As a result `Root.Open` on a FIFO with no writer blocks in the
-syscall forever, against §5.2/§9.3 (special files must be rejected, with
-`fs_special_file`).
+### N-018 · No overlayfs or bind mounts for test data — DECIDED
+The container root is overlayfs, whose rename/exchange semantics differ from
+ext4; on Docker Desktop bind mounts are `fakeowner`. Only a named volume is
+used. A loop-mounted ext4 image was rejected: it needs CAP_SYS_ADMIN.
 
-The blocked goroutine holds `Root.mu.RLock`, so any later `Root.Close` blocks
-on `mu.Lock` forever as well. `TestSpecialFilesRejected` reproduces it: its
-`fifo` subtest fails after 5 s ("Open of a special file blocked"), then the
-test's cleanup hangs in `Root.Close` until the `go test` timeout. With that test
-skipped, every other `internal/fsops` test passes.
+### N-019 · Go 1.25 is outside upstream support — OPEN
+Go 1.27 and 1.26 exist, so 1.25.14 gets no more security fixes. Bumping the
+`go` directive also moves `golang.org/x/text` (v0.42+) and `x/sys` (v0.48+).
+x/text's Unicode tables feed `names.Key` (§5.2, frozen algorithm): the bump
+needs the exhaustive code-point test and possibly a key migration. Decide
+before the first real import.
 
-### N-014 · Directory descriptor closed twice in `Remove` and `RemoveAll` — OPEN
-`Root.Remove` and `Root.RemoveAll` register `defer unix.Close(dirfd)` and, on the
-success path, also `return closeFD(..., dirfd)`. The descriptor is therefore
-closed twice. Between the two closes another goroutine may have received the
-same fd number, and the deferred close would then close an unrelated file,
-which is the hazard the `Root` RWMutex is meant to prevent. `MkdirAll` has the
-same pattern on an error path: if `closeFD` of the current directory fails, the
-deferred close closes it again. Tests do not catch it because the second close
-normally just returns `EBADF`, which is ignored.
+### N-020 · `musiclibd` must set umask 022 itself — OPEN
+Docker's default is 0022, but a different runtime or `--entrypoint` may
+change it. `musiclibd` calls `unix.Umask(0o022)` at startup (§11.1).
 
-### N-015 · Minor `internal/fsops` observations — OPEN
-- `ProbeRenameExchange`: the cleanup `defer` for a probe directory is
-  registered only after `makeProbeDir` succeeds. If `Mkdir` succeeds but the
-  marker creation or write fails, the `.musiclib-probe-*` directory is left
-  behind (doctor would report it, §11.3, but the probe could clean it up).
-- `rename`: every `renameat2` error is reported with the **destination** root
-  and path, including errors about the source (for example `ENOENT` on a
-  missing source). The code is correct, the location in the message may be
-  misleading.
+### N-021 · initdb with data checksums and the builtin C.UTF-8 locale — TO CONFIRM
+Checksums catch page corruption; the `builtin` provider makes collation
+independent of the image's glibc, so a base-image bump cannot corrupt text
+indexes. Cost: `ORDER BY` on text is code-point order (natural sort is done
+in Go anyway). Cannot change later without dump/restore: decide before the
+first real init.
+
+### N-022 · Postgres credentials and exposure — TO CONFIRM
+`POSTGRES_PASSWORD` defaults to `musiclib`, read only at initdb. No published
+port; `sslmode=disable` on the Compose network. Acceptable for single-user
+use (§10.4); users should set `.env` before the first `up`.
+
+### N-023 · Digest bump policy — DECIDED
+Exact tag plus index digest, resolved with `docker buildx imagetools
+inspect`, committed on their own and followed by `scripts/check.sh`. A
+PostgreSQL major bump means dump/restore. Bumping Go, TagLib or ffmpeg
+changes `render_version` (N-010).
+
+### N-024 · testcontainers (§12.1) inside the containerized gate — OPEN
+testcontainers needs the Docker socket, which is root-equivalent and breaks
+the gate's isolation. Plan: a dedicated `postgres-test` service in the
+`tools` profile; tests read `MUSICLIB_TEST_DATABASE_URL` and create a
+throwaway database per test. Real PostgreSQL is kept (§12.1); only the
+launcher changes.
+
+### N-025 · How to pin ffmpeg and TagLib — OPEN
+`apt-get install ffmpeg=<ver>` is reproducible only with a pinned
+`snapshot.debian.org`; alternatives are a static build or a source build
+pinned by sha256. TagLib 2.x: source tarball pinned by sha256, built on the
+runtime's Debian release. Both feed `render_version`.
+
+### N-026 · `WORKERS` default = 2 — TO CONFIRM
+§11.1 gives no default.
+
+### N-027 · App healthcheck — OPEN
+The slim image has no curl: the Compose healthcheck on `/health/ready` needs
+a `musiclibd healthcheck` subcommand.
+
+### N-028 · Named `/data` volume on a native Engine — ACCEPTED
+It is ext4 only if Docker's root directory is. The §3.1 boot check (same
+filesystem plus a real `RENAME_EXCHANGE` probe, N-032) is the enforcement;
+the docs recommend `MUSICLIB_DATA=/path/on/ext4` for real use.
 
 ---
+
+## `internal/fsops`
+
+*N-013..N-015 found on 2026-09-21 while translating the package to English;
+resolved the same day when the package was completed.*
+
+### N-013 · Opening a FIFO blocks forever; `Root.Close` then deadlocks — RESOLVED
+Every open goes through `sysOpenat2`, which always adds
+`O_NONBLOCK|O_NOCTTY|O_CLOEXEC`; `OpenFile` checks the type with `fstat` on the
+returned descriptor (race-free: it is the inode actually opened) and clears
+`O_NONBLOCK` only for a regular file. The `RWMutex` was replaced by a user count
+that is never held across a syscall (N-031). Regression test:
+`TestSpecialFilesRejectedWithoutBlocking` (every open under a 5 s guard that
+unblocks the FIFO, so a regression fails in seconds instead of hanging;
+verified by removing `O_NONBLOCK`).
+
+### N-014 · Directory descriptor closed twice in `Remove` and `RemoveAll` — RESOLVED
+Every descriptor now has one owner and one close: `defer closeInto(&err, ...)`
+right after it is obtained, or explicit hand-over (`MkdirAll`). `unix.Close`
+appears only in `closeFD` and no close error is discarded, so a double close
+would surface as `EBADF`; `TestNoOperationOnStringBuiltPaths` enforces this on
+the AST and `TestNoDescriptorLeaks` checks that no path leaks a descriptor.
+
+### N-015 · Minor `internal/fsops` observations — RESOLVED
+The probe registers the cleanup of each directory right after its `Mkdir`,
+before writing markers (`TestProbeRenameExchangeCleansUpOnFailure`). A
+`renameat2` error now carries both locations (`Root/Path -> DstRoot/DstPath`);
+errors found before the syscall name the side they concern
+(`TestRenameErrorLocations`).
 
 ## Translation to English
 
-### N-016 · Italian fixture names left in test inputs — TO CONFIRM
-*2026-09-21.* The code, comments, messages and test names were translated to
-English. The test **inputs** were left unchanged on purpose, because inputs and
-expected values are frozen during a translation. Some of them are Italian words
-that have no meaning for the test: file and directory names and file contents
-in the `internal/fsops` tests (`"segreto"`, `"fuori"`, `"dentro"`, `"manca"`,
-`"esterna"`, `"Artista"`, `"non toccare"`, ...) and one path segment in
-`internal/names/relpath_test.go` (`"  spazi  "`). Renaming them consistently
-would not change what the tests check. To decide whether to translate them in a
-separate change.
+### N-016 · Italian fixture names left in test inputs — RESOLVED
+All `internal/fsops` fixture names and contents are now English. The one
+remaining Italian input, `"  spazi  "` in `internal/names/relpath_test.go`, is
+in a frozen package and was left alone: the lead engineer decides whether to
+change it.
+
+---
+
+## `internal/fsops` — review findings and decisions (2026-09-21)
+
+### N-030 · A device node reaches its driver's `open` before rejection — ACCEPTED
+`OpenFile` opens first and checks the type on the descriptor, because only
+that check is race-free. Opening a character or block device therefore calls
+the driver's `open` routine (with `O_NONBLOCK|O_NOCTTY`) before the rejection.
+Linux cannot "open only if regular". A pre-check with `O_PATH` + `fstat` would
+avoid this in the common case but not in a race, and reopening an `O_PATH`
+descriptor needs `/proc/self/fd` magic links, which `RESOLVE_NO_SYMLINKS`
+forbids by design. Exposure: device nodes can only appear under `/import`
+(the user's files); the scan must `Stat`/`ReadDir` and reject special types
+before opening, as §5.2 already requires.
+
+### N-031 · `Root` lifetime: user count instead of an `RWMutex` — DECIDED
+The old `RWMutex` was held across `openat2`, so a blocking open also blocked
+`Close`, and every operation started after it queued behind the writer. Now
+the mutex is held only to register or deregister a single syscall on the root
+descriptor. `Close` rejects new users at once (`fs_root_closed`), waits for the
+in-flight ones, which are single syscalls that cannot block indefinitely by
+construction, and closes the descriptor. Consequence to know: an operation
+that has already resolved its own descriptors (a long `RemoveAll`) keeps
+running after `Root.Close`; it is stopped by its context. Shutdown (§11.1)
+must cancel contexts, not rely on `Close`.
+
+### N-032 · `SameFilesystem` (st_dev) is necessary, not sufficient — OPEN (boot sequence)
+Two bind mounts of the same filesystem share `st_dev`, but `rename(2)` between
+them fails with `EXDEV`. This is exactly the Docker case if `library` and `work`
+were ever separate bind mounts. `ProbeRenameExchange` does a real exchange and
+catches it (`fs_cross_device`), so **boot (§11.1 step 3) must run the probe,
+not only `SameFilesystem`**. The bind-mount case is not covered by a test: it
+needs mount privileges. A candidate for the ext4 Docker test volume.
+
+### N-033 · Probe directories inside `library/` — TO CONFIRM
+§3.1 asks to verify `RENAME_EXCHANGE` between `library` and `work`, so the probe
+briefly creates `.musiclib-probe-<random>` in the root of `library/`. That
+directory is visible to players for a few milliseconds. A crash during the probe
+leaves it behind. To decide: whether boot or doctor (§11.3) should remove
+leftovers with this prefix automatically (the recommendation is yes, at boot
+before the probe), or whether the probe should run between `work/` and a
+dedicated directory on the same mount.
+
+### N-034 · The flock inheritance test proved nothing — RESOLVED
+The old `TestLockNotInheritedByChildren` released the lock in the parent and
+re-acquired it. `LOCK_UN` releases the lock of the open file description for
+every holder, inherited descriptors included, so the test passed even without
+`O_CLOEXEC`. Now a child process (the test binary itself) checks each descriptor
+it inherited against the lock file's dev/ino. A control run that passes the
+descriptor on purpose must report it, and a second child checks cross-process
+exclusion (held → busy, released → acquired). Verified by removing `O_CLOEXEC`:
+the test fails.
+
+### N-035 · Other bugs found in review — RESOLVED
+- Close errors discarded: `Stat` (`_ = unix.Close`); `Mkdir`, `Rmdir`,
+  `SyncDir` and `ReadDir` dropped the close error when the main syscall also
+  failed; `MkdirAll` ignored the close of `next` on an error path.
+- `OpenFile` ignored the error of `fcntl(F_GETFL)`.
+- `FileInfo.Perm` stored the raw setuid/setgid/sticky bits (`0o4000`...) in an
+  `os.FileMode`, where they mean nothing. They are now translated to
+  `os.ModeSetuid`/`os.ModeSetgid`/`os.ModeSticky`.
+- `renameat2` `EINVAL` (moving a directory into its own subtree) was reported as
+  `fs_unsupported_operation`. It is now `fs_invalid_argument`. Only the probe,
+  where no ancestry is possible, maps it to "unsupported".
+- `RemoveAll` returned `fs_not_found` when the *parent* was missing, contrary
+  to its contract ("a missing path is not an error").
+- `Remove` did `fstatat` then `unlinkat`: a stat/use window. `unlinkat` without
+  `AT_REMOVEDIR` already fails with `EISDIR` on a directory, so it is now one
+  syscall. `RemoveAll` trusts the kernel over the listed type (file↔directory
+  replaced mid-removal).
+- The traversal in `MkdirAll`/`RemoveAll` used plain `openat(O_NOFOLLOW)`. It now
+  uses `openat2` with the confinement flags like every other open, and
+  `unix.Openat` is banned by the AST guard.
+- The `ReadDir` test's NFC/NFD `"é"` fixtures had collapsed to the same bytes. They
+  are now written as escapes.
+
+### N-036 · `OpenFile` accepts an explicit set of flags — DECIDED
+Access mode plus `O_CREATE`, `O_EXCL`, `O_TRUNC`, `O_APPEND`, `O_SYNC`, `O_DSYNC`.
+Anything else (`O_PATH`, `O_TMPFILE`, `O_NOATIME`, ...) and nonsensical
+combinations (`O_EXCL` without `O_CREATE`, `O_TRUNC` read-only) yield the new
+stable code `fs_invalid_argument`; `O_DIRECTORY` keeps `fs_is_directory`.
+
+### N-037 · Scope of `SyncDirAndParents` and of `OpenRoot` — DECIDED
+- The fsync chain stops at the `Root`. When the volume layout is created
+  (`library/`, `work/`, `originals/` under `/data`, §11.1 first
+  initialization), the caller must sync the `/data` Root, not the sub-root.
+- `OpenRoot` is the only function that takes a host path. It is trusted
+  configuration: it follows symlinks in that path and does not require it to be
+  absolute. Its label (the last element) appears in errors, the full path never
+  does.
+
+### N-038 · Test environment coverage — OPEN
+Host run: `/tmp` is on `/` = ext4 (`findmnt`); `statfs` reports the shared
+ext2/3/4 magic `0xEF53`. Skipped where the privilege is missing:
+the device subtest (needs `CAP_MKNOD`); `TestRenameAcrossFilesystems` if
+no second filesystem (`/dev/shm`, `/run/user`) is writable;
+`TestProbeRenameExchangeCleansUpOnFailure` and the partial-failure branch of
+`TestMkdirAndMkdirAll` when running as root (permissions are bypassed). A test
+for "different bind mounts, same `st_dev`" (N-032) is missing.
+Docker gate (`scripts/check.sh`, uid 1000, no capabilities, TMPDIR on the
+ext4 `testdata` volume): passes; only the device subtest skips.
+`scripts/dev.sh go test -race -count=20`: 20/20.
