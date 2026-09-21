@@ -33,7 +33,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] `sqlc` queries (§2.1)
 - [x] `internal/fsops`: confined primitives (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
 - [ ] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1)
-- [ ] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
+- [x] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
 - [ ] Boot checks: same filesystem, `RENAME_EXCHANGE` available (§3.1)
 
 ## Phase 2 — First vertical slice (one FLAC album)
@@ -157,6 +157,47 @@ other skips.
 go test -race -count=1 -timeout 180s ./internal/fsops/        # host, ~1 s
 scripts/check.sh ./internal/fsops/...                         # Docker gate, ext4 TMPDIR
 scripts/dev.sh go test -race -count=20 ./internal/fsops/      # flakiness check
+```
+
+### `internal/blobstore` — originals (§3.1, §7.5, §11.3) ✔
+
+The single blob-put implementation (§13.2), built on `internal/fsops`.
+Layout: `originals/ab/cd/<sha256>`, with temporaries in `work/blobs/<random>.tmp`.
+Nothing in the package removes or rewrites a pinned blob (§3.2).
+
+| Function | Role |
+|---|---|
+| `New(originals, work)` | store over two fsops roots; creates `work/blobs` durably |
+| `Put(ctx, src) (Blob, error)` | §7.5 steps 1–5; already-exists branch re-hashes and fsyncs the existing file, `corrupt_blob` on mismatch; temp removed on every path |
+| `Open(sha)` | pinned blob read-only, regular file only |
+| `Check(Blob)` | normal doctor: exists, regular, size (§11.3) |
+| `Verify(ctx, sha) (size, error)` | deep doctor: full SHA-256 (§11.3) |
+| `CleanTemps(ctx)` | boot cleanup of leftover `*.tmp` only (§11.1 step 5) |
+| `ValidateSHA` | 64 lowercase hex digits, checked before any path is built |
+| `Blob`, `Error`, `Code` | `{SHA256, Size}`; stable `blob_*` / `corrupt_blob` codes |
+
+How the §7.5 steps map to the code:
+
+1. `writeTemp`: exclusive create of the temporary (mode 0444), copy through a
+   context-checking reader, SHA-256 and size.
+2. `fsops.SyncAndClose`, then `readBlob` re-reads the temporary and compares
+   hash and size.
+3. `MkdirAll` plus `SyncDirAndParents` of the shard chain, on every put (N-041).
+4. `fsops.RenameNoReplace`. On `fs_exists` the put goes to `checkExisting`.
+5. `SyncDir` of `work/blobs` and of the shard directory, on both branches.
+
+Tests on real ext4: property test over sizes around the buffer boundary;
+16 concurrent puts of the same content; an existing entry that does not
+match (bytes, size, symlink, directory) gives `corrupt_blob` and is left
+untouched; injected failures at every protocol point (source error,
+cancellation mid-copy, ENOSPC, temp altered before the re-read, failures
+before and after the rename, temp removal failure); protocol order; doctor
+checks; hash validation; temp cleanup. Not covered: a real full disk (N-045)
+and real crashes (N-044).
+
+```sh
+scripts/check.sh ./internal/blobstore/...
+scripts/dev.sh go test -race -count=20 ./internal/blobstore/
 ```
 
 ---

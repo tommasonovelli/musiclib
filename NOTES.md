@@ -334,3 +334,81 @@ for "different bind mounts, same `st_dev`" (N-032) is missing.
 Docker gate (`scripts/check.sh`, uid 1000, no capabilities, TMPDIR on the
 ext4 `testdata` volume): passes; only the device subtest skips.
 `scripts/dev.sh go test -race -count=20`: 20/20.
+
+---
+
+## `internal/blobstore` (2026-09-21)
+
+### N-040 · Temporary names use `crypto/rand.Text`, not UUIDv7 — DECIDED
+§3.1 writes `work/blobs/<uuid>.tmp`; §2.1 asks for UUIDv7 identifiers. A temp
+name is never stored or referenced: it only has to be unique for the
+exclusive create. `rand.Text()` (26 base32 characters, 130 random bits,
+stdlib since Go 1.24) does that with no new dependency. `CleanTemps` relies
+only on the `.tmp` suffix. `github.com/google/uuid` will be pinned when the
+catalog needs real UUIDv7 row identifiers.
+
+### N-041 · The shard chain is fsynced on every put, not only when created — DECIDED
+§7.5 step 3 says to sync the *new* shard directories and their parents. If
+put A creates `ab/cd` and put B, running concurrently, finds it already
+there, B would skip the sync and could report success before A made `ab`
+durable. `Put` therefore always runs `SyncDirAndParents("ab/cd")` (a superset
+of the spec's set). On ext4 an fsync of a clean directory is cheap.
+
+### N-042 · Pinned blobs are mode 0444 from creation — DECIDED
+The temporary is created with `O_CREAT|O_EXCL|O_WRONLY` and mode 0444: Linux
+allows writing through the descriptor that created the file, and the rename
+keeps the mode, so there is no chmod step and no window in which a pinned
+blob is writable. Shard directories are 0755. This stops accidental writes by
+the application's own uid. It is not a security boundary: the owner can chmod
+and root bypasses it. Doctor does not check the mode yet.
+
+### N-043 · `Put` has no expected hash/size parameter — DECIDED
+Callers compare the returned `Blob` with what they expected. A mismatch found
+after pinning leaves an unreferenced blob, which §7.5 already makes harmless.
+The upload size limits (§10.2) are the caller's job. `io.LimitReader`
+truncates silently, so the caller must read `limit+1` bytes and reject the
+upload, not pin a truncated prefix.
+
+### N-044 · Failpoints are in-process only — OPEN (phase 3)
+`Store.failpoint` (unexported, nil in production) runs at `temp_synced`,
+`temp_verified`, `shards_synced` and `pinned`. Tests use it to inject errors
+and to check the disk state at each point. §12.2 asks for real process
+crashes at named failpoints. That needs a child-process harness, which is
+phase 3. These names are the ones to use there.
+
+### N-045 · ENOSPC is not tested on a really full filesystem — OPEN
+The `ENOSPC`/`EDQUOT` → `blob_no_space` mapping and its cleanup are tested
+by injecting `ENOSPC` at the `temp_synced` point. That point is realistic:
+with delayed allocation, ext4 can report ENOSPC at fsync. A real full-disk
+test needs a small dedicated ext4 volume. A loop mount needs
+`CAP_SYS_ADMIN` (N-018), so it belongs with the "Disco pieno durante build"
+row of §12.2. Pinned blobs are never opened for writing, so ENOSPC cannot
+damage them in any case.
+
+### N-046 · What counts as a corrupt blob — DECIDED
+Anything at a blob's name that is not a regular file with the matching size
+and SHA-256 is `corrupt_blob`: a symlink (never followed, even to a good
+copy), a directory, a special file, a wrong size or wrong content. The put
+discards its good temporary and never replaces the entry (§7.5). Repair comes
+from the backup (§11.3). A broken shard chain (for example `ab` being a file)
+is reported as `blob_io` with the fsops cause, not as `corrupt_blob`.
+
+### N-047 · `Put` can fail with a valid blob pinned — DECIDED
+A failure after the rename (a step 5 fsync, the `pinned` failpoint), or a
+failed temp removal in the already-exists branch, returns an error even
+though the blob is intact. The caller must treat it as a failure and must
+not reference the blob. A retry is idempotent: it goes through the
+already-exists branch, which verifies and fsyncs.
+
+### N-048 · `CleanTemps` preconditions — DECIDED
+It must run at boot before any `Put` (§11.1 step 5), because an in-flight
+temporary looks exactly like a leftover. It removes only regular `*.tmp`
+entries of `work/blobs` and leaves everything else there. It does not fsync
+`work/blobs` afterwards: a temporary that comes back after a crash is removed
+at the next boot. It holds only the `work` root, so it cannot reach
+`originals/`.
+
+### N-049 · Enumerating every blob for `doctor --deep` — OPEN (phase 6)
+§11.3 hashes "all blobs present" and reports unreferenced ones. `Verify`
+covers one blob. A walk over `originals/ab/cd/` that also reports entries not
+shaped like blobs will be added together with doctor.
