@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// Codici di errore della normalizzazione. Sono stabili: l'API li espone
-// dentro il corpo {code, message, details} (DESIGN.md §10.1).
+// Normalization error codes. They are stable: the API exposes them inside
+// the {code, message, details} body (DESIGN.md §10.1).
 const (
 	CodeTextEmpty       = "text_empty"
 	CodeTextTooLong     = "text_too_long"
@@ -22,8 +22,8 @@ const (
 	CodePathTooLong      = "path_too_long"
 )
 
-// Error è l'errore tipizzato del pacchetto: un codice stabile più un
-// messaggio leggibile. Non contiene mai il percorso assoluto dell'host.
+// Error is the package's typed error: a stable code plus a human-readable
+// message. It never contains the host's absolute path.
 type Error struct {
 	Code    string
 	Message string
@@ -35,7 +35,7 @@ func errf(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// Code restituisce il codice di err se è un *Error, altrimenti "".
+// Code returns the code of err if it is an *Error, and "" otherwise.
 func Code(err error) string {
 	var e *Error
 	if errors.As(err, &e) {

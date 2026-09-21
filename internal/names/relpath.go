@@ -5,35 +5,35 @@ import (
 	"unicode/utf8"
 )
 
-// SanitizedPath è il risultato della sanitizzazione di un percorso relativo
-// destinato all'output.
+// SanitizedPath is the result of sanitizing a relative path intended for
+// the output.
 type SanitizedPath struct {
-	// Segments sono i segmenti sanitizzati, nell'ordine originale.
+	// Segments are the sanitized segments, in their original order.
 	Segments []string
-	// Path sono i segmenti uniti da "/".
+	// Path is the segments joined by "/".
 	Path string
-	// Key è la chiave di confronto del percorso: le chiavi dei segmenti
-	// unite da "/". È il valore della colonna attachments.path_key.
+	// Key is the comparison key of the path: the keys of the segments
+	// joined by "/". It is the value of the attachments.path_key column.
 	Key string
 }
 
-// SplitRelPath valida un percorso relativo e ne restituisce i segmenti
-// esattamente come sono sul disco, senza sanitizzarli (DESIGN.md §5.2:
-// source_rel, source_path e root_rel si validano ma si aprono con il nome
-// originale).
+// SplitRelPath validates a relative path and returns its segments exactly as
+// they are on disk, without sanitizing them (DESIGN.md §5.2: source_rel,
+// source_path and root_rel are validated but opened with their original
+// name).
 //
-// Rifiuta percorsi assoluti, ".", "..", segmenti vuoti, UTF-8 non valido,
-// byte NUL e profondità oltre MaxPathDepth. La stringa vuota è un errore:
-// per la root di /import si usa SplitRelPathOrRoot.
+// It rejects absolute paths, ".", "..", empty segments, invalid UTF-8, NUL
+// bytes and a depth beyond MaxPathDepth. The empty string is an error: the
+// root of /import uses SplitRelPathOrRoot.
 func SplitRelPath(p string) ([]string, error) {
 	if p == "" {
-		return nil, errf(CodePathEmpty, "il percorso relativo è vuoto")
+		return nil, errf(CodePathEmpty, "the relative path is empty")
 	}
 	return splitRelPath(p)
 }
 
-// SplitRelPathOrRoot è SplitRelPath ma ammette la stringa vuota, che indica
-// la root di /import e restituisce zero segmenti.
+// SplitRelPathOrRoot is SplitRelPath but accepts the empty string, which
+// denotes the root of /import and yields zero segments.
 func SplitRelPathOrRoot(p string) ([]string, error) {
 	if p == "" {
 		return []string{}, nil
@@ -43,36 +43,36 @@ func SplitRelPathOrRoot(p string) ([]string, error) {
 
 func splitRelPath(p string) ([]string, error) {
 	if !utf8.ValidString(p) {
-		return nil, errf(CodeInvalidUTF8, "il percorso non è UTF-8 valido")
+		return nil, errf(CodeInvalidUTF8, "the path is not valid UTF-8")
 	}
 	if strings.IndexByte(p, 0) >= 0 {
-		return nil, errf(CodePathNulByte, "il percorso contiene un byte NUL")
+		return nil, errf(CodePathNulByte, "the path contains a NUL byte")
 	}
 	if strings.HasPrefix(p, "/") {
-		return nil, errf(CodePathAbsolute, "il percorso è assoluto")
+		return nil, errf(CodePathAbsolute, "the path is absolute")
 	}
 	segs := strings.Split(p, "/")
 	for _, s := range segs {
 		switch s {
 		case "":
-			return nil, errf(CodePathEmptySegment, "il percorso contiene un segmento vuoto")
+			return nil, errf(CodePathEmptySegment, "the path contains an empty segment")
 		case ".", "..":
-			return nil, errf(CodePathDotSegment, "il percorso contiene il segmento %q", s)
+			return nil, errf(CodePathDotSegment, "the path contains the segment %q", s)
 		}
 	}
 	if len(segs) > MaxPathDepth {
 		return nil, errf(CodePathTooDeep,
-			"il percorso ha %d livelli, il massimo è %d", len(segs), MaxPathDepth)
+			"the path has %d levels, the maximum is %d", len(segs), MaxPathDepth)
 	}
 	return segs, nil
 }
 
-// SanitizeRelFilePath valida un percorso relativo e lo sanitizza segmento
-// per segmento: l'ultimo segmento è trattato come nome di file (estensione
-// preservata), quelli precedenti come directory.
+// SanitizeRelFilePath validates a relative path and sanitizes it segment by
+// segment: the last segment is treated as a file name (extension preserved),
+// the preceding ones as directories.
 //
-// È il percorso degli allegati: rel_path conserva il valore originale o
-// scelto dall'utente, il piano di render usa questo risultato.
+// It is the path of attachments: rel_path keeps the original or
+// user-chosen value, the render plan uses this result.
 func SanitizeRelFilePath(p string) (SanitizedPath, error) {
 	segs, err := SplitRelPath(p)
 	if err != nil {
@@ -90,7 +90,7 @@ func SanitizeRelFilePath(p string) (SanitizedPath, error) {
 	joined := strings.Join(out, "/")
 	if len(joined) > MaxPathBytes {
 		return SanitizedPath{}, errf(CodePathTooLong,
-			"il percorso sanitizzato occupa %d byte, il massimo è %d", len(joined), MaxPathBytes)
+			"the sanitized path takes %d bytes, the maximum is %d", len(joined), MaxPathBytes)
 	}
 	return SanitizedPath{Segments: out, Path: joined, Key: PathKey(out)}, nil
 }

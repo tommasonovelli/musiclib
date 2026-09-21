@@ -1,11 +1,11 @@
-# Binari
+# Binaries
 /musiclibd
 /bin/
 
-# Output dei test e dei profili
+# Test and profiling output
 *.test
 *.out
 coverage.html
 
-# Ambiente locale
+# Local environment
 .env

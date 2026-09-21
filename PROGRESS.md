@@ -1,145 +1,162 @@
-# Stato di implementazione
+# Implementation status
 
-Tracciamento di cosa è stato implementato rispetto a `DESIGN.md`.
-Ordine di riferimento: DESIGN.md §13.1.
+Tracks what has been implemented against `DESIGN.md`.
+Reference order: DESIGN.md §13.1.
 
-Dubbi, bug e incertezze stanno in **`NOTES.md`**, non qui.
+Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
-**Legenda:** `[ ]` da fare · `[~]` parziale · `[x]` fatto e testato
+**Legend:** `[ ]` to do · `[~]` partial · `[x]` done and tested
 
 ---
 
-## Fase 1 — Fondamenta
+## Project conventions
 
-- [x] Modulo Go (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinnata)
-- [x] Normalizzazione: testo, segmenti, troncamento, chiavi, path relativi (§5.2) — `internal/names`
-- [ ] Struttura completa del repository (§2.3): restano gli altri package
-- [ ] Docker Compose: `app` + PostgreSQL 17, digest fissati (§2.1, §11.1)
-- [ ] Migrazioni `goose` dello schema normativo (§4.2)
-- [ ] Query `sqlc` (§2.1)
-- [ ] `internal/fsops`: primitive confinate (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
-- [ ] Lock del volume (`flock` su `/data/.lock`) e identità volume (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1)
-- [ ] `internal/blobstore`: put verificato a 5 passi, dedup, `corrupt_blob` (§7.5)
-- [ ] Verifiche di boot: stesso filesystem, `RENAME_EXCHANGE` disponibile (§3.1)
+- **English only.** All code, identifiers, comments, error and log messages,
+  test names, test failure messages, commit messages and project docs are
+  written in English.
+- **`DESIGN.md` is the exception.** It is the owner's normative spec and stays
+  in Italian. Code and docs cite it by section number (`DESIGN.md §5.2`).
+- **Everything runs in Docker.** The whole project is containerized: build,
+  tests and tooling, not only the deployment. This is a new owner requirement,
+  still to be planned (see the Phase 1 checklist and **N-012** in `NOTES.md`).
 
-## Fase 2 — Prima fetta verticale (un album FLAC)
+---
 
-- [ ] `internal/media`: adapter `ffprobe` / `ffmpeg`, `AudioDigest` (§8.4)
-- [ ] `native/musiclib-tags`: helper C++ TagLib (inspect / extract-images / write-managed-tags) (§8.1)
-- [ ] Mapping dei tag gestiti e rimozione alias (§8.2, §8.3)
-- [ ] `internal/importer`: import di un singolo candidato album
-- [ ] `internal/catalog`: transazioni di dominio, revisioni, prenotazioni, enqueue (§4.3, §5.3)
-- [ ] `internal/render`: snapshot → piano puro → costruzione in staging (§9.1)
-- [ ] Ricevuta `.musiclib.json` (§9.2)
+## Phase 1 — Foundations
+
+- [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
+- [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
+- [ ] Containerized toolchain: build, tests and tooling run in Docker, not only the deployment (owner requirement, N-012)
+- [ ] Full repository layout (§2.3): the other packages are still missing
+- [ ] Docker Compose: `app` + PostgreSQL 17, pinned digests (§2.1, §11.1)
+- [ ] `goose` migrations of the normative schema (§4.2)
+- [ ] `sqlc` queries (§2.1)
+- [ ] `internal/fsops`: confined primitives (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
+- [ ] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1)
+- [ ] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
+- [ ] Boot checks: same filesystem, `RENAME_EXCHANGE` available (§3.1)
+
+## Phase 2 — First vertical slice (one FLAC album)
+
+- [ ] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4)
+- [ ] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1)
+- [ ] Managed tag mapping and alias removal (§8.2, §8.3)
+- [ ] `internal/importer`: import of a single album candidate
+- [ ] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3)
+- [ ] `internal/render`: snapshot → pure plan → build in staging (§9.1)
+- [ ] `.musiclib.json` receipt (§9.2)
 - [ ] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3)
-- [ ] Recovery del journal all'avvio (§9.4)
-- [ ] `internal/jobs`: claim, pool, completamento (§6.2, §6.4)
+- [ ] Journal recovery at startup (§9.4)
+- [ ] `internal/jobs`: claim, pool, completion (§6.2, §6.4)
 
-## Fase 3 — Concorrenza
+## Phase 3 — Concurrency
 
-- [ ] Coalescenza dei render su riga unica per album (§6.3)
-- [ ] Snapshot `REPEATABLE READ` (§6.2)
-- [ ] `path_claims` e `pg_advisory_xact_lock` globale (§5.3)
-- [ ] API condizionali: ETag forte, `If-Match`, 412/428 (§10.1)
-- [ ] Rinomina artista e riassegnazione album (§4.3)
-- [ ] Failpoint nominati e matrice di guasto (§12.2)
+- [ ] Render coalescing on a single row per album (§6.3)
+- [ ] `REPEATABLE READ` snapshots (§6.2)
+- [ ] `path_claims` and global `pg_advisory_xact_lock` (§5.3)
+- [ ] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1)
+- [ ] Artist rename and album reassignment (§4.3)
+- [ ] Named failpoints and failure matrix (§12.2)
 
-## Fase 4 — Formati e contenuti
+## Phase 4 — Formats and content
 
-- [ ] MP3 (ID3v2.4, APE, migrazione ID3v1), M4A AAC/ALAC (§8.1–8.3)
-- [ ] Cover: selezione, limiti, upload, rimozione (§7.4, §8.5)
-- [ ] LRC associati alle tracce (§7.4)
-- [ ] Allegati sotto `Extras/` (§5.1, §7.4)
-- [ ] Verifica e preservazione dei tag non gestiti (§8.3)
+- [ ] MP3 (ID3v2.4, APE, ID3v1 migration), M4A AAC/ALAC (§8.1–8.3)
+- [ ] Covers: selection, limits, upload, removal (§7.4, §8.5)
+- [ ] LRC files associated with tracks (§7.4)
+- [ ] Attachments under `Extras/` (§5.1, §7.4)
+- [ ] Verification and preservation of unmanaged tags (§8.3)
 
-## Fase 5 — Esperienza completa
+## Phase 5 — Full experience
 
-- [ ] Scansione ricorsiva e raggruppamento multidisco (§7.2)
-- [ ] Metadati iniziali dedotti e override d'import (§7.3)
-- [ ] Fingerprint e riconoscimento duplicati (§7.6)
-- [ ] API HTTP complete (§10.2)
-- [ ] UI: Libreria, Album, Import, Attività (§10.3)
-- [ ] Confine di sicurezza HTTP: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4)
-- [ ] Cestino, ripristino, retry (§4.3, §6.4)
+- [ ] Recursive scan and multi-disc grouping (§7.2)
+- [ ] Inferred initial metadata and import overrides (§7.3)
+- [ ] Fingerprinting and duplicate detection (§7.6)
+- [ ] Complete HTTP APIs (§10.2)
+- [ ] UI: Library, Album, Import, Activity (§10.3)
+- [ ] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4)
+- [ ] Trash, restore, retry (§4.3, §6.4)
 
-## Fase 6 — Operatività
+## Phase 6 — Operations
 
-- [ ] `doctor` normale e `--deep` (§11.3)
-- [ ] `rebuild` con marker di manutenzione (§11.3)
+- [ ] `doctor`, normal and `--deep` (§11.3)
+- [ ] `rebuild` with maintenance marker (§11.3)
 - [ ] `backup` / `restore` (§11.4)
-- [ ] Budget di spazio e controllo `statfs` (§11.2)
-- [ ] Guida operativa con esempi Compose (§11)
+- [ ] Space budget and `statfs` check (§11.2)
+- [ ] Operations guide with Compose examples (§11)
 
 ---
 
 ---
 
-## Dettaglio di ciò che è fatto
+## Details of what is done
 
-### `internal/names` — normalizzazione (§5.2) ✔
+### `internal/names` — normalization (§5.2) ✔
 
-API pubblica:
+Public API:
 
-| Funzione | Ruolo |
+| Function | Role |
 |---|---|
-| `NormalizeText` / `NormalizeRequiredText` | testo dei metadati: NFC, trim, niente caratteri di controllo, max 1.024 caratteri |
-| `Segment` | segmento di directory sanitizzato |
-| `FileSegment` | come `Segment`, ma preserva l'estensione nel troncamento |
-| `Key` | chiave di confronto `NFC(casefold(segmento_finale))` |
-| `FolderKey` | `Key(Segment(nome))`: valore di `artists.folder_key` e `albums.folder_key` |
-| `PathKey` | chiavi dei segmenti unite da `/`: valore di `attachments.path_key` |
-| `SplitRelPath` / `SplitRelPathOrRoot` | validazione di un percorso relativo, segmenti **non** sanitizzati (nomi da aprire sul disco) |
-| `SanitizeRelFilePath` | percorso relativo dell'output: segmenti sanitizzati, `Path` e `Key` |
-| `Error` / `Code` | errori tipizzati con codice stabile per il corpo `{code, message, details}` dell'API |
+| `NormalizeText` / `NormalizeRequiredText` | metadata text: NFC, trim, no control characters, at most 1,024 characters |
+| `Segment` | sanitized directory segment |
+| `FileSegment` | like `Segment`, but preserves the extension when truncating |
+| `Key` | comparison key `NFC(casefold(final_segment))` |
+| `FolderKey` | `Key(Segment(name))`: value of `artists.folder_key` and `albums.folder_key` |
+| `PathKey` | segment keys joined by `/`: value of `attachments.path_key` |
+| `SplitRelPath` / `SplitRelPathOrRoot` | validation of a relative path, segments **not** sanitized (names to open on disk) |
+| `SanitizeRelFilePath` | relative output path: sanitized segments, `Path` and `Key` |
+| `Error` / `Code` | typed errors with a stable code for the API's `{code, message, details}` body |
 
-Test: tabellari, idempotenza, fuzzing (`FuzzSegment`, `FuzzKey`, `FuzzNormalizeText`,
-`FuzzSplitRelPath`) ed enumerazione esaustiva di tutti i code point Unicode per le
-proprietà di `Key`. Copertura 99,2%; `go vet` e `go test -race` puliti.
+Tests: table-driven, idempotence, fuzzing (`FuzzSegment`, `FuzzKey`, `FuzzNormalizeText`,
+`FuzzSplitRelPath`) and exhaustive enumeration of every Unicode code point for the
+properties of `Key`. Coverage 99.2%; `go vet` and `go test -race` clean.
 
 ```sh
-go test ./...                                    # suite completa (~0,4 s)
+go test ./...                                    # full suite (~0.4 s)
 go test ./internal/names/ -run=XXX -fuzz=FuzzSegment -fuzztime=60s
 ```
 
 ---
 
-## Decisioni prese durante l'implementazione
+## Decisions made during implementation
 
-1. **Package `internal/names`.** La §2.3 non assegna un package alla normalizzazione,
-   ma la §13.2 impone una sola implementazione e i consumatori sono `catalog`,
-   `importer` e `render`: sta quindi in un package proprio, puro, senza I/O né DB.
-2. **Due entry point per i segmenti.** `Segment` per le directory, `FileSegment` per
-   i file: solo il secondo preserva l'estensione quando tronca. Un'unica funzione
-   avrebbe dovuto indovinare se `Kind of Blue (feat. J.C.)` ha un'estensione.
-3. **Estensione ingombrante.** Se l'estensione non lascia spazio allo stem si
-   rinuncia a preservarla, anziché produrre un nome oltre i 180 byte.
-4. **Versioni fissate.** `golang.org/x/text` è pinnata a `v0.41.0` (§2.1: mai
-   `latest`); è l'ultima versione compatibile con la direttiva `go 1.25.0`.
+1. **`internal/names` package.** §2.3 does not assign a package to normalization,
+   but §13.2 requires a single implementation and its consumers are `catalog`,
+   `importer` and `render`: so it lives in its own pure package, with no I/O and
+   no DB.
+2. **Two entry points for segments.** `Segment` for directories, `FileSegment` for
+   files: only the latter preserves the extension when truncating. A single
+   function would have had to guess whether `Kind of Blue (feat. J.C.)` has an
+   extension.
+3. **Oversized extension.** If the extension leaves no room for the stem, it is
+   not preserved, rather than producing a name over 180 bytes.
+4. **Pinned versions.** `golang.org/x/text` is pinned to `v0.41.0` (§2.1: never
+   `latest`); it is the last version compatible with the `go 1.25.0` directive.
 
-## Scostamenti dalla spec
+## Deviations from the spec
 
-1. **Caratteri di controllo nei segmenti.** La §5.2 elenca `/ \ : * ? " < > |` come
-   caratteri da sostituire con `_`. Sono stati aggiunti i caratteri di controllo,
-   sostituiti allo stesso modo: non possono comparire in un nome di file
-   dell'output né in un header HTTP. La §5.2 li rifiuta già nei testi dei metadati.
-2. **Byte NUL nei percorsi relativi.** `SplitRelPath` lo rifiuta esplicitamente
-   (`path_nul_byte`) invece di lasciare che fallisca la syscall.
-3. **Trim dei punti esterni su entrambi i lati.** "Trim di spazi/punti esterni" è
-   applicato letteralmente, quindi un file importato `.nascosto` si materializza
-   come `Extras/nascosto`. Il contenuto è conservato, il nome no. È anche la
-   ragione per cui un allegato non può creare file nascosti nell'output.
-4. **Correzione del case folding cherokee.** `cases.Fold()` di x/text v0.41.0 non
-   è idempotente su quello script: `fold(U+ABB8) = U+13E8` e `fold(U+13E8) =
-   U+ABB8`, contro `CaseFolding.txt` che mappa `AB70..ABBF -> 13A0..13EF` e
-   `13F8..13FD -> 13F0..13F5`. Senza correzione due album che differiscono solo
-   per il case avrebbero `folder_key` diverse e occuperebbero due righe di
-   `path_claims`. `Key` applica la mappatura corretta dopo il folding; il bug è
-   stato trovato dal fuzzing e l'assenza di altri casi è verificata enumerando
-   tutti i code point.
+1. **Control characters in segments.** §5.2 lists `/ \ : * ? " < > |` as the
+   characters to replace with `_`. Control characters were added and are
+   replaced the same way: they cannot appear in an output file name or in an
+   HTTP header. §5.2 already rejects them in metadata texts.
+2. **NUL byte in relative paths.** `SplitRelPath` rejects it explicitly
+   (`path_nul_byte`) instead of letting the syscall fail.
+3. **Trimming outer dots on both sides.** "Trim outer spaces/dots" is applied
+   literally, so an imported file `.hidden` materializes as `Extras/hidden`.
+   The content is kept, the name is not. It is also the reason why an
+   attachment cannot create hidden files in the output.
+4. **Cherokee case folding fix.** `cases.Fold()` in x/text v0.41.0 is not
+   idempotent on that script: `fold(U+ABB8) = U+13E8` and `fold(U+13E8) =
+   U+ABB8`, whereas `CaseFolding.txt` maps `AB70..ABBF -> 13A0..13EF` and
+   `13F8..13FD -> 13F0..13F5`. Without the fix, two albums differing only in
+   case would get different `folder_key` values and occupy two `path_claims`
+   rows. `Key` applies the correct mapping after folding; the bug was found by
+   fuzzing, and the absence of other cases is verified by enumerating every
+   code point.
 
-## Domande aperte per la spec
+## Open questions for the spec
 
-Vedi `NOTES.md`. Le più urgenti, perché cambiano le chiavi già scritte su disco:
+See `NOTES.md`. The most urgent ones, because they change keys already written
+to disk:
 
-- **N-002** trim del punto iniziale: `.nascosto` diventa `nascosto`. Da confermare
-  **prima** del primo import reale.
+- **N-002** trimming the leading dot: `.hidden` becomes `hidden`. To be
+  confirmed **before** the first real import.

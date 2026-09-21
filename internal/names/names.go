@@ -1,13 +1,13 @@
-// Package names contiene l'unica implementazione della normalizzazione di
-// testi, segmenti di percorso e chiavi di confronto (DESIGN.md §5.2).
+// Package names holds the single implementation of the normalization of
+// texts, path segments and comparison keys (DESIGN.md §5.2).
 //
-// Il pacchetto è puro: non fa I/O, non conosce il database e non conosce
-// percorsi assoluti. Le colonne folder_key e path_key, le prenotazioni di
-// path_claims e i nomi prodotti dal planner derivano tutti da qui.
+// The package is pure: it does no I/O, knows nothing about the database and
+// knows nothing about absolute paths. The folder_key and path_key columns,
+// the path_claims reservations and the names produced by the planner are all
+// derived from here.
 //
-// L'algoritmo è congelato nella v1: cambiarlo richiede la migrazione delle
-// chiavi e una verifica preventiva dei conflitti, non un semplice bump di
-// render_version.
+// The algorithm is frozen in v1: changing it requires migrating the keys and
+// checking for conflicts beforehand, not just bumping render_version.
 package names
 
 import (
@@ -23,77 +23,77 @@ import (
 )
 
 const (
-	// MaxTextRunes è il limite dei testi dei metadati, in caratteri.
+	// MaxTextRunes is the limit for metadata texts, in characters.
 	MaxTextRunes = 1024
-	// MaxSegmentBytes è il limite di un componente di percorso, in byte
-	// UTF-8, inclusi prefissi ed estensione.
+	// MaxSegmentBytes is the limit for a path component, in UTF-8 bytes,
+	// prefixes and extension included.
 	MaxSegmentBytes = 180
-	// MaxPathDepth è il numero massimo di livelli di un percorso relativo.
+	// MaxPathDepth is the maximum number of levels of a relative path.
 	MaxPathDepth = 16
-	// MaxPathBytes è la dimensione massima di un percorso relativo dopo la
-	// trasformazione, in byte.
+	// MaxPathBytes is the maximum size of a relative path after the
+	// transformation, in bytes.
 	MaxPathBytes = 1024
 
-	// hashSuffixHexLen è il numero di caratteri esadecimali di SHA-256
-	// aggiunti dopo "~" quando un segmento viene troncato.
+	// hashSuffixHexLen is the number of SHA-256 hex characters appended
+	// after "~" when a segment is truncated.
 	hashSuffixHexLen = 8
 )
 
-// forbiddenSegmentRunes sono i caratteri sostituiti con "_" in un segmento
-// di percorso. Oltre a questi si sostituiscono i caratteri di controllo:
-// non possono finire in un nome di file dell'output.
+// forbiddenSegmentRunes are the characters replaced with "_" in a path
+// segment. Control characters are replaced as well: they cannot end up in an
+// output file name.
 const forbiddenSegmentRunes = `/\:*?"<>|`
 
-// NormalizeText normalizza un testo dei metadati: NFC, trim esterno, rifiuto
-// dei caratteri di controllo, massimo MaxTextRunes caratteri.
+// NormalizeText normalizes a metadata text: NFC, outer trim, rejection of
+// control characters, at most MaxTextRunes characters.
 //
-// La stringa vuota è ammessa e viene restituita invariata: i campi che non
-// possono essere vuoti usano NormalizeRequiredText.
+// The empty string is allowed and is returned unchanged: fields that cannot
+// be empty use NormalizeRequiredText.
 func NormalizeText(s string) (string, error) {
 	if !utf8.ValidString(s) {
-		return "", errf(CodeInvalidUTF8, "il testo non è UTF-8 valido")
+		return "", errf(CodeInvalidUTF8, "the text is not valid UTF-8")
 	}
 	s = norm.NFC.String(s)
 	s = strings.TrimFunc(s, unicode.IsSpace)
 	for i, r := range s {
 		if unicode.IsControl(r) {
 			return "", errf(CodeTextControlChar,
-				"il testo contiene un carattere di controllo U+%04X alla posizione %d", r, i)
+				"the text contains control character U+%04X at position %d", r, i)
 		}
 	}
 	if n := utf8.RuneCountInString(s); n > MaxTextRunes {
 		return "", errf(CodeTextTooLong,
-			"il testo ha %d caratteri, il massimo è %d", n, MaxTextRunes)
+			"the text has %d characters, the maximum is %d", n, MaxTextRunes)
 	}
 	return s, nil
 }
 
-// NormalizeRequiredText è NormalizeText per i campi obbligatori: un valore
-// vuoto, o che diventa vuoto dopo il trim, è un errore.
+// NormalizeRequiredText is NormalizeText for required fields: a value that
+// is empty, or becomes empty after the trim, is an error.
 func NormalizeRequiredText(s string) (string, error) {
 	out, err := NormalizeText(s)
 	if err != nil {
 		return "", err
 	}
 	if out == "" {
-		return "", errf(CodeTextEmpty, "il testo è obbligatorio e non può essere vuoto")
+		return "", errf(CodeTextEmpty, "the text is required and cannot be empty")
 	}
 	return out, nil
 }
 
-// Segment sanitizza un segmento di percorso senza trattamento
-// dell'estensione: si usa per le directory (artista, album, "Disc N", le
-// directory intermedie degli allegati).
+// Segment sanitizes a path segment without any extension handling: it is
+// used for directories (artist, album, "Disc N", the intermediate
+// directories of attachments).
 //
-// Il risultato non è mai vuoto, non contiene i caratteri vietati né
-// caratteri di controllo, non inizia né termina con spazi o punti, non è un
-// nome DOS riservato e non supera MaxSegmentBytes byte.
+// The result is never empty, contains neither forbidden characters nor
+// control characters, neither starts nor ends with spaces or dots, is not a
+// reserved DOS name and does not exceed MaxSegmentBytes bytes.
 func Segment(name string) string {
 	return sanitize(name, false)
 }
 
-// FileSegment sanitizza un segmento che è un nome di file: identico a
-// Segment, ma se serve troncare preserva l'estensione.
+// FileSegment sanitizes a segment that is a file name: identical to
+// Segment, but it preserves the extension when truncation is needed.
 func FileSegment(name string) string {
 	return sanitize(name, true)
 }
@@ -121,11 +121,11 @@ func sanitize(name string, preserveExt bool) string {
 	return s
 }
 
-// truncateSegment riduce s a MaxSegmentBytes byte troncando su un confine
-// UTF-8 e aggiungendo "~" più i primi hashSuffixHexLen caratteri dello
-// SHA-256 del segmento completo normalizzato. Se richiesto, l'estensione
-// viene preservata; se l'estensione da sola non lascia spazio allo stem, si
-// rinuncia a preservarla anziché produrre un nome più lungo del limite.
+// truncateSegment shortens s to MaxSegmentBytes bytes by cutting on a UTF-8
+// boundary and appending "~" plus the first hashSuffixHexLen characters of
+// the SHA-256 of the full normalized segment. If requested, the extension is
+// preserved; if the extension alone leaves no room for the stem, it is not
+// preserved rather than producing a name longer than the limit.
 func truncateSegment(s string, preserveExt bool) string {
 	sum := sha256.Sum256([]byte(s))
 	suffix := "~" + hex.EncodeToString(sum[:])[:hashSuffixHexLen]
@@ -138,12 +138,12 @@ func truncateSegment(s string, preserveExt bool) string {
 		}
 	}
 	stem := s[:len(s)-len(ext)]
-	budget := MaxSegmentBytes - len(suffix) - len(ext) // >= 1 per costruzione
+	budget := MaxSegmentBytes - len(suffix) - len(ext) // >= 1 by construction
 	return truncateUTF8(stem, budget) + suffix + ext
 }
 
-// truncateUTF8 restituisce il più lungo prefisso di s lungo al più max byte
-// che finisce su un confine di rune.
+// truncateUTF8 returns the longest prefix of s that is at most max bytes long
+// and ends on a rune boundary.
 func truncateUTF8(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -156,9 +156,9 @@ func truncateUTF8(s string, max int) string {
 	return ""
 }
 
-// coerceUTF8 sostituisce le sequenze di byte non valide con "_". I percorsi
-// delle sorgenti vengono validati prima (SplitRelPath) e i testi dei
-// metadati pure; questa è la garanzia che sanitize sia una funzione totale.
+// coerceUTF8 replaces invalid byte sequences with "_". Source paths are
+// validated beforehand (SplitRelPath), and so are metadata texts; this is
+// the guarantee that sanitize is a total function.
 func coerceUTF8(s string) string {
 	if utf8.ValidString(s) {
 		return s
@@ -177,8 +177,8 @@ func coerceUTF8(s string) string {
 	return b.String()
 }
 
-// isReservedDOS riconosce i nomi riservati di DOS/Windows, anche quando
-// portano un'estensione: CON, NUL, PRN, AUX, COM1..9, LPT1..9.
+// isReservedDOS recognizes the reserved DOS/Windows names, even when they
+// carry an extension: CON, NUL, PRN, AUX, COM1..9, LPT1..9.
 func isReservedDOS(s string) bool {
 	base := s
 	if i := strings.IndexByte(base, '.'); i >= 0 {
@@ -214,30 +214,31 @@ func asciiUpper(s string) string {
 	return string(b)
 }
 
-// Key è la chiave di confronto di un segmento già finale (cioè già passato
-// da Segment o FileSegment): NFC(casefold(segmento)).
+// Key is the comparison key of a segment that is already final (that is,
+// already passed through Segment or FileSegment): NFC(casefold(segment)).
 //
-// Il case folding è quello completo di Unicode, non lower() di SQL: "ß" e
-// "SS" hanno la stessa chiave. Non si usano nemmeno strings.ToLower o
-// strings.ToUpper, che applicano il case mapping semplice.
+// The case folding is Unicode full case folding, not SQL lower(): "ß" and
+// "SS" have the same key. Neither strings.ToLower nor strings.ToUpper is
+// used, since they apply simple case mapping.
 func Key(finalSegment string) string {
 	folded := strings.Map(foldCherokee, cases.Fold().String(finalSegment))
 	return norm.NFC.String(folded)
 }
 
-// foldCherokee corregge le uniche mappature in cui cases.Fold() di
-// golang.org/x/text non coincide con il full case folding di Unicode.
+// foldCherokee fixes the only mappings in which cases.Fold() from
+// golang.org/x/text does not match Unicode full case folding.
 //
-// CaseFolding.txt mappa le minuscole cherokee sulle maiuscole
-// (AB70..ABBF -> 13A0..13EF e 13F8..13FD -> 13F0..13F5), perché le
-// maiuscole sono state codificate per prime. cases.Fold() esegue invece
-// anche la mappatura opposta, quindi il folding oscilla:
-// fold(U+ABB8) = U+13E8 e fold(U+13E8) = U+ABB8. Senza questa correzione
-// "Ꮸ" e "ꮸ" avrebbero folder_key diverse e Key non sarebbe idempotente.
+// CaseFolding.txt maps Cherokee lowercase letters to uppercase
+// (AB70..ABBF -> 13A0..13EF and 13F8..13FD -> 13F0..13F5), because the
+// uppercase letters were encoded first. cases.Fold() also applies the
+// opposite mapping, so the folding oscillates:
+// fold(U+ABB8) = U+13E8 and fold(U+13E8) = U+ABB8. Without this fix
+// "Ꮸ" and "ꮸ" would have different folder_key values and Key would not be
+// idempotent.
 //
-// Applicata dopo il folding, la correzione porta il risultato nell'insieme
-// dei target canonici, dove è un punto fisso. La copertura è verificata su
-// tutti i code point in TestKeyCopreTuttoUnicode.
+// Applied after the folding, the fix brings the result into the set of
+// canonical targets, where it is a fixed point. Coverage is verified over
+// all code points in TestKeyCoversAllOfUnicode.
 func foldCherokee(r rune) rune {
 	switch {
 	case r >= 0xAB70 && r <= 0xABBF:
@@ -248,13 +249,13 @@ func foldCherokee(r rune) rune {
 	return r
 }
 
-// FolderKey è la chiave di una directory a partire dal nome desiderato:
-// è il valore delle colonne artists.folder_key e albums.folder_key.
+// FolderKey is the key of a directory, computed from the desired name: it
+// is the value of the artists.folder_key and albums.folder_key columns.
 func FolderKey(name string) string {
 	return Key(Segment(name))
 }
 
-// PathKey unisce con "/" le chiavi dei singoli segmenti già finali.
+// PathKey joins with "/" the keys of the individual, already final, segments.
 func PathKey(finalSegments []string) string {
 	keys := make([]string, len(finalSegments))
 	for i, s := range finalSegments {

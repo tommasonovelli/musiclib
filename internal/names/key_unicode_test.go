@@ -5,45 +5,45 @@ import (
 	"unicode"
 )
 
-// TestKeyCopreTuttoUnicode verifica in modo esaustivo, code point per code
-// point, le due proprietà su cui si appoggiano folder_key, path_key e
-// path_claims (DESIGN.md §5.2, §5.3):
+// TestKeyCoversAllOfUnicode exhaustively checks, code point by code point,
+// the two properties that folder_key, path_key and path_claims rely on
+// (DESIGN.md §5.2, §5.3):
 //
-//  1. Key è idempotente, quindi esiste una sola forma canonica;
-//  2. code point equivalenti a meno del case hanno la stessa chiave.
+//  1. Key is idempotent, so there is a single canonical form;
+//  2. code points that are equivalent up to case have the same key.
 //
-// L'enumerazione completa è preferibile al fuzzing per questa proprietà:
-// lo spazio è piccolo e l'algoritmo è congelato nella v1.
-func TestKeyCopreTuttoUnicode(t *testing.T) {
+// Full enumeration is preferable to fuzzing for this property: the space is
+// small and the algorithm is frozen in v1.
+func TestKeyCoversAllOfUnicode(t *testing.T) {
 	if testing.Short() {
-		t.Skip("enumerazione di tutti i code point")
+		t.Skip("enumeration of all code points")
 	}
 	for r := rune(0); r <= unicode.MaxRune; r++ {
 		if r >= 0xD800 && r <= 0xDFFF {
-			continue // surrogati: non sono UTF-8 valido
+			continue // surrogates: not valid UTF-8
 		}
 		s := string(r)
 		k := Key(s)
 		if again := Key(k); again != k {
-			t.Fatalf("Key non idempotente su U+%04X: %q -> %q -> %q", r, s, k, again)
+			t.Fatalf("Key not idempotent on U+%04X: %q -> %q -> %q", r, s, k, again)
 		}
-		// unicode.SimpleFold percorre l'orbita di case di r.
+		// unicode.SimpleFold walks the case orbit of r.
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 			if fk := Key(string(f)); fk != k {
-				t.Fatalf("U+%04X e U+%04X sono equivalenti a meno del case ma hanno chiavi diverse: %q vs %q",
+				t.Fatalf("U+%04X and U+%04X are equivalent up to case but have different keys: %q vs %q",
 					r, f, k, fk)
 			}
 		}
 	}
 }
 
-// TestKeyCherokee fissa il comportamento corretto sulle lettere cherokee,
-// il caso in cui cases.Fold() di golang.org/x/text non coincide con il full
-// case folding di Unicode.
+// TestKeyCherokee pins the correct behavior on Cherokee letters, the case in
+// which cases.Fold() from golang.org/x/text does not match Unicode full case
+// folding.
 func TestKeyCherokee(t *testing.T) {
 	tests := []struct {
-		maiuscola, minuscola string
-		vuoleChiave          rune
+		upper, lower string
+		wantKey      rune
 	}{
 		{"Ꮸ", "ꮸ", 0x13E8},
 		{"Ꭰ", "ꭰ", 0x13A0},
@@ -52,17 +52,17 @@ func TestKeyCherokee(t *testing.T) {
 		{"Ᏽ", "ᏽ", 0x13F5},
 	}
 	for _, tc := range tests {
-		want := string(tc.vuoleChiave)
-		if got := Key(tc.maiuscola); got != want {
-			t.Errorf("Key(%q) = %q (U+%04X), attesa U+%04X", tc.maiuscola, got, []rune(got)[0], tc.vuoleChiave)
+		want := string(tc.wantKey)
+		if got := Key(tc.upper); got != want {
+			t.Errorf("Key(%q) = %q (U+%04X), want U+%04X", tc.upper, got, []rune(got)[0], tc.wantKey)
 		}
-		if got := Key(tc.minuscola); got != want {
-			t.Errorf("Key(%q) = %q (U+%04X), attesa U+%04X", tc.minuscola, got, []rune(got)[0], tc.vuoleChiave)
+		if got := Key(tc.lower); got != want {
+			t.Errorf("Key(%q) = %q (U+%04X), want U+%04X", tc.lower, got, []rune(got)[0], tc.wantKey)
 		}
 	}
-	// Il caso reale: due album il cui nome differisce solo per il case
-	// devono occupare la stessa riga di path_claims.
+	// The real-world case: two albums whose names differ only in case must
+	// occupy the same path_claims row.
 	if FolderKey("Ꮸsa") != FolderKey("ꮸsa") {
-		t.Error("due varianti di case dello stesso nome hanno folder_key diverse")
+		t.Error("two case variants of the same name have different folder_key values")
 	}
 }
