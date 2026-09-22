@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -116,8 +117,8 @@ func checkRenameable(r *Root, rel string, dirfd int, name string) error {
 // DESIGN.md §3.1: at boot the application checks that library and work share
 // the filesystem. Equal st_dev is necessary but **not sufficient** for a
 // rename: two bind mounts of the same filesystem share st_dev, yet rename(2)
-// between them fails with EXDEV. [ProbeRenameExchange] is the authoritative
-// check and must run at boot as well.
+// between them fails with EXDEV. [SameMount] tells them apart, and
+// [ProbeRenameExchange] checks the primitive itself; boot runs both.
 func SameFilesystem(a, b *Root) (bool, error) {
 	da, err := a.Stat("")
 	if err != nil {
@@ -130,10 +131,73 @@ func SameFilesystem(a, b *Root) (bool, error) {
 	return da.Dev == db.Dev, nil
 }
 
+// SameMount reports whether two roots are on the same mount, by comparing
+// the mount ids that statx(2) reports (STATX_MNT_ID, Linux 5.8).
+//
+// DESIGN.md §3.1: all of /data is one filesystem with no nested mounts in
+// originals, library or work. Unlike [SameFilesystem], this also tells apart
+// two bind mounts of the same filesystem, which share st_dev but between
+// which rename(2) fails with EXDEV (N-032). A kernel that does not report
+// the mount id yields [CodeUnsupportedOp]: there is no fallback.
+func SameMount(a, b *Root) (bool, error) {
+	ma, err := a.mountID()
+	if err != nil {
+		return false, err
+	}
+	mb, err := b.mountID()
+	if err != nil {
+		return false, err
+	}
+	return ma == mb, nil
+}
+
+// mountID returns the id of the mount the root's directory lives on.
+func (r *Root) mountID() (uint64, error) {
+	var stx unix.Statx_t
+	if err := r.withFD("statx", "", func(fd int) error {
+		return retryEINTR(func() error {
+			return unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_SYMLINK_NOFOLLOW, unix.STATX_MNT_ID, &stx)
+		})
+	}); err != nil {
+		return 0, r.opErr("statx", "", err)
+	}
+	if stx.Mask&unix.STATX_MNT_ID == 0 {
+		return 0, errf(CodeUnsupportedOp, "statx", r.name, "",
+			"statx(2) does not report the mount id: Linux 5.8 or later is required")
+	}
+	return stx.Mnt_id, nil
+}
+
 // probeDirPrefix is the prefix of the probe's temporary directories. A
-// leftover after a crash during the probe is visible and harmless: doctor
-// reports it as an extra entry (§11.3).
+// leftover after a crash during the probe is removed at the next boot by
+// [RemoveProbeLeftovers] (N-033).
 const probeDirPrefix = ".musiclib-probe-"
+
+// RemoveProbeLeftovers removes the directories that an interrupted
+// [ProbeRenameExchange] left at the top of r, and returns their names.
+//
+// DESIGN.md §11.1 step 5 and N-033: the boot probe runs inside work/, and
+// the boot cleanup of work/ removes what a crash left behind. It must not
+// run while a probe on r is in progress: an in-flight probe directory looks
+// exactly like a leftover. Only directories with the probe prefix at the top
+// of r are touched.
+func RemoveProbeLeftovers(ctx context.Context, r *Root) ([]string, error) {
+	entries, err := r.ReadDir("")
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, e := range entries {
+		if e.Type != TypeDir || !strings.HasPrefix(e.Name, probeDirPrefix) {
+			continue
+		}
+		if err := r.RemoveAll(ctx, e.Name); err != nil {
+			return removed, err
+		}
+		removed = append(removed, e.Name)
+	}
+	return removed, nil
+}
 
 // ProbeRenameExchange checks on the real volume that renameat2 with
 // RENAME_EXCHANGE works between the two roots, as required by DESIGN.md §3.1.

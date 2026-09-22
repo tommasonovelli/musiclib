@@ -27,16 +27,17 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
-- [ ] Full repository layout (§2.3): the other packages are still missing
-- [~] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §11.1) — postgres verified; `app` behind the `app` profile, waiting for `cmd/musiclibd`
+- [ ] Full repository layout (§2.3): `cmd/musiclibd` and `internal/volume` (N-060) now exist; the other packages arrive with their phases
+- [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). TagLib and ffmpeg in the runtime image are Phase 2 (N-025)
 - [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
 - [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
 - [x] pgx pool with `WORKERS + 8` connections (§11.1) and UUIDv7 ids (§2.1) — `store.NewPool`, `store.NewID`
 - [x] Real PostgreSQL 17 for the tests (§12.1, N-024) — `postgres-test` service, `internal/store/pgtest`
 - [x] `internal/fsops`: confined primitives (`openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`, `renameat2`, fsync) (§10.4)
-- [ ] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1)
+- [x] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1) — `internal/volume`; maintenance marker read and enforced (§11.3)
 - [x] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
-- [ ] Boot checks: same filesystem, `RENAME_EXCHANGE` available (§3.1)
+- [x] Boot checks: same filesystem and mount, permissions, `RENAME_EXCHANGE` available (§3.1) — `volume.CheckFilesystem`
+- [x] `cmd/musiclibd`: environment configuration, umask 022, no root, JSON logs, boot steps 1, 2, 3, 5 (blob temporaries and probe leftovers) and 7, `/health/live` and `/health/ready`, `healthcheck` subcommand, graceful shutdown with the lock released last (§2.3, §6.1, §11.1). There is no worker pool yet: step 7 only turns readiness positive
 
 ## Phase 2 — First vertical slice (one FLAC album)
 
@@ -49,6 +50,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] `.musiclib.json` receipt (§9.2)
 - [ ] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3)
 - [ ] Journal recovery at startup (§9.4)
+- [ ] Boot steps 4 (journal recovery), 5 (running jobs back to pending, cleanup of `work/render` and `work/retired`), 6 (stale renders) and the worker pool of step 7, in the places marked in `cmd/musiclibd` `boot()` (§11.1); exit on database loss once workers exist (§6.4, N-070)
 - [ ] `internal/jobs`: claim, pool, completion (§6.2, §6.4)
 
 ## Phase 3 — Concurrency
@@ -143,6 +145,8 @@ Public API:
 | `SameFilesystem` / `ProbeRenameExchange` | `st_dev` comparison; real `RENAME_EXCHANGE` probe with content check, no fallback |
 | `Root.Lock` / `Lock.Close` | exclusive non-blocking `flock` (`fs_lock_busy`), `O_CLOEXEC` |
 | `Root.StatFS` | total and unprivileged-available bytes (§11.2) |
+| `SameMount` / `Root.CheckAccess` | mount id via statx `STATX_MNT_ID`; faccessat2 with `AT_EACCESS` (boot checks, N-063; Linux 5.8) |
+| `RemoveProbeLeftovers` | removes `.musiclib-probe-*` directories left by an interrupted probe (N-033) |
 | `FileType`, `FileInfo`, `DirEntry` | entry types (`IsSpecial`), identity (dev/ino), permissions |
 | `Error` / `Code` | stable `fs_*` codes plus the relative location(s); never an absolute path |
 
@@ -214,7 +218,7 @@ embeds it.
 | `NewPool(ctx, url, workers)` | pgx pool, `MaxConns = workers + 8` (§11.1); no global state |
 | `Migrate(ctx, pool)` | goose `Up` under a blocking `pg_advisory_lock` on a dedicated connection (N-053); refuses a newer schema, `store_schema_too_new` (N-054); safe at every boot |
 | `NewID()` | UUIDv7 row id, strictly increasing in-process (N-051) |
-| `New(db)` / `Queries` | sqlc: `GetStoreID`, `InsertStoreID` (idempotent first init, §11.1), `LockMigrations` |
+| `New(db)` / `Queries` | sqlc: `GetStoreID`, `InsertStoreID` (idempotent first init, §11.1), `CatalogIsEmpty` (N-069), `LockMigrations` |
 | `Error` / `Code` | `store_schema_too_new`, `store_migrate` |
 | `pgtest.EmptyDB` / `New` / `Pool` | the only place that knows where the test PostgreSQL comes from (N-024) |
 
@@ -241,6 +245,156 @@ each make a test fail.
 scripts/check.sh ./internal/store/...                     # gate, DB tests mandatory
 scripts/dev.sh go test -race -count=5 ./internal/store/...
 scripts/sqlc.sh                                           # regenerate after editing sql/ or migrations/
+```
+
+### `internal/volume` — lock, markers, identity, layout, boot checks (§2.2, §3.1, §11.1, §11.3) ✔
+
+The data volume `/data` as a whole, shared by the server's boot and the
+Phase 6 maintenance subcommands (N-060). Disk access goes only through
+`internal/fsops` and SQL only through `internal/store`.
+
+| Function | Role |
+|---|---|
+| `Acquire(path)` | `OpenRoot` + exclusive non-blocking `flock` on `.lock`; `volume_locked` if held |
+| `CheckMaintenance()` | reads `.maintenance`: `volume_maintenance_pending` with operation and store id, or `volume_maintenance_malformed`; only reads |
+| `Identify(ctx, pool)` | pairs `.musiclib-store` with `settings.store_id`; first init in the §11.1 order; refusals write nothing (table below) |
+| `OpenLayout()` | `originals/`, `library/`, `work/` created if missing, fsync of `/data` itself every time (N-037), opened as roots |
+| `CheckFilesystem()` | st_dev and mount id of the media directories equal to `/data`; `faccessat2` read/write; real `RENAME_EXCHANGE` probe in `work/` only (N-063) |
+| `Close()` | closes the media roots and `/data`, then releases the lock, last |
+| `Root`, `Originals`, `Library`, `Work`, `StoreID` | what the boot hands to later steps |
+| `Maintenance`, `ParseMaintenance`, `Maintenance.Encode`, `ParseStoreMarker`, `EncodeStoreMarker` | the strict marker format (N-067) |
+| `Error` / `Code` | stable `volume_*` codes; the fsops, pgx or parse cause is kept |
+
+| Marker | `store_id` | Media | Catalog (`store.CatalogIsEmpty`) | Outcome |
+|---|---|---|---|---|
+| id A | A | any | any | paired |
+| id A | B | any | any | `volume_store_mismatch` |
+| id A | none | any | any | `volume_db_uninitialized` |
+| none | any or none | empty (N-062) | empty | first init, or completion of an interrupted one (N-061) |
+| none | any or none | empty | not empty | `volume_marker_missing` (N-069) |
+| none | A | not empty | any | `volume_marker_missing` |
+| none | none | not empty | any | `volume_not_empty` |
+| malformed | | | | `volume_marker_malformed` |
+
+Tests run on real ext4 and real PostgreSQL 17, with no mocks:
+- first init, then repeated boots on the same pair, with the marker's bytes,
+  inode, mtime and ctime unchanged;
+- a child process killed with SIGKILL at each of 7 points of the first
+  initialization (N-061), then a successful retry;
+- a partial temporary;
+- a marker without store id, and the reverse on empty and on non-empty media;
+- a mismatch, refused twice and never rewritten;
+- 6 kinds of non-empty media × 2 database states;
+- an empty volume against a database with catalog content (a blob, an
+  artist, an album, an import batch or a scan job; with and without a store
+  id): refused, and nothing is written to either side (N-069);
+- 17 malformed markers (a directory, a symlink to a valid marker and a FIFO
+  among them);
+- the maintenance marker, valid and malformed, which blocks the boot before
+  anything is written;
+- lock exclusion checked with a real second process;
+- `Close` makes every root unusable and frees the lock;
+- step order enforced, and database errors.
+
+Boot-check tests, with the gaps listed in N-063:
+- cross-device with `/dev/shm`;
+- a nested mount of the same filesystem, using a sibling named volume in the
+  gate;
+- permissions on each directory;
+- probe failures injected.
+
+Mutation-checked: removing the emptiness check, removing the catalog check
+or dropping its `blobs`, `artists` or `import_batches` clause (N-069 explains
+why the `albums` clause is redundant), adopting on mismatch,
+adopting a marker without store id, keeping a leftover temporary, writing the
+marker before the database, a lenient UUID parser, ignoring the maintenance
+marker, dropping the mount, permission or probe-location checks, and not
+releasing the lock. Each of these makes a test fail.
+
+```sh
+scripts/check.sh ./internal/volume/...
+scripts/dev.sh go test -race -count=20 ./internal/volume/
+```
+
+### `cmd/musiclibd` — the server's boot, health and shutdown (§2.3, §6.1, §10.4, §11.1) ✔
+
+`musiclibd` runs the server. `musiclibd healthcheck` queries `/health/ready`
+and exits 0 or 1. Any other argument is a usage error (exit 2). The Phase 6
+subcommands are not there yet.
+
+Configuration comes from the environment only, and every problem is reported
+at once (`config_invalid`, exit 2):
+- `DATABASE_URL`: required, parsed by pgx. It is never logged and its parse
+  error is withheld (N-064).
+- `PUBLIC_ORIGIN`: required. It must be exactly the canonical origin a browser
+  sends: http/https, lowercase ASCII host, no default port, no path, not even
+  a trailing slash.
+- `HTTP_ADDR`: default `:8080`, port 1..65535.
+- `WORKERS`: default `max(1, min(4, GOMAXPROCS))` (N-066), plain decimal
+  1..16.
+- Paths are fixed: `/data` and `/import`.
+
+Before the boot, the server sets umask 022, refuses uid 0 (`run_as_root`) and
+logs JSON on stderr.
+
+`boot()` is the §11.1 sequence, one small function per step:
+
+| Step | Now | Phase 2 |
+|---|---|---|
+| 1 | HTTP serving with negative readiness; `volume.Acquire` | |
+| (N-065) | `CheckMaintenance`, before anything touches the database | |
+| 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` | |
+| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `/import` listable | |
+| 4 | — | journal recovery |
+| 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)` | running → pending; `work/render`, `work/retired` |
+| 6 | — | enqueue stale renders |
+| 7 | readiness positive | start the worker pool |
+
+- `/health/live` is always 200.
+- `/health/ready` is 503 `not_ready` until step 7 and during shutdown. After
+  that it pings PostgreSQL on each request with a 2 s timeout, and answers
+  503 `db_unavailable` when the database is down (N-070).
+- Both endpoints are GET only, answer JSON with `Cache-Control: no-store`,
+  and every other route is 404.
+- A refused boot logs its stable `code` and exits 1 (N-068).
+- On SIGTERM or SIGINT the server stops accepting HTTP (graceful, 10 s),
+  closes the pool, then closes the volume's roots and releases the flock,
+  last. It exits 0.
+
+Tests use real PostgreSQL 17 and ext4, with no mocks:
+- **Readiness lifecycle.** The database refuses connections at first: live is
+  200, ready is `not_ready`, the lock is held and nothing is written. Once the
+  database is allowed, ready turns 200. When the database goes away, ready is
+  `db_unavailable` and live stays 200; when it comes back, ready is 200 again.
+- **Shutdown order.** The shutdown events come in order, then the lock is
+  free and nothing answers any more.
+- **Stop during the wait.** Stopping while waiting for PostgreSQL is a clean
+  stop that writes nothing.
+- **Restart.** Restarting on the same pair keeps the store id.
+- **Refusals.** Maintenance (refused with an unreachable database),
+  malformed maintenance, mismatch, new database, lock held, missing `/data`
+  and missing `/import`: each gives its code, never turns ready, and releases
+  the lock.
+- **Step 5 cleanup.** Only temporaries and probe directories are removed.
+- **Configuration.** 40 table cases, all problems reported at once, the
+  password absent from errors and logs, and the `WORKERS` default.
+- **Healthcheck.** Exit codes for 200, 503, 500, a redirect (not followed),
+  nothing listening and an invalid `HTTP_ADDR`; loopback substitution.
+- **Real child processes.** The server becomes healthy, sets umask 022 over
+  an inherited 077, and keeps its lock against the test process and against a
+  second server (which exits 1 with `volume_locked`). SIGTERM and SIGINT give
+  exit 0 with the lock released last. The database password never appears in
+  its logs.
+
+Mutation-checked: the maintenance check moved after the database wait, the
+pool closed after the lock, no umask, readiness positive without the
+database, readiness never positive, redirects followed, root allowed, and a
+`WORKERS` default of 2. Each makes a test fail.
+
+```sh
+scripts/check.sh ./cmd/...
+scripts/dev.sh go test -race -count=20 ./cmd/musiclibd/
+docker compose --profile app up -d --build --wait     # docs/docker.md
 ```
 
 ---

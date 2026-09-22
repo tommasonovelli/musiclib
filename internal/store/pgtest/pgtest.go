@@ -69,6 +69,29 @@ func Pool(t testing.TB, databaseURL string) *pgxpool.Pool {
 	return pool
 }
 
+// AdminExec runs one statement on the server's maintenance database, for
+// tests that act on a database from outside it: for example making it
+// refuse connections (ALTER DATABASE ... ALLOW_CONNECTIONS false) to check
+// how the application behaves when PostgreSQL goes away.
+func AdminExec(t testing.TB, sql string) {
+	t.Helper()
+	base := os.Getenv(envURL)
+	if base == "" {
+		t.Fatalf("%s is unset: call EmptyDB first, which skips without it", envURL)
+	}
+	admin(t, base, sql)
+}
+
+// DBName returns the database name of a URL returned by EmptyDB.
+func DBName(t testing.TB, databaseURL string) string {
+	t.Helper()
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimPrefix(u.Path, "/")
+}
+
 // admin runs one statement on the server's maintenance database. It does not
 // use t.Context: cleanups run after that context is canceled.
 func admin(t testing.TB, base, sql string) {

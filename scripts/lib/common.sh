@@ -14,6 +14,16 @@ info() {
 }
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+# Git Bash (MSYS) on Windows rewrites every argument that looks like a POSIX
+# path before it reaches docker.exe (`--workdir /src` becomes
+# `C:/Program Files/Git/src`). Turn that off, and give Docker the native
+# Windows form of the repository path instead (NOTES.md N-059).
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    export MSYS_NO_PATHCONV=1
+    REPO_ROOT="$(cd -- "${REPO_ROOT}" && pwd -W)"
+    ;;
+esac
 readonly REPO_ROOT
 
 command -v docker >/dev/null 2>&1 \

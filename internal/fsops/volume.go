@@ -46,6 +46,32 @@ func (r *Root) StatFS() (FSInfo, error) {
 	}, nil
 }
 
+// CheckAccess checks that the process, with its effective uid and gid, may
+// list and traverse the root's directory and, if write is set, create and
+// remove entries in it. It runs faccessat2(2) with AT_EACCESS on the root
+// descriptor. A missing permission yields [CodePermission]; a read-only
+// mount yields [CodeReadOnly] (the kernel checks the permission bits first,
+// so a directory that is also not writable by its bits reports
+// [CodePermission]).
+//
+// DESIGN.md §11.1 step 3: boot verifies the permissions it needs before any
+// work starts, instead of failing at the first write of a job. It needs
+// Linux 5.8 (faccessat2); an older kernel yields [CodeUnsupportedOp].
+func (r *Root) CheckAccess(write bool) error {
+	mode := uint32(unix.R_OK | unix.X_OK)
+	if write {
+		mode |= unix.W_OK
+	}
+	if err := r.withFD("faccessat2", "", func(fd int) error {
+		return retryEINTR(func() error {
+			return unix.Faccessat2(fd, "", mode, unix.AT_EMPTY_PATH|unix.AT_EACCESS)
+		})
+	}); err != nil {
+		return r.opErr("faccessat2", "", err)
+	}
+	return nil
+}
+
 // Lock is an exclusive flock on a file of the root, held until it is
 // released with [Lock.Close].
 type Lock struct {

@@ -2,7 +2,7 @@
 # containerized development toolchain. See docs/docker.md.
 #
 #   docker compose up -d                       postgres only (no profile)
-#   docker compose --profile app up -d         + app (needs ./cmd/musiclibd)
+#   docker compose --profile app up -d         + app (the server, musiclibd)
 #   scripts/check.sh                           full gate in the `test` service
 #                                              (+ postgres-test on tmpfs)
 #   scripts/dev.sh                             shell in the `dev` service
@@ -79,8 +79,10 @@ services:
     networks: [testdb]
 
   # -------------------------------------------------------------------------
-  # The application (DESIGN.md §11.1). Behind a profile because ./cmd/musiclibd
-  # does not exist yet: plain `docker compose up` / `build` must not build it.
+  # The application (DESIGN.md §11.1). Behind the `app` profile so that the
+  # development workflow (`docker compose up` for the database, the `tools`
+  # services) never builds or starts it by accident; deploy with
+  # `docker compose --profile app up -d` (docs/docker.md).
   app:
     profiles: [app]
     build:
@@ -102,7 +104,8 @@ services:
       DATABASE_URL: postgres://musiclib:${POSTGRES_PASSWORD:-musiclib}@postgres:5432/musiclib?sslmode=disable
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:${MUSICLIB_PORT:-8080}}
       HTTP_ADDR: ":8080"
-      WORKERS: ${WORKERS:-2}
+      # Empty means the default of DESIGN.md §6.1: max(1, min(4, CPUs)).
+      WORKERS: ${WORKERS:-}
     ports:
       # DESIGN.md §10.4: loopback by default; LAN access needs an explicit
       # MUSICLIB_BIND (and a matching PUBLIC_ORIGIN).
@@ -122,8 +125,17 @@ services:
         condition: service_healthy
     # DESIGN.md §11.1: a prepared publication gets up to 30 s to finish.
     stop_grace_period: 45s
-    # TODO(phase 1): healthcheck on /health/ready once musiclibd exists; the
-    # slim image has no curl, so it should be a `musiclibd` subcommand.
+    # The slim image has no curl: the subcommand queries /health/ready on
+    # HTTP_ADDR and exits 0 or 1 (N-027). It takes no lock and starts nothing.
+    # start_period covers the boot: waiting for PostgreSQL, migrations and
+    # the volume checks (DESIGN.md §11.1).
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/musiclibd", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 1s
 
   # -------------------------------------------------------------------------
   # Hermetic gate: tests a read-only snapshot of the sources baked into the

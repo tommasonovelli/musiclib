@@ -150,9 +150,12 @@ x/text's Unicode tables feed `names.Key` (§5.2, frozen algorithm): the bump
 needs the exhaustive code-point test and possibly a key migration. Decide
 before the first real import.
 
-### N-020 · `musiclibd` must set umask 022 itself — OPEN
+### N-020 · `musiclibd` must set umask 022 itself — RESOLVED
 Docker's default is 0022, but a different runtime or `--entrypoint` may
-change it. `musiclibd` calls `unix.Umask(0o022)` at startup (§11.1).
+change it. `musiclibd` calls `unix.Umask(0o022)` at the start of the server
+(`serve`, §11.1). `TestServerProcessLifecycle` starts the server as a child
+process with umask 077 and reads `Umask: 0022` from its `/proc/<pid>/status`;
+removing the call makes it fail. Verified in the Compose `app` container too.
 
 ### N-021 · initdb with data checksums and the builtin C.UTF-8 locale — RESOLVED
 Reverted to image defaults: not in DESIGN.md. `POSTGRES_INITDB_ARGS` was
@@ -193,12 +196,18 @@ launcher later touches only that helper.
 pinned by sha256. TagLib 2.x: source tarball pinned by sha256, built on the
 runtime's Debian release. Both feed `render_version`.
 
-### N-026 · `WORKERS` default = 2 — TO CONFIRM
-§11.1 gives no default.
+### N-026 · `WORKERS` default — RESOLVED
+The old entry said "§11.1 gives no default; default = 2, TO CONFIRM". That was
+wrong: §6.1 defines it, `max(1, min(4, CPU disponibili))`, allowed 1..16.
+`compose.yaml` now passes `WORKERS: ${WORKERS:-}`, and an empty value means
+the §6.1 default, computed by `musiclibd` (N-066 for "available CPUs").
 
-### N-027 · App healthcheck — OPEN
-The slim image has no curl: the Compose healthcheck on `/health/ready` needs
-a `musiclibd healthcheck` subcommand.
+### N-027 · App healthcheck — RESOLVED
+The slim image has no curl. `musiclibd healthcheck` reads only `HTTP_ADDR`,
+turns an empty or unspecified host into loopback, GETs `/health/ready` with
+a 3 s timeout, no proxy and no redirects, and exits 0 for 200 and 1 for
+anything else (Docker defines only those two). It takes no lock and starts
+nothing (§11.3). Compose uses it with `start_period: 120s`.
 
 ### N-028 · Named `/data` volume on a native Engine — ACCEPTED
 It is ext4 only if Docker's root directory is. The §3.1 boot check (same
@@ -270,13 +279,23 @@ that has already resolved its own descriptors (a long `RemoveAll`) keeps
 running after `Root.Close`; it is stopped by its context. Shutdown (§11.1)
 must cancel contexts, not rely on `Close`.
 
-### N-032 · `SameFilesystem` (st_dev) is necessary, not sufficient — OPEN (boot sequence)
+### N-032 · `SameFilesystem` (st_dev) is necessary, not sufficient — RESOLVED
 Two bind mounts of the same filesystem share `st_dev`, but `rename(2)` between
 them fails with `EXDEV`. This is exactly the Docker case if `library` and `work`
 were ever separate bind mounts. `ProbeRenameExchange` does a real exchange and
 catches it (`fs_cross_device`), so **boot (§11.1 step 3) must run the probe,
 not only `SameFilesystem`**. The bind-mount case is not covered by a test: it
 needs mount privileges. A candidate for the ext4 Docker test volume.
+
+**Resolution (2026-09-22):** the boot compares st_dev *and* the mount id
+(`fsops.SameMount`, statx `STATX_MNT_ID`) of `/data` with each media
+directory, and runs the real probe in `work/` (N-033, N-063). The case is now
+tested without privileges: in the Docker gate the Go build cache and the ext4
+TMPDIR are two named volumes on one disk, so they share st_dev but not the
+mount. `TestSameMountSeesBindMountsOfOneFilesystem` checks that
+`SameFilesystem` says yes, `SameMount` says no and the probe fails with
+`fs_cross_device`; `TestCheckFilesystemNestedMount` checks the boot code
+`volume_nested_mount`. Both skip only where no such mount is visible.
 
 ### N-033 · Probe directories inside `library/` — DECIDED
 **Decision (2026-09-21, owner rule "stick to DESIGN.md"):** §3.1 only requires checking that `renameat2(RENAME_EXCHANGE)` works; the probe runs inside `work/`, never in `library/`, which is output only (§3.3). Leftover probe directories in `work/` are removed by the boot cleanup of `work/` (§11.1 step 5).
@@ -288,6 +307,12 @@ leaves it behind. To decide: whether boot or doctor (§11.3) should remove
 leftovers with this prefix automatically (the recommendation is yes, at boot
 before the probe), or whether the probe should run between `work/` and a
 dedicated directory on the same mount.
+
+**Implemented (2026-09-22):** the boot runs `fsops.ProbeRenameExchange(work,
+work)`: both probe directories are in `work/`, and the mount-id check proves
+that `library/` is on the same mount (N-063). Step 5 of the boot removes
+leftover `.musiclib-probe-*` directories at the top of `work/` with
+`fsops.RemoveProbeLeftovers`, after the probe of step 3 has finished.
 
 ### N-034 · The flock inheritance test proved nothing — RESOLVED
 The old `TestLockNotInheritedByChildren` released the lock in the parent and
@@ -343,8 +368,9 @@ ext2/3/4 magic `0xEF53`. Skipped where the privilege is missing:
 the device subtest (needs `CAP_MKNOD`); `TestRenameAcrossFilesystems` if
 no second filesystem (`/dev/shm`, `/run/user`) is writable;
 `TestProbeRenameExchangeCleansUpOnFailure` and the partial-failure branch of
-`TestMkdirAndMkdirAll` when running as root (permissions are bypassed). A test
-for "different bind mounts, same `st_dev`" (N-032) is missing.
+`TestMkdirAndMkdirAll` when running as root (permissions are bypassed). The
+"different bind mounts, same `st_dev`" case (N-032) is now tested where such
+a mount is visible: always in the Docker gate, skipped on a plain host.
 Docker gate (`scripts/check.sh`, uid 1000, no capabilities, TMPDIR on the
 ext4 `testdata` volume): passes; only the device subtest skips.
 `scripts/dev.sh go test -race -count=20`: 20/20.
@@ -536,3 +562,293 @@ A test run killed before its cleanups leaves `musiclib_test_*` databases on
 `postgres-test`. Nothing reuses them. The server's data is tmpfs, so
 `docker compose --profile tools stop postgres-test` removes them all.
 
+
+---
+
+## Volume, boot and `musiclibd` (2026-09-22)
+
+### N-059 · The Windows checkout had CRLF line endings, and Git Bash rewrote container paths — RESOLVED
+The system Git config has `core.autocrlf=true`, so the working tree was
+checked out with CRLF. Every shell script failed in the containers
+(`env: 'bash\r'`), and gofmt would have rejected every Go file. A new
+`.gitattributes` (`* text=auto eol=lf`) forces LF on every checkout. The index
+was already LF, so no committed file changes.
+
+Separately, Git Bash (MSYS) rewrites arguments that look like POSIX paths
+before they reach `docker.exe`. `scripts/check.sh` failed at `sqlc diff` with
+`--workdir C:/Program Files/Git/src`. `scripts/lib/common.sh` now sets
+`MSYS_NO_PATHCONV=1` under MSYS/Cygwin and gives Docker the native form of the
+repository path (`pwd -W`). Nothing changes on Linux.
+
+### N-060 · The volume code lives in a new package, `internal/volume` — DECIDED
+§2.3 lists no package for the volume lock, the markers and the boot checks.
+Two consumers need the same code:
+- `cmd/musiclibd`, for the server's boot;
+- the Phase 6 maintenance subcommands. Doctor, rebuild, backup and restore
+  take the same lock, read the same markers and must recognize the same
+  identity (§11.3, §11.4).
+
+The alternatives do not work:
+- In `cmd/musiclibd`, `internal/maintenance` would have to import a `main`
+  package, which Go forbids.
+- In `internal/maintenance`, the server would depend on the maintenance
+  package.
+- In `internal/fsops`, the filesystem primitives would know about the
+  database and the domain (§13.2).
+
+So, as with `internal/names` (N-008), it is its own small package:
+`Acquire`, `CheckMaintenance`, `Identify`, `OpenLayout`, `CheckFilesystem`,
+`Close`, the marker formats, and typed errors with stable `volume_*` codes.
+It touches the disk only through `internal/fsops` and the database only
+through `internal/store`.
+
+### N-061 · First initialization: order and crash windows — DECIDED
+§11.1: "si crea `settings.store_id` in transazione e poi il marker di volume
+con scrittura durevole no-replace ... La procedura è ripetibile se il primo
+avvio si interrompe." When the volume has no marker, `volume.Identify` does:
+
+1. Check that the media storage is empty (N-062). Otherwise refuse, writing
+   nothing.
+2. In one transaction: `InsertStoreID(new)` (ON CONFLICT DO NOTHING), read
+   the id back with `GetStoreID`, commit.
+3. Remove a leftover `.musiclib-store.tmp`, create it exclusively (mode 0444),
+   write `store_id=<uuid>\n`, fsync, close.
+4. `renameat2(RENAME_NOREPLACE)` it to `.musiclib-store`.
+5. fsync `/data`.
+
+Then `OpenLayout` creates `originals/`, `library/` and `work/` and fsyncs
+`/data`. It fsyncs every time, not only when it created something.
+
+The database goes first. A crash can then leave only "store_id, no marker,
+empty media", which step 1 lets the next boot complete. The other order could
+leave "marker, no store_id", which cannot be told apart from a foreign volume
+and must be refused. The rename makes the marker appear complete or not at
+all, so a crash can never leave a truncated marker that blocks every later
+boot.
+
+`TestFirstInitInterruptedAtEveryStep` tests each crash window. It kills a
+child process with SIGKILL at a named failpoint, checks the intermediate
+state, then boots again:
+
+| Killed at | State left | Next boot |
+|---|---|---|
+| `media_checked` | nothing | first init |
+| `db_inserted` (inside the transaction) | nothing: PostgreSQL rolls back | first init |
+| `db_committed` | store_id, no marker | completes the marker with that id |
+| `marker_temp_synced` | store_id, complete temporary | removes it, rewrites, renames |
+| `marker_renamed` (before the fsync of `/data`) | marker | paired |
+| `marker_synced` | marker, no layout | paired, creates the layout |
+| `layout_created` (before the fsync of `/data`) | marker, layout | paired, fsyncs again |
+
+A temporary with arbitrary partial content is also tested. Killing a process
+does not lose the page cache, so the fsync ordering is argued, not tested
+against a power cut (the same limit as N-044).
+
+### N-062 · What "empty media storage" means — DECIDED
+§11.1 allows completing a missing marker only "su storage media vuoto". The
+media storage is `originals/`, `library/` and `work/` (§3.1). It is empty when
+each of the three is either absent or a directory with no entries at all.
+
+Anything else counts as not empty:
+- a file, a symlink or a special file at one of those names;
+- any entry inside them, including an empty subdirectory and `work/blobs/`.
+
+Other entries at the top of `/data` are not media and are ignored:
+`lost+found` on a dedicated ext4 filesystem, `.lock`, the marker temporary.
+
+A refusal is `volume_not_empty` when the database has no store id either,
+and `volume_marker_missing` when it has one. Neither writes anything.
+
+Empty media is necessary, not sufficient. The database must also have no
+catalog content, otherwise the boot is refused with `volume_marker_missing`
+(N-069).
+
+### N-063 · Boot checks of the filesystem, new fsops primitives and test gaps — DECIDED
+`Volume.CheckFilesystem` (§3.1, §11.1 step 3) runs, in this order:
+1. The st_dev of `/data` equals that of `originals/`, `library/` and `work/`
+   (`volume_cross_device`), and so does the mount id (`volume_nested_mount`).
+   This covers "Nessun mount annidato" and N-032.
+2. `faccessat2(R_OK|W_OK|X_OK, AT_EACCESS)` on `/data` and the three
+   directories (`volume_permission`, also for a read-only mount).
+3. `ProbeRenameExchange(work, work)`. `fs_unsupported_operation` and
+   `fs_cross_device` become `volume_rename_exchange_unsupported`.
+
+After that, `/import` must open and be listable (`import_unavailable`). It is
+not checked for being read-only or a separate mount: §3.1 describes both but
+does not list them among the boot checks.
+
+New in `internal/fsops`:
+- `SameMount`, using statx `STATX_MNT_ID`;
+- `Root.CheckAccess`, using faccessat2 with `AT_EMPTY_PATH`;
+- `RemoveProbeLeftovers`.
+
+The first two need **Linux 5.8** (openat2 already needed 5.6). Ubuntu 24.04
+ships 6.8, so this is within §2.1. On an older kernel the boot fails with a
+clear message, never silently.
+
+Tested for real:
+- cross-device, with `/dev/shm`;
+- a nested mount of the same filesystem, with a sibling named volume in the
+  gate;
+- permissions, with chmod;
+- a read-only mount: the gate's read-only root, where `$HOME` belongs to the
+  test user. When the permission bits also deny the write, the kernel reports
+  EACCES before EROFS.
+
+Injected: a filesystem without `RENAME_EXCHANGE`, through the package
+variable `probeRenameExchange`, because producing one needs mount privileges.
+
+Not tested: an older kernel without statx mount ids or faccessat2.
+
+### N-064 · `DATABASE_URL` never reaches the logs — DECIDED
+- The configuration is logged through `Config.LogValue`, which leaves
+  `DATABASE_URL` out.
+- A `DATABASE_URL` that pgx cannot parse is reported without pgx's message:
+  pgx redacts passwords in parse errors only "on a best effort basis" for
+  malformed input.
+- Connection errors are logged while the boot waits for PostgreSQL. pgx names
+  host, user and database there, never the password.
+
+`TestServerProcessLifecycle` checks that the test database's password never
+appears in the logs of a full run. The configuration tests check the error
+messages.
+
+### N-065 · The maintenance marker is checked right after the lock, before the database — DECIDED
+§11.1 lists "assenza del marker di manutenzione" in step 3, after the
+migrations of step 2. The boot checks it right after taking the lock instead,
+before waiting for PostgreSQL and before migrating. An interrupted restore can
+leave a partially restored database, and nothing (migrations, store id) may
+write to either side until the maintenance operation is repeated. This order
+is the more conservative one and changes nothing else.
+`TestBootRefusals/maintenance_marker` proves the order: the boot is refused at
+once even with an unreachable database.
+
+### N-066 · "Available CPUs" for the `WORKERS` default is `runtime.GOMAXPROCS(0)` — DECIDED
+§6.1 says `max(1, min(4, CPU disponibili))`. Since Go 1.25, GOMAXPROCS
+defaults to the CPU limit of the container's cgroup as well as the affinity
+mask. It is therefore the number of CPUs the process can actually use, while
+`runtime.NumCPU` ignores a Compose `cpus:` limit. A `GOMAXPROCS` environment
+variable would also change it; nothing sets one.
+
+### N-067 · Formats of `/data/.musiclib-store` and `/data/.maintenance` — DECIDED
+§11.3 says only that the maintenance marker holds "operazione e store_id".
+Both markers use one strict text format:
+- fixed `key=value` lines, in a fixed order, each ending in `\n`;
+- nothing else: no spaces, CR, comments, extra or missing keys;
+- at most 512 bytes;
+- the store id in canonical lowercase UUID form, not nil.
+
+```text
+.musiclib-store   store_id=<uuid>\n
+.maintenance      operation=<rebuild|restore>\nstore_id=<uuid>\n
+```
+
+Anything else at those names is `volume_marker_malformed` or
+`volume_maintenance_malformed`: a directory, a symlink (never followed), a
+FIFO (never waited on). Both block the boot. The server never rewrites or
+removes either file. `volume.Maintenance.Encode` is the writer the Phase 6
+subcommands must use.
+
+### N-068 · A refused boot exits 1, and Docker restarts it in a loop — DECIDED
+Every failed boot check is fatal:
+1. the error is logged once, with its stable `code`;
+2. everything acquired is released: HTTP, then the pool, then the lock last;
+3. the process exits 1, or 2 for an invalid configuration or uid 0.
+
+With `restart: unless-stopped`, Docker restarts it with its own backoff. The
+error repeats in `docker compose logs` and the container stays unhealthy.
+No attempt writes anything.
+
+Staying alive with negative readiness was considered and rejected: it would
+hold the volume lock and keep the maintenance commands out, and the refusals
+do not go away by themselves. Waiting for PostgreSQL is the one condition
+retried inside the process (§11.1 step 2).
+
+### N-069 · An empty volume is never paired with a database that has catalog content — RESOLVED
+**Found in review (2026-09-22).** The first version completed a missing
+marker whenever the media storage was empty. A new, empty volume started
+against a database already in use therefore silently adopted that
+database's store id. A mistyped `/data` mount is enough to cause it: imports
+then go to the wrong volume, and the originals end up split across two
+volumes that both claim the same store. This violates §2.2 ("rifiutare
+accoppiamenti sbagliati").
+
+The §11.1 sentence "un marker assente si può completare soltanto su storage
+media vuoto" states a necessary condition, not a sufficient one. Its purpose
+is to make an *interrupted first boot* repeatable, and an interrupted first
+boot never leaves catalog content behind: nothing can be imported, uploaded
+or queued before the boot has completed.
+
+**Resolution.** Completing a missing marker now needs both conditions:
+- empty media storage (N-062);
+- a database in its first-initialization state, checked by the sqlc query
+  `store.CatalogIsEmpty` (`sql/settings.sql`): no row in `blobs`, `artists`,
+  `albums`, `import_batches` or `jobs`.
+
+Otherwise the boot is refused with `volume_marker_missing`, before the store
+id transaction, and nothing is written to the volume or the database. The
+check applies whether or not the database has a store id.
+
+The other catalog tables all need one of those five: tracks, attachments and
+path claims need an album or an artist, and the publication journal needs an
+album. `albums` and `jobs` are also implied by `artists` and
+`import_batches`: every album has an artist (`artist_id` NOT NULL), and every
+job references an album or a batch (§4.2 combinations). They stay in the
+query to state the intent. That is also why a mutation that drops only the
+`albums` clause survives the test; dropping `blobs`, `artists` or
+`import_batches` does not, nor does removing the check.
+
+`TestEmptyVolumeRefusedWithCatalogContent` covers a blob, an artist, an
+album, an import batch and a scan job. Each is tested with and without a
+store id, on empty media. It checks the code, the unchanged store id, and
+that the volume holds only `.lock` afterwards.
+
+**What remains.** Two servers started on the same new database at the same
+time, each with its own empty volume, can both pass the check before either
+has imported anything. Both volumes then carry the same store id, and later
+imports could land on either. §2.2 already excludes this ("una sola istanza
+dell'applicazione per volume e database"). The flock enforces it per volume
+only; nothing enforces one server per database. This is a narrow race at
+first installation, not the mount mistake above.
+
+### N-070 · Readiness follows the database, and the process does not exit when it goes away — DECIDED
+`/health/ready` is 200 only after step 7, and only if a `Ping` through the
+pool succeeds within 2 s. Otherwise it answers 503 with `{code, message}`:
+`not_ready` or `db_unavailable` (§10.1).
+
+§6.4 says that losing the database stops the workers and restarts the process
+through Docker, "per evitare una seconda macchina a stati per riconnettere
+worker parzialmente attivi". Phase 1 has no workers and no mutations, so there
+is nothing to protect. The process keeps running, and readiness turns
+negative and positive again with the database (`TestBootReadinessLifecycle`).
+Phase 2 must add the §6.4 exit when the workers arrive.
+
+### N-071 · Docker: the `app` service, and a Dockerfile ARG bug — RESOLVED
+`build-app` used `${DEV_UID}` in its cache mount, but that ARG was declared
+only in the `toolchain` stage, and a stage sees only the ARGs it declares. The
+global default is now declared before the first `FROM` and redeclared in the
+stages that use it.
+
+`app` now has the healthcheck `musiclibd healthcheck` (N-027), and `WORKERS`
+is empty by default (N-026). It stays behind the `app` profile, so the
+development workflow never builds it by accident. Deploying is
+`docker compose --profile app up -d`.
+
+Verified end to end on Docker Desktop, with a separate project name
+(`-p musiclib-e2e`, `MUSICLIB_PORT=18080`):
+- the app became healthy and `/health/ready` answered 200;
+- `/data` had `.lock`, the 0444 marker and the three directories, all owned
+  by uid 1000;
+- the process umask was 0022;
+- a restart kept the store id;
+- a recreated database was refused (`volume_db_uninitialized`), and so was a
+  database with another store id (`volume_store_mismatch`). Both were refused
+  in a restart loop, and the marker stayed unchanged: same bytes, inode and
+  mtime.
+
+### N-072 · `/data` is not checked for being ext4 — DECIDED
+§3.1 says ext4 and Linux are requirements and lists what the boot verifies:
+the same filesystem and a working `RENAME_EXCHANGE`. The boot checks exactly
+that, plus mounts and permissions. XFS, Btrfs and tmpfs also pass. There is no
+filesystem-type check to refuse them: DESIGN.md does not ask for one, and
+statfs cannot tell ext4 from ext2/ext3. The docs recommend ext4 (N-028).

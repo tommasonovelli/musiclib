@@ -1,0 +1,164 @@
+// Command musiclibd is the musiclib server (DESIGN.md §2.3, §11.1).
+//
+//	musiclibd              run the server
+//	musiclibd healthcheck  query /health/ready on HTTP_ADDR; exit 0 or 1
+//
+// Configuration comes only from the environment (§11.1): DATABASE_URL,
+// PUBLIC_ORIGIN, HTTP_ADDR (default ":8080") and WORKERS (default
+// max(1, min(4, CPUs)), 1..16, §6.1). The data volume is always /data and the
+// import source always /import. Logs are JSON lines on stderr.
+//
+// Subcommands never start the server and, except for healthcheck, take the
+// volume lock (§11.3); the maintenance subcommands arrive in Phase 6.
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"os/signal"
+	"runtime"
+
+	"golang.org/x/sys/unix"
+
+	"musiclib/internal/blobstore"
+	"musiclib/internal/fsops"
+	"musiclib/internal/store"
+	"musiclib/internal/volume"
+)
+
+// Fixed internal paths (§11.1). Only the tests use others, through paths.
+const (
+	dataPath   = "/data"
+	importPath = "/import"
+)
+
+// Exit codes. healthcheck only ever uses 0 and 1, the two values Docker
+// defines for a healthcheck.
+const (
+	exitOK      = 0
+	exitFailure = 1 // fatal boot or runtime error
+	exitUsage   = 2 // bad command line, invalid configuration, running as root
+)
+
+// paths are the two host paths the server knows (§3.1, §11.1).
+type paths struct {
+	data    string
+	imports string
+}
+
+func main() {
+	os.Exit(musiclibd(os.Args[1:], os.Getenv, os.Stderr))
+}
+
+func musiclibd(args []string, getenv func(string) string, stderr io.Writer) int {
+	log := slog.New(slog.NewJSONHandler(stderr, nil))
+	switch {
+	case len(args) == 0:
+		return serve(log, getenv, paths{data: dataPath, imports: importPath})
+	case len(args) == 1 && args[0] == "healthcheck":
+		return healthcheck(log, getenv)
+	default:
+		log.Error("usage: musiclibd [healthcheck]", "code", "usage", "args", args)
+		return exitUsage
+	}
+}
+
+// serve runs the server until SIGTERM or SIGINT.
+func serve(log *slog.Logger, getenv func(string) string, p paths) int {
+	// §11.1 and N-020: whatever the runtime or entrypoint set.
+	unix.Umask(0o022)
+	if err := checkNotRoot(os.Geteuid()); err != nil {
+		logFatal(log, err)
+		return exitUsage
+	}
+	// GOMAXPROCS is the number of CPUs available to the process: since Go
+	// 1.25 it honors the cgroup CPU limit as well as the affinity (N-066).
+	cfg, err := loadConfig(getenv, runtime.GOMAXPROCS(0))
+	if err != nil {
+		logFatal(log, err)
+		return exitUsage
+	}
+	log.Info("starting", "config", cfg)
+
+	ctx, stop := signal.NotifyContext(context.Background(), unix.SIGTERM, unix.SIGINT)
+	defer stop()
+	ln, err := net.Listen("tcp", cfg.HTTPAddr)
+	if err != nil {
+		logFatal(log, &bootError{code: codeHTTP, msg: "cannot listen on " + cfg.HTTPAddr, err: err})
+		return exitFailure
+	}
+	if err := run(ctx, cfg, p, ln, log); err != nil {
+		logFatal(log, err)
+		return exitFailure
+	}
+	log.Info("stopped")
+	return exitOK
+}
+
+// checkNotRoot refuses uid 0 (§11.1: "niente esecuzione come root"): root
+// bypasses the permission checks the boot relies on and would create files
+// the configured user cannot touch later.
+func checkNotRoot(euid int) error {
+	if euid == 0 {
+		return &bootError{code: codeRoot, msg: "musiclibd must not run as root: " +
+			"set an unprivileged user (Compose `user: UID:GID`, DESIGN.md §11.1)"}
+	}
+	return nil
+}
+
+// logFatal logs the error that stops the process, with its stable code.
+func logFatal(log *slog.Logger, err error) {
+	log.Error(err.Error(), "code", codeOf(err))
+}
+
+// bootError is the server's own typed error, for the failures that belong
+// to no package: configuration, the listener, /import.
+type bootError struct {
+	code string
+	msg  string
+	err  error
+}
+
+const (
+	codeRoot   = "run_as_root"
+	codeHTTP   = "http_listen"
+	codeImport = "import_unavailable"
+)
+
+func (e *bootError) Error() string {
+	if e.err == nil {
+		return e.code + ": " + e.msg
+	}
+	return e.code + ": " + e.msg + ": " + e.err.Error()
+}
+
+func (e *bootError) Unwrap() error { return e.err }
+
+// codeOf returns the stable code of a fatal error: that of the outermost
+// typed error of this program or of the package that failed.
+func codeOf(err error) string {
+	var (
+		be *bootError
+		ve *volume.Error
+		se *store.Error
+		bl *blobstore.Error
+	)
+	switch {
+	case errors.As(err, &be):
+		return be.code
+	case errors.As(err, &ve):
+		return ve.Code
+	case errors.As(err, &se):
+		return se.Code
+	case errors.As(err, &bl):
+		return bl.Code
+	case fsops.Code(err) != "":
+		return fsops.Code(err)
+	default:
+		return "internal"
+	}
+}

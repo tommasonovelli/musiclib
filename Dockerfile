@@ -12,12 +12,18 @@
 #   toolchain  Go compiler + gcc (race detector), non-root `dev` user
 #   deps       toolchain + module cache downloaded from go.mod/go.sum
 #   test       deps + a read-only snapshot of the source tree (scripts/check.sh)
-#   build-app  compiles ./cmd/musiclibd (does not exist yet: only built with
-#              the `app` Compose profile)
+#   build-app  compiles ./cmd/musiclibd (static, CGO_ENABLED=0)
 #   runtime    the image of the `app` service (DESIGN.md §11.1)
 
 ARG GO_IMAGE=golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
 ARG RUNTIME_IMAGE=debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+
+# UID/GID of the unprivileged `dev` user of the toolchain stages (see
+# `toolchain`). Declared here so that every stage that uses them sees the
+# same default; a stage must still redeclare them (without a value) to use
+# them.
+ARG DEV_UID=10001
+ARG DEV_GID=10001
 
 # ---------------------------------------------------------------------------
 FROM ${GO_IMAGE} AS toolchain
@@ -26,8 +32,8 @@ FROM ${GO_IMAGE} AS toolchain
 # pass the host user's ids so that bind-mounted sources stay writable on a
 # native Docker Engine; running as root would also make permission tests
 # meaningless (root bypasses DAC checks).
-ARG DEV_UID=10001
-ARG DEV_GID=10001
+ARG DEV_UID
+ARG DEV_GID
 
 # GOTOOLCHAIN=local: never download a different toolchain behind our back.
 # CGO_ENABLED=1: required by `go test -race` (gcc and libc6-dev are in the
@@ -76,6 +82,9 @@ CMD ["/src/docker/gate.sh"]
 # ---------------------------------------------------------------------------
 FROM deps AS build-app
 
+# Needed by the cache mount below: a stage sees only the ARGs it declares.
+ARG DEV_UID
+ARG DEV_GID
 COPY . .
 # Static binary: the Go side has no libc dependency. Native code (TagLib) lives
 # in the separate `musiclib-tags` helper, not in this binary (DESIGN.md §2.1).
