@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"musiclib/internal/media"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
 	"musiclib/internal/volume"
@@ -39,6 +40,16 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	d.waitStatus(t, "/health/ready", http.StatusOK)
 	if !d.logs.has(t, "ready") {
 		t.Fatal("no ready event")
+	}
+	// Step 3 verified the pinned tools and logged the versions it read.
+	verified := false
+	for _, ev := range d.logs.events(t) {
+		if ev["msg"] == "media tools verified" {
+			verified = ev["ffmpeg"] == media.PinnedVersion && ev["ffprobe"] == media.PinnedVersion
+		}
+	}
+	if !verified {
+		t.Fatalf("no media tools verified event with the pinned versions; logs:\n%s", d.logs)
 	}
 	for _, rel := range []string{volume.StoreMarker, volume.Originals, volume.Library, volume.Work, "work/blobs"} {
 		if !exists(t, filepath.Join(p.data, rel)) {
@@ -196,6 +207,25 @@ func TestBootRefusals(t *testing.T) {
 			name: "missing import source", code: codeImport,
 			setup: func(t *testing.T, p *paths) string {
 				p.imports = filepath.Join(p.imports, "missing")
+				return pgtest.EmptyDB(t)
+			},
+		},
+		{
+			// §2.1, §11.1 step 3: the pinned tools are a required primitive.
+			name: "missing ffprobe", code: media.CodeToolUnavailable,
+			setup: func(t *testing.T, p *paths) string {
+				p.ffprobe = filepath.Join(t.TempDir(), "ffprobe")
+				return pgtest.EmptyDB(t)
+			},
+		},
+		{
+			name: "ffmpeg of another version", code: media.CodeToolVersion,
+			setup: func(t *testing.T, p *paths) string {
+				p.ffmpeg = filepath.Join(t.TempDir(), "ffmpeg")
+				writeFile(t, p.ffmpeg, "#!/bin/sh\necho 'ffmpeg version 8.1.3 Copyright (c) 2000-2026 the FFmpeg developers'\n")
+				if err := os.Chmod(p.ffmpeg, 0o755); err != nil {
+					t.Fatal(err)
+				}
 				return pgtest.EmptyDB(t)
 			},
 		},

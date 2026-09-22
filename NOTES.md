@@ -116,6 +116,9 @@ rules, the tag mapping and the tool versions. It must be introduced before the
 first render, and it must include an identifier of the version of the
 `internal/names` algorithm.
 
+The ffmpeg/ffprobe part is available since 2026-09-22: `media.Tools.Versions()`
+returns the versions read from the tools at boot, never assumed (N-080).
+
 ### N-011 · No CI check on ext4 — RESOLVED (local), OPEN (CI)
 The Docker gate (`scripts/check.sh`) refuses to run unless `TMPDIR` is on
 ext4 (magic 0xef53, named volume `musiclib_testdata`). A CI job running the
@@ -123,8 +126,9 @@ same scripts on a native Engine is still to be set up: see N-017.
 
 ### N-012 · The whole project must be containerized — RESOLVED
 Build, vet, gofmt, race tests, fuzzing and shell lint run in Docker
-(`Dockerfile`, `compose.yaml`, `scripts/`, `docs/docker.md`). The TagLib
-helper and ffmpeg are still TODOs in the `Dockerfile` (N-025).
+(`Dockerfile`, `compose.yaml`, `scripts/`, `docs/docker.md`). ffmpeg is in
+the images since 2026-09-22 (N-073); the TagLib helper is still a TODO in the
+`Dockerfile` (N-025).
 
 ---
 
@@ -190,11 +194,16 @@ dropped `WITH (FORCE)` at the end of the test). It reads
 when `MUSICLIB_REQUIRE_DB=1`, which only the `test` service sets. Swapping the
 launcher later touches only that helper.
 
-### N-025 · How to pin ffmpeg and TagLib — OPEN
+### N-025 · How to pin ffmpeg and TagLib — RESOLVED (ffmpeg), OPEN (TagLib)
 `apt-get install ffmpeg=<ver>` is reproducible only with a pinned
 `snapshot.debian.org`; alternatives are a static build or a source build
 pinned by sha256. TagLib 2.x: source tarball pinned by sha256, built on the
 runtime's Debian release. Both feed `render_version`.
+
+**ffmpeg (2026-09-22):** a static source build of FFmpeg 8.1.3 pinned by
+sha256, the same bytes in the test, dev and runtime images (N-073). TagLib
+stays open for the `native/musiclib-tags` round; the `build-ffmpeg` stage is
+the pattern to follow.
 
 ### N-026 · `WORKERS` default — RESOLVED
 The old entry said "§11.1 gives no default; default = 2, TO CONFIRM". That was
@@ -852,3 +861,303 @@ the same filesystem and a working `RENAME_EXCHANGE`. The boot checks exactly
 that, plus mounts and permissions. XFS, Btrfs and tmpfs also pass. There is no
 filesystem-type check to refuse them: DESIGN.md does not ask for one, and
 statfs cannot tell ext4 from ext2/ext3. The docs recommend ext4 (N-028).
+
+---
+
+## `internal/media`: ffprobe/ffmpeg adapter (2026-09-22)
+
+### N-073 · ffmpeg and ffprobe: a static source build of FFmpeg 8.1.3 — DECIDED
+Resolves N-025 for ffmpeg. Candidates:
+- **Debian packages from a pinned `snapshot.debian.org` date.** Rejected:
+  - `ffmpeg` pulls in some hundred libraries (SDL, X11, VA-API, Vulkan...) the
+    adapter never uses;
+  - snapshot.debian.org is slow and rate-limited at build time;
+  - the golang image and the slim runtime image would still link different
+    point releases of the same shared libraries.
+- **A static source build, pinned by sha256.** Chosen.
+
+What is built (Dockerfile, stage `build-ffmpeg`):
+- **FFmpeg 8.1.3** (2026-09-21), the latest point release of the newest branch
+  that has had several point releases. 9.0 is seven weeks old. Pinned as
+  `ffmpeg-8.1.3.tar.gz`, sha256
+  `bd458826a039b48a9606e794554c75eb4c4984b84173f7afa3128eae89336f2b`. Its
+  OpenPGP signature was verified against the FFmpeg release key
+  `FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8` in a throwaway
+  container.
+- **nasm 2.16.03** (x86 SIMD code), sha256
+  `5bc940dd8a4245686976a8f7e96ba9340a0915f2d5b88356874890e207bdb581`. nasm
+  publishes no checksums or signatures. Instead, the `.tar.xz` matches the
+  sha256 in Debian's signed `nasm_2.16.03-1.dsc`, and the `.tar.gz` used has
+  the same uncompressed content.
+- **Configure:**
+  - `--disable-autodetect`: nothing is picked up from the build image;
+  - `--disable-shared --enable-static --extra-ldflags=-static`;
+  - `--disable-debug --disable-doc --disable-network --disable-ffplay`;
+  - `--disable-devices --enable-indev=lavfi`: lavfi is only for the test
+    fixtures;
+  - `--extra-version=musiclib1`.
+
+  Every native demuxer, decoder and parser stays enabled, because
+  classification by content (§7.2) must recognize any audio, supported or
+  not.
+- **The binaries are fully static** (`ldd`: "not a dynamic executable"), 29 MB
+  each. The same files are copied into `toolchain` (so into `deps`, `test`
+  and `dev`) and into `runtime`. Their sha256 is identical in the test and
+  runtime images:
+  - ffmpeg `3d67d1c2fc18f34ca7bb5cbb08becef864994047a263d97f35117f42da50be10`;
+  - ffprobe `3f315e9f2ae071d5eceb147b201c9ae817dcc22cd974334e4f7ec0c230155c16`.
+
+  A rebuild of the stage with `docker build --no-cache` produced the same
+  two sha256: the build is bit-for-bit reproducible, on the same machine and
+  architecture (amd64).
+- **The version is `8.1.3-musiclib1`** (`media.PinnedVersion`). The suffix is
+  the revision of the configure line, so a change of the build without a
+  change of release still changes the version the boot checks (N-080). To
+  bump: change the ARGs and the suffix, then `media.PinnedVersion`; the gate
+  fails until both agree (`TestPinnedToolsInstalled`).
+
+Consequences of the minimal configuration:
+- **No zlib** (the Go image has no `zlib1g-dev`, and autodetect is off):
+  - no PNG encoder or decoder. A PNG still probes as `png_pipe` or as an
+    attached picture; the tests build PNG fixtures with Go's `image/png`;
+  - QuickTime compressed `moov` atoms (`cmov`) are unreadable, so such an
+    M4A is ClassUnreadable, an album error. None of FLAC, MP3, AAC, ALAC or
+    plain MP4 needs zlib.
+- **No MP3 encoder:** FFmpeg has no native one. The MP3 fixtures come from
+  **LAME 3.100**, built in stage `build-lame` from
+  `lame-3.100.tar.gz` (sha256
+  `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e`, the
+  sha256 of Debian's `lame_3.100.orig.tar.gz` in the `.dsc`). It goes into
+  the toolchain images only, never into `runtime`, and ffmpeg is not linked
+  against it.
+- **Licensing:** the build uses no `--enable-gpl` or nonfree component. The
+  distributed binaries are LGPL 2.1+, and the pinned tarball URL is their
+  corresponding source.
+- **Cost:** the build stage takes about 2.5 minutes on 12 CPUs, once per cache
+  invalidation. The runtime image grows by 58 MB.
+
+### N-074 · Decoder options beyond the letter of §8.4 — TO CONFIRM (`crccheck`), DECIDED (the rest)
+`decodeArgs` is §8.4's command plus three things.
+
+**1. `-err_detect crccheck+explode` instead of `explode` — TO CONFIRM.**
+- In FFmpeg's flag syntax a bare `explode` *replaces* the defaults, and the
+  FLAC decoder checks the frame CRC-16 only with `crccheck` (or `compliant`).
+- Measured on the pinned build: single-bit flips at 61 positions of a 3 s FLAC
+  (xor 0x10). With `explode`, **57 of 61 decoded with exit status 0 to
+  different samples**. With `crccheck+explode`, 0 of 61.
+- Taken literally, §8.4 would therefore let corrupt FLAC files in as
+  supported tracks, against §7.6 ("un file corrotto non entra come traccia
+  supportata") and §8.1.
+- The superset only adds the checksum verification the formats themselves
+  carry. What it can additionally refuse: an MP3 written with CRC protection
+  whose CRCs are wrong (some old encoders). An MP3 with correct CRCs
+  (`lame -p`) passes, as tested.
+- The owner confirms or reverts. Reverting is one word, and the tests "flac
+  with one flipped bit" would then fail.
+
+**2. `-reinit_filter 0` — DECIDED.**
+- Without it, when the decoded parameters change mid-stream, ffmpeg rebuilds
+  the filter graph and inserts a resampler that converts to the first
+  segment's rate and layout.
+- Measured: a 44.1 kHz stereo MP3 followed by a 22.05 kHz mono one decoded
+  with exit 0, the second part resampled and upmixed. This is exactly the
+  "no -ar, -ac or normalization" that §8.4 forbids.
+- With the option, the change is a fatal error (exit 234), and the file is
+  refused (`media_decode`).
+
+**3. `-protocol_whitelist fd -fd 3 -i fd:` — DECIDED.** N-075.
+
+Mutation-checked: removing any of the three makes a test fail. So does
+removing `-xerror`, or `-err_detect` altogether.
+
+### N-075 · The tools read only the descriptor they are given — DECIDED
+The adapter never puts a path on a tool's command line:
+- the caller opens the file through `internal/fsops` (confined, regular files
+  only) and passes the `*os.File`;
+- the tool gets it as descriptor 3 and reads it with FFmpeg's `fd` protocol
+  (`-fd 3 fd:`), the only protocol allowed (`-protocol_whitelist fd`);
+- file names therefore never reach ffmpeg, so a name like `-i.flac`,
+  `file:evil.flac` or a Unicode name cannot be misparsed (tested);
+- no extension reaches ffmpeg either, so the format is decided by content
+  alone (§4.2, §7.2);
+- a demuxer that wants to open another file (an HLS playlist, a concat list,
+  a mov external reference) cannot. HLS is not even detected without a
+  standard extension, and concat lists are refused (EPERM for absolute
+  names, EINVAL for relative ones). All of them are ClassUnreadable (tested).
+
+The descriptor shares its file offset with the caller. `Probe` and
+`AudioDigest` seek it to 0 before each tool run, and the caller must not use
+it concurrently. The offset is unspecified afterwards.
+
+Every tool also gets an empty environment (no `FFREPORT` or `AV_LOG_*` from
+the server's environment) and `/` as working directory.
+
+### N-076 · How the Runner kills and waits — DECIDED, with ACCEPTED limits
+- **Sequence:**
+  - the tool is its own group leader (`Setpgid`), with `Pdeathsig: SIGKILL`;
+  - the Runner waits for its exit with `waitid(WEXITED|WNOWAIT)`, which does
+    not reap it;
+  - it then sends SIGKILL to the group, on every outcome, success included;
+  - only then does it reap the leader.
+
+  While the leader is an unreaped zombie its pid, which is the group id,
+  cannot be reused, so the group kill can never hit an unrelated process.
+  After reaping, the Runner polls `kill(-pgid, 0)` until ESRCH, zombies
+  included, bounded by 10 s. The slot is released only after that.
+- **Tested for real:**
+  - a shell with two background children, cancelled: none survives;
+  - a straggler left by a tool that exited 0: killed at once;
+  - a process that joined the group and stays a zombie until the test reaps
+    it: `Run` is still waiting;
+  - the parent killed by SIGKILL: the tool dies.
+- **Limits:**
+  - `Pdeathsig` fires when the *thread* that forked the child exits. Go only
+    ends a thread when a goroutine exits while locked to it with
+    `runtime.LockOSThread`. Nothing in the application does that. A future
+    use must not start tools from such a goroutine.
+  - A process that leaves the group (`setsid`, `setpgid`) escapes the group
+    kill. ffmpeg, ffprobe and the future TagLib helper never do.
+  - Orphans are reaped by PID 1. Compose runs the app with `init: true`
+    (tini). Without an init, a group member orphaned by the kill would stay
+    a zombie, and `Run` would fail with `media_io` after 10 s instead of
+    returning.
+  - Stderr keeps the *first* 64 KiB (§8.5) and drains the rest; the last lines
+    of a very verbose tool are lost.
+
+### N-077 · Probe classification: the readings of §7.2/§8.1 — DECIDED, one TO CONFIRM
+- **Classes:**
+  - `audio`: supported;
+  - `unsupported_audio`: it has audio, but is not supported;
+  - `no_audio`: probed fine, no audio stream;
+  - `unreadable`: ffprobe could not read it.
+
+  The last one covers empty files, text, PDF and M3U alike (ffprobe answers
+  "Invalid data found"), so they are not `no_audio`. §7.2 sends them to the
+  importer's rule: an attachment, or an album error with a known audio
+  extension.
+- **Tool failure versus unreadable content:** only exit status 1 *with* the
+  JSON error object of `-show_error` is a classification. A bad option, a
+  crash, another exit status, or exit 1 without the object (even with
+  plausible output) is an error of the tool. EIO and ENOMEM in the error
+  object are errors of the machine, not of the file.
+- **M4A:** any file of the mov demuxer (`mov,mp4,m4a,3gp,3g2,mj2`) with one
+  AAC or ALAC stream, whatever its brand (`M4A `, `isom`, `mp42`...). Many
+  real `.m4a` files are not branded `M4A `, and §8.1 speaks of the container,
+  not the brand.
+- **Streams other than audio and attached pictures (subtitle, data,
+  QuickTime chapter text tracks) — TO CONFIRM.** They make the file
+  `unsupported_audio` (`other_stream`). §8.1 lists only "no real video, no
+  multistream audio". Refusing is the conservative reading: the file is
+  visibly refused, rather than accepted with content that the tag writer and
+  the verification were never tested on. Audiobook-style M4A with chapter
+  tracks would be refused.
+- **Encryption (DRM):**
+  - ffprobe reports a CENC-encrypted AAC like a clear one: codec `aac`, tag
+    `mp4a`, no stream flag. The probe therefore reads the first 16 packets
+    (`-read_intervals %+#16`) and refuses the file if a packet carries
+    `Encryption info` side data (`encrypted`, tested with FFmpeg's own CENC
+    output).
+  - A stream with a clear lead longer than 16 packets passes the probe, but
+    encrypted packets do not decode: the full decode fails. Tested: the CENC
+    file fails with exit 183 even without the probe check.
+  - FairPlay (`drms`) is unknown to FFmpeg: no codec, so
+    `unsupported_format`.
+- **MP2 or MP1 in a `.mp3`** is `unsupported_format`: the mp3 demuxer reads
+  it, but the codec is not MP3.
+- **Layout:** FFmpeg's own description (`mono`, `stereo`, `5.1`,
+  `5.1(side)`...), or `unknown:<channels>` when the file declares none
+  (ffprobe omits the field or prints `unknown`). The description depends on
+  the FFmpeg version, which is part of `render_version`.
+
+### N-078 · Declared lengths: truncation that the decoder does not see — DECIDED, one TO CONFIRM, one ACCEPTED
+- **The finding:** an MP3 cut in the middle decodes with exit status 0. The
+  demuxer drops the incomplete last frame silently, and nothing in ffmpeg
+  turns that into an error.
+- **The rule:** when the container declares an exact length, `AudioDigest`
+  requires the decoded frame count to equal it (`media_decode`, "decoded N
+  frames, the container declares M"):
+  - **FLAC:** the STREAMINFO total. It is absent when a streaming encoder
+    wrote 0; then nothing is checked, as tested.
+  - **MP3:** the Xing, Info or VBRI frame count, net of the LAME encoder delay
+    and padding.
+  - **M4A:** no check. An AAC decode keeps the encoder's end padding (441,344
+    frames for a 441,000-frame source), by design of FFmpeg's mov/AAC path. A
+    truncated M4A already fails in the demuxer, because its sample table
+    points past the end (tested).
+- **How the MP3 case is known:** ffprobe prints an estimated duration
+  exactly like an exact one. The only difference is libavformat's warning
+  "Estimating duration from bitrate, this may be inaccurate". The probe runs
+  at `-loglevel warning` and recognizes that exact line
+  (`mp3EstimatedLine`). A declared count must also be a whole number of
+  frames.
+  - This reads stderr, but never to declare success. If the wording changed,
+    an estimate would be taken as exact and complete files would be refused,
+    never the reverse.
+  - `TestMP3EstimationWarningOfThePinnedTool` pins the line on the real tool,
+    so a bump that changes it fails the gate.
+  - A crafted file could forge the line only through a warning that quotes
+    its own metadata, and would only disable its own truncation check.
+- **ACCEPTED:** an MP3 without a Xing/Info/VBRI header that is cut in the
+  middle cannot be detected (no declared length). LAME writes the header by
+  default, for CBR too.
+- **TO CONFIRM:** an MP3 whose Xing header is stale is refused as
+  "truncated". This happens with a file cut or joined by a tool that did not
+  update the header. It is the conservative outcome, and the file is not
+  lost: it stays in `/import`.
+- **ACCEPTED:** FFmpeg's gapless trimming drops everything past the declared
+  count when the file is *longer* than its LAME header says (within 1/16 of
+  the size; beyond that FFmpeg ignores the header). So the digest does not
+  cover such a tail.
+
+### N-079 · What the digest guarantees, and what it costs — DECIDED
+- **Comparable only on the same binary and the same machine.** FFmpeg selects
+  its SIMD code at run time from the CPU flags, and the float decoders (AAC,
+  MP3) may round differently on different CPUs. The integer decoders (FLAC,
+  ALAC) are bit-exact everywhere: the test checks their PCM against an
+  independent computation in Go.
+- That matches §8.4: the digest is transient, computed twice in the same
+  render (before and after the tags), and never stored.
+- **One thread each** for the decoder (`-threads 1` before `-i`), the encoder
+  (after it) and the filter graph (`-filter_threads 1`, §6.1). FFmpeg 8's CLI
+  still runs demuxer, decoder and muxer in separate internal threads, which
+  cannot be configured.
+- **Measured cost** in the dev container (Docker Desktop, WSL2, Intel
+  i5-10400F; `BenchmarkAudioDigest5MinFLAC`, 3 × 10 runs), for 5 minutes of
+  44.1 kHz stereo:
+
+  | Input | Time |
+  |---|---|
+  | FLAC 16-bit, 36 MB (probe + decode + SHA-256, 211.7 MB of f64 PCM) | **0.56 s** |
+  | ALAC | 0.55 s |
+  | AAC 256k | 0.55 s |
+  | MP3 V0 | 0.61 s |
+
+  The last three were timed on the same decode command outside Go. A render
+  that digests each track twice spends about 1.1 s per 5 minutes of audio,
+  per worker.
+
+### N-080 · Tool versions for `render_version` — DECIDED
+`media.NewTools` runs `ffmpeg -version` and `ffprobe -version` through the
+Runner at boot and parses the token after "version" on the first line. It
+refuses the tools if:
+- a tool is missing, or its line does not name the expected tool (for
+  example ffprobe installed at the ffmpeg path): `media_tool_unavailable`;
+- the token is not `media.PinnedVersion`: `media_tool_version`.
+
+The boot fails in both cases (§11.1 step 3, `cmd/musiclibd.checkTools`).
+`Tools.Versions()` returns what was read. `render_version` itself is still
+N-010's.
+
+### N-081 · Where the list of known audio extensions lives — DECIDED
+The fixed list of §7.2 is `media.KnownAudioExtensions()`, in §7.2's order,
+pinned by `TestKnownAudioExtensions`. It lives here because it defines when
+a failed probe means "corrupt audio". The rule that applies it (album error
+versus attachment) is the importer's. `HasKnownAudioExtension` compares the
+last extension ASCII case-insensitively: `.FLAC` is known, fullwidth or
+Cyrillic look-alikes are not.
+
+### N-082 · Tool stderr is kept out of error messages — DECIDED
+`media.Error.Stderr` holds up to 64 KiB of the tool's standard error, but
+`Error()` never includes it. A decoder's warnings can quote tag contents,
+which §11.1 keeps out of the logs by default. A later round that wants
+stderr in a job's `error_message` reads the field explicitly.

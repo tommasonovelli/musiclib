@@ -13,6 +13,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
+	"musiclib/internal/media"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
 )
@@ -41,6 +42,12 @@ type daemon struct {
 
 	vol  *volume.Volume
 	pool *pgxpool.Pool
+
+	// runner is the one Runner of the process: every native tool runs
+	// through it, bounded by WORKERS (§6.1). tools are the verified ffmpeg
+	// and ffprobe; their versions feed render_version (§2.1, N-010).
+	runner *media.Runner
+	tools  *media.Tools
 
 	// ready holds the pool once the boot is complete, nil before and during
 	// shutdown: /health/ready is positive only while it is set (§11.1).
@@ -97,6 +104,9 @@ func (d *daemon) boot(ctx context.Context) error {
 		return err
 	}
 	if err := d.vol.CheckFilesystem(); err != nil {
+		return err
+	}
+	if err := d.checkTools(ctx); err != nil {
 		return err
 	}
 	if err := checkImport(d.paths.imports); err != nil {
@@ -175,6 +185,22 @@ func (d *daemon) identifyVolume(ctx context.Context) error {
 		return err
 	}
 	d.log.Info("volume identified", "store_id", id.String())
+	return nil
+}
+
+// checkTools creates the process's tool Runner, with WORKERS slots (§6.1),
+// and verifies that ffmpeg and ffprobe are present and at the pinned
+// version (§2.1, §11.1 step 3). A missing or different tool is fatal:
+// media_tool_unavailable or media_tool_version.
+func (d *daemon) checkTools(ctx context.Context) error {
+	d.runner = media.NewRunner(d.cfg.Workers)
+	tools, err := media.NewTools(ctx, d.runner, d.paths.ffmpeg, d.paths.ffprobe)
+	if err != nil {
+		return err
+	}
+	d.tools = tools
+	v := tools.Versions()
+	d.log.Info("media tools verified", "ffmpeg", v.FFmpeg, "ffprobe", v.FFprobe)
 	return nil
 }
 

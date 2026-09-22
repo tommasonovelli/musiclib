@@ -26,6 +26,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
+	"musiclib/internal/media"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
 )
@@ -44,11 +45,18 @@ const (
 	exitUsage   = 2 // bad command line, invalid configuration, running as root
 )
 
-// paths are the two host paths the server knows (§3.1, §11.1).
+// paths are the host paths the server knows: the two volumes (§3.1, §11.1)
+// and the pinned native tools (§2.1). They are fixed in production; only the
+// tests use others.
 type paths struct {
 	data    string
 	imports string
+	ffmpeg  string
+	ffprobe string
 }
+
+// defaultPaths are the fixed paths of the images.
+var defaultPaths = paths{data: dataPath, imports: importPath, ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath}
 
 func main() {
 	os.Exit(musiclibd(os.Args[1:], os.Getenv, os.Stderr))
@@ -58,7 +66,7 @@ func musiclibd(args []string, getenv func(string) string, stderr io.Writer) int 
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
 	switch {
 	case len(args) == 0:
-		return serve(log, getenv, paths{data: dataPath, imports: importPath})
+		return serve(log, getenv, defaultPaths)
 	case len(args) == 1 && args[0] == "healthcheck":
 		return healthcheck(log, getenv)
 	default:
@@ -146,6 +154,7 @@ func codeOf(err error) string {
 		ve *volume.Error
 		se *store.Error
 		bl *blobstore.Error
+		me *media.Error
 	)
 	switch {
 	case errors.As(err, &be):
@@ -156,6 +165,8 @@ func codeOf(err error) string {
 		return se.Code
 	case errors.As(err, &bl):
 		return bl.Code
+	case errors.As(err, &me):
+		return me.Code
 	case fsops.Code(err) != "":
 		return fsops.Code(err)
 	default:

@@ -9,11 +9,13 @@
 # update the ARG below together with docs/docker.md.
 #
 # Targets:
-#   toolchain  Go compiler + gcc (race detector), non-root `dev` user
-#   deps       toolchain + module cache downloaded from go.mod/go.sum
-#   test       deps + a read-only snapshot of the source tree (scripts/check.sh)
-#   build-app  compiles ./cmd/musiclibd (static, CGO_ENABLED=0)
-#   runtime    the image of the `app` service (DESIGN.md §11.1)
+#   build-ffmpeg  ffmpeg + ffprobe from a pinned, signed source tarball (static)
+#   build-lame    the LAME command line encoder, for the MP3 test fixtures only
+#   toolchain     Go compiler + gcc (race detector), ffmpeg, lame, non-root `dev` user
+#   deps          toolchain + module cache downloaded from go.mod/go.sum
+#   test          deps + a read-only snapshot of the source tree (scripts/check.sh)
+#   build-app     compiles ./cmd/musiclibd (static, CGO_ENABLED=0)
+#   runtime       the image of the `app` service (DESIGN.md §11.1), with ffmpeg
 
 ARG GO_IMAGE=golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
 ARG RUNTIME_IMAGE=debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
@@ -24,6 +26,79 @@ ARG RUNTIME_IMAGE=debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec5
 # them.
 ARG DEV_UID=10001
 ARG DEV_GID=10001
+
+# ---------------------------------------------------------------------------
+# ffmpeg and ffprobe (DESIGN.md §2.1, §8.4; NOTES.md N-025, N-073).
+#
+# Built from the release tarball, pinned by version and sha256; the tarball's
+# OpenPGP signature was checked against the FFmpeg release key
+# (FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8) when the pin was set.
+# nasm (x86 SIMD code) is pinned the same way; its tarball has the content of
+# Debian's nasm_2.16.03.orig.tar.xz.
+#
+# --disable-autodetect: no external library is picked up from the build
+# image, so the configuration below is the whole feature set. The binaries
+# are fully static (libc included) and therefore byte-identical in the test,
+# dev and runtime images. Every native demuxer and decoder stays enabled:
+# classification by content (§7.2) must recognize any audio, supported or
+# not. --extra-version is part of the version string the application checks
+# at boot and reports for render_version: bump it whenever this configure
+# line changes, and update media.PinnedVersion.
+FROM ${GO_IMAGE} AS build-ffmpeg
+
+ARG NASM_VERSION=2.16.03
+ARG NASM_SHA256=5bc940dd8a4245686976a8f7e96ba9340a0915f2d5b88356874890e207bdb581
+ARG FFMPEG_VERSION=8.1.3
+ARG FFMPEG_SHA256=bd458826a039b48a9606e794554c75eb4c4984b84173f7afa3128eae89336f2b
+ARG FFMPEG_EXTRA_VERSION=musiclib1
+
+WORKDIR /build
+RUN curl -fsSL -o nasm.tar.gz "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/nasm-${NASM_VERSION}.tar.gz" \
+ && echo "${NASM_SHA256}  nasm.tar.gz" | sha256sum -c - \
+ && tar -xzf nasm.tar.gz \
+ && cd "nasm-${NASM_VERSION}" \
+ && ./configure \
+ && make -j"$(nproc)" nasm
+RUN curl -fsSL -o ffmpeg.tar.gz "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.gz" \
+ && echo "${FFMPEG_SHA256}  ffmpeg.tar.gz" | sha256sum -c - \
+ && tar -xzf ffmpeg.tar.gz \
+ && cd "ffmpeg-${FFMPEG_VERSION}" \
+ && ./configure \
+      --prefix=/opt/ffmpeg \
+      --extra-version="${FFMPEG_EXTRA_VERSION}" \
+      --x86asmexe="/build/nasm-${NASM_VERSION}/nasm" \
+      --disable-autodetect \
+      --disable-shared --enable-static --extra-ldflags=-static \
+      --disable-debug --disable-doc \
+      --disable-network --disable-ffplay \
+      --disable-devices --enable-indev=lavfi \
+ && make -j"$(nproc)" \
+ && make install \
+ && /opt/ffmpeg/bin/ffmpeg -hide_banner -version | head -n 1 \
+ && /opt/ffmpeg/bin/ffprobe -hide_banner -version | head -n 1 \
+ && ! ldd /opt/ffmpeg/bin/ffmpeg && ! ldd /opt/ffmpeg/bin/ffprobe
+
+# ---------------------------------------------------------------------------
+# LAME, only for the tests: FFmpeg has no native MP3 encoder, and the MP3
+# fixtures (CBR, VBR, gapless header) are generated at test time (DESIGN.md
+# §12.1). It goes into the toolchain images only, never into `runtime`, and
+# ffmpeg is not linked against it: the application's ffmpeg is the same
+# binary everywhere. The tarball has the content of Debian's
+# lame_3.100.orig.tar.gz.
+FROM ${GO_IMAGE} AS build-lame
+
+ARG LAME_VERSION=3.100
+ARG LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+
+WORKDIR /build
+RUN curl -fsSL -o lame.tar.gz "https://downloads.sourceforge.net/project/lame/lame/${LAME_VERSION}/lame-${LAME_VERSION}.tar.gz" \
+ && echo "${LAME_SHA256}  lame.tar.gz" | sha256sum -c - \
+ && tar -xzf lame.tar.gz \
+ && cd "lame-${LAME_VERSION}" \
+ && ./configure --prefix=/opt/lame --disable-shared --enable-static --disable-gtktest --disable-decoder \
+ && make -j"$(nproc)" \
+ && make install \
+ && /opt/lame/bin/lame --version | head -n 1
 
 # ---------------------------------------------------------------------------
 FROM ${GO_IMAGE} AS toolchain
@@ -55,6 +130,11 @@ RUN groupadd --non-unique --gid "${DEV_GID}" dev \
  && install -d -o dev -g dev -m 0755 \
       /home/dev/go /home/dev/go/pkg /home/dev/go/pkg/mod /home/dev/.cache /home/dev/.cache/go-build \
       /testdata /src
+
+# The same ffmpeg/ffprobe binaries as `runtime`: the tests run the real tools
+# (DESIGN.md §12.1). lame only generates MP3 fixtures in the tests.
+COPY --from=build-ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
+COPY --from=build-lame /opt/lame/bin/lame /usr/local/bin/lame
 
 WORKDIR /src
 USER dev
@@ -107,10 +187,9 @@ FROM ${RUNTIME_IMAGE} AS runtime
 ARG APP_UID=1000
 ARG APP_GID=1000
 
-# TODO(phase 2, DESIGN.md §2.1, §8.4): install ffmpeg and ffprobe pinned to an
-# exact version (Debian package `ffmpeg=<exact version>` from this pinned
-# snapshot, or a static build pinned by sha256). Their version feeds
-# render_version.
+# ffmpeg and ffprobe (DESIGN.md §2.1, §8.4): static, the same bytes as in the
+# test and dev images. musiclibd checks their version at boot (§11.1 step 3).
+COPY --from=build-ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 
 RUN install -d -o "${APP_UID}" -g "${APP_GID}" -m 0755 /data \
  && install -d -o root -g root -m 0755 /import

@@ -27,8 +27,8 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
-- [ ] Full repository layout (§2.3): `cmd/musiclibd` and `internal/volume` (N-060) now exist; the other packages arrive with their phases
-- [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). TagLib and ffmpeg in the runtime image are Phase 2 (N-025)
+- [ ] Full repository layout (§2.3): `cmd/musiclibd`, `internal/volume` (N-060) and `internal/media` now exist; the other packages arrive with their phases
+- [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). ffmpeg/ffprobe are in the runtime image since Phase 2 (N-073); TagLib is still to come (N-025)
 - [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
 - [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
 - [x] pgx pool with `WORKERS + 8` connections (§11.1) and UUIDv7 ids (§2.1) — `store.NewPool`, `store.NewID`
@@ -41,7 +41,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
 ## Phase 2 — First vertical slice (one FLAC album)
 
-- [ ] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4)
+- [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
 - [ ] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1)
 - [ ] Managed tag mapping and alias removal (§8.2, §8.3)
 - [ ] `internal/importer`: import of a single album candidate
@@ -344,7 +344,7 @@ logs JSON on stderr.
 | 1 | HTTP serving with negative readiness; `volume.Acquire` | |
 | (N-065) | `CheckMaintenance`, before anything touches the database | |
 | 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` | |
-| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `/import` listable | |
+| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg/ffprobe, `media_tool_unavailable` / `media_tool_version`), `/import` listable | |
 | 4 | — | journal recovery |
 | 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)` | running → pending; `work/render`, `work/retired` |
 | 6 | — | enqueue stale renders |
@@ -395,6 +395,140 @@ database, readiness never positive, redirects followed, root allowed, and a
 scripts/check.sh ./cmd/...
 scripts/dev.sh go test -race -count=20 ./cmd/musiclibd/
 docker compose --profile app up -d --build --wait     # docs/docker.md
+```
+
+### `internal/media` — ffprobe/ffmpeg adapter, `AudioDigest` (§6.1, §7.2, §7.6, §8.1, §8.4, §8.5) ✔
+
+The adapter of the native media tools (§2.3). The TagLib helper
+(`native/musiclib-tags`) will join it, reusing the Runner.
+
+**Tools in the images (N-073).** FFmpeg 8.1.3 is built from its signed
+release tarball, pinned by sha256, fully static, with
+`--disable-autodetect` and version `8.1.3-musiclib1`. The same bytes are in
+the `test`, `dev` and `runtime` images, and a no-cache rebuild gives the same
+sha256. LAME 3.100 is in the toolchain images only, for the MP3 fixtures.
+
+Public API:
+
+| Function | Role |
+|---|---|
+| `NewRunner(workers)` | the process's one tool runner and the global semaphore of §6.1; built at boot, passed explicitly |
+| `Runner.Run(ctx, Command)` | argv only; own process group and `Pdeathsig` SIGKILL; empty environment, cwd `/`; stdin `/dev/null` or explicit bytes; only the given descriptors (3, 4, ...); stdout streamed to a writer, optionally bounded; the first 64 KiB of stderr kept; required timeout; on every outcome the group is killed and waited for |
+| `InspectTimeout` / `DecodeTimeout` | 30 s / 30 min (§8.5) |
+| `NewTools(ctx, runner, ffmpeg, ffprobe)` | reads both `-version` lines and requires `PinnedVersion` |
+| `Tools.Versions()` | the versions read, an input of `render_version` (N-080) |
+| `Tools.Probe(ctx, f)` | classification by content: `audio` (with `Format` = `flac`, `mp3`, `m4a-aac`, `m4a-alac`, codec, rate, channels, layout, duration, declared frames), `unsupported_audio` (reason), `no_audio`, `unreadable`; attached pictures counted |
+| `Tools.AudioDigest(ctx, f)` | §8.4: probe, full decode to `pcm_f64le`, streamed SHA-256, frames = bytes / (8 × channels), declared length enforced; returns `(SampleRate, Channels, Layout, Frames, PCMSHA256)` |
+| `KnownAudioExtensions()` / `HasKnownAudioExtension` | the fixed list of §7.2, for the importer's rule (N-081) |
+| `Error` / `Code` | `media_tool_unavailable`, `media_tool_version`, `media_timeout`, `media_canceled`, `media_tool_failed`, `media_output_too_large`, `media_output_invalid`, `media_not_supported`, `media_decode`, `media_io`, `media_invalid_argument`; stderr kept in a field, never in `Error()` (N-082) |
+
+How it maps to DESIGN.md:
+- **§8.5, §6.1: the Runner.**
+  - The kill sequence is `waitid(WNOWAIT)`, then the group SIGKILL, then the
+    reap, then a wait until the group is gone (N-076).
+  - A timeout is `media_timeout`.
+  - A non-zero exit or a signal is always a failure, whatever the tool
+    printed.
+- **§7.2, §8.1, §4.2: the probe.**
+  - The file reaches the tool only as descriptor 3, through FFmpeg's `fd`
+    protocol, the only protocol allowed. Names and extensions never reach
+    the tool, and playlists or references cannot be followed (N-075).
+  - An M4A counts whatever its brand. Extra non-audio streams are refused.
+  - Encryption is detected from packet side data (N-077).
+- **§8.4, §7.6: `AudioDigest`.**
+  - The command is §8.4's with `-err_detect crccheck+explode` (TO CONFIRM)
+    and `-reinit_filter 0` (N-074).
+  - A decoded length that differs from the one FLAC STREAMINFO or an MP3
+    Xing/Info/VBRI header declares is refused (N-078).
+  - The digest is comparable only on the same binary and machine, which §8.4
+    requires anyway (N-079).
+- **§11.1 step 3:** the boot builds the Runner with `WORKERS` slots and runs
+  `NewTools`. A missing or different tool is a fatal boot error with its
+  code.
+
+**Cost (N-079):** `AudioDigest` of a 5-minute 44.1 kHz stereo FLAC takes 0.56
+s in the dev container. ALAC, AAC and MP3 decode in 0.55 to 0.61 s.
+
+Tests run the real pinned ffprobe, ffmpeg and LAME, on fixtures generated at
+test time (lavfi sine, fixed-seed noise, silence; `image/png`). Nothing is
+committed.
+- **Classification of real files:**
+  - FLAC 16 and 24 bit; mono, stereo and 5.1; 48 kHz silence;
+  - MP3 CBR, VBR and without a Xing header;
+  - AAC and ALAC in M4A;
+  - covers in FLAC, MP3 and M4A;
+  - rejected: real video, two audio streams, Opus in Ogg, WAV, ADTS AAC, MP2
+    in a `.mp3`, CENC-encrypted AAC;
+  - no audio: JPEG, PNG, a video without sound;
+  - unreadable: empty, text, PDF, M3U, an HLS playlist and concat lists
+    naming a real FLAC (never followed);
+  - the same bytes under Unicode, NFD, `-i.flac`, `file:` and misleading
+    names classify the same.
+- **Exact PCM:**
+  - the digest of FLAC and ALAC equals the SHA-256 of the source WAV's
+    samples computed in Go (16 and 24 bit, mono, stereo, 5.1, 48 kHz),
+    frames and parameters included;
+  - MP3 with a LAME header decodes to exactly the source's length, CBR and
+    VBR;
+  - AAC and MP3 digests are identical across runs, including four
+    concurrent ones.
+- **Invariants:**
+  - the same digest after tag changes, a FLAC re-encode at another
+    compression level, an added cover, and an M4A re-mux (AAC and ALAC);
+  - one changed LSB changes only the hash;
+  - the same samples declared as `5.1` or `5.1(side)` differ only in
+    `Layout`.
+- **Refusals:**
+  - FLAC with one flipped bit (at three positions), cut in half, missing its
+    last bytes, damaged in the middle, or declaring more samples than it
+    has;
+  - MP3 CBR and VBR cut in half, damaged, or changing rate and channels
+    mid-stream;
+  - M4A cut in half (faststart: `media_decode`; moov at the end:
+    unreadable), or damaged;
+  - ALAC cut in half;
+  - unsupported files refused before any decode;
+  - decoder failures with a fake ffmpeg: exit 1 after plausible PCM,
+    killed, empty output, a partial frame, the wrong length.
+- **Runner, on real processes:**
+  - a timeout on a real 10-minute decode;
+  - cancellation kills and reaps a shell and two children, checked in
+    `/proc`, and the group is gone;
+  - a straggler is killed after a normal exit;
+  - `Run` waits for a zombie member of its group;
+  - `Pdeathsig`: a parent killed with SIGKILL takes its tool with it;
+  - the semaphore bounds concurrency, measured by the tools themselves;
+  - a caller waiting for a slot is cancelled without starting;
+  - stderr is kept to 64 KiB and drained;
+  - non-zero exits and signals fail;
+  - the child has exactly descriptors 0 to 3, with stdin `/dev/null`, no
+    inherited flock (with a control that passes the lock on purpose), an
+    empty environment and cwd `/`;
+  - stdin delivered, and a short read fails;
+  - output limit and a failing writer;
+  - no descriptor leak across every outcome.
+- **Tool versions:** missing, older, unsuffixed, swapped, garbled and failing
+  tools are refused. The boot refuses a missing ffprobe and an ffmpeg of
+  another version, and logs the verified versions.
+
+Mutation-checked: each of the following makes a test fail:
+- in the Runner: no own process group; no `Pdeathsig`; no group kill after
+  exit; no wait for the group; a semaphore too large; the environment
+  inherited; the cwd not `/`; stderr unbounded; a non-zero exit accepted; a
+  short stdin read accepted; no output limit;
+- in the decoder: no `-reinit_filter 0`; a bare `explode`; no `-err_detect`;
+  no `-xerror`; no declared-length, partial-frame or empty-output check; no
+  rewind before the decode or the probe; unsupported files decoded;
+- in the probe: an estimated MP3 length taken as exact; no encryption,
+  video, multistream or other-stream check; AAC accepted outside MP4; any
+  failing exit taken as unreadable; EIO taken as unreadable; the undeclared
+  layout not marked; no fd-only whitelist;
+- in the tools and the boot: no version check; the boot skipping the tools.
+
+```sh
+scripts/check.sh ./internal/media/...
+scripts/dev.sh go test -race -count=20 -run 'TestRun|TestNewTools|TestProbeToolFailures|TestAudioDigestDecoderFailures' ./internal/media/
+scripts/dev.sh go test -run '^$' -bench AudioDigest5Min -benchtime 10x ./internal/media/
 ```
 
 ---

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"musiclib/internal/media"
 	"musiclib/internal/store/pgtest"
 	"musiclib/internal/volume"
 )
@@ -110,7 +111,7 @@ func testConfig(dbURL string) Config {
 // testPaths are a fresh data volume and import source.
 func testPaths(t *testing.T) paths {
 	t.Helper()
-	return paths{data: t.TempDir(), imports: t.TempDir()}
+	return paths{data: t.TempDir(), imports: t.TempDir(), ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath}
 }
 
 // testDaemon is one run() in a goroutine.

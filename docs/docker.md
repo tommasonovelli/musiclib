@@ -6,7 +6,7 @@ gcc, PostgreSQL or ffmpeg on the host.
 
 | File | Role |
 |---|---|
-| `Dockerfile` | multi-stage: `toolchain` → `deps` → `test` / `build-app` → `runtime` |
+| `Dockerfile` | multi-stage: `build-ffmpeg`, `build-lame` (pinned source builds) → `toolchain` → `deps` → `test` / `build-app` → `runtime` |
 | `compose.yaml` | `postgres` (always), `app` (profile `app`), `test`, `dev` and `postgres-test` (profile `tools`) |
 | `docker/with-testdata.sh` | in-container: puts `TMPDIR` on the ext4 test volume, refuses other filesystems |
 | `docker/gate.sh` | in-container: build, vet, gofmt, `go test -race` |
@@ -185,7 +185,8 @@ step (`docker compose logs app`):
    catalog content) is initialized; the first boot creates both.
 6. `originals/`, `library/`, `work/` created if missing; boot checks: same
    filesystem and same mount for all of `/data`, read/write permissions, a
-   real `RENAME_EXCHANGE` in `work/`; `/import` readable.
+   real `RENAME_EXCHANGE` in `work/`; `media tools verified`: ffmpeg and
+   ffprobe present at the pinned version; `/import` readable.
 7. Leftovers of an interrupted run removed from `work/`; `ready`.
 
 `/health/ready` then also checks PostgreSQL on every request (2 s timeout):
@@ -216,6 +217,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `volume_permission` | `/data` or a media directory is not writable by `MUSICLIB_UID`, or read-only | `chown -R` the host path, or recreate the volume |
 | `volume_rename_exchange_unsupported` | the filesystem lacks `renameat2(RENAME_EXCHANGE)` | use ext4 (§3.1) |
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
+| `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg` or `ffprobe` is missing, broken, or not the pinned version | rebuild the image from this repository (`docker compose --profile app build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
 
 The files at the top of `/data`:
@@ -257,6 +259,37 @@ index (DESIGN.md §2.1). The digest is what is actually used; the tag documents 
 
 Toolchain and runtime share the same Debian release (13, glibc 2.41), so the
 future TagLib helper is built and run against the same libraries.
+
+### Pinned source builds
+
+Native tools are built from release tarballs pinned by version **and** sha256
+(`Dockerfile`, ARGs of the stage). The build fails if a download does not
+match its hash. See NOTES.md N-073 for how each pin was verified.
+
+| Tool | Stage | Pin | Goes into |
+|---|---|---|---|
+| FFmpeg 8.1.3 (ffmpeg, ffprobe) | `build-ffmpeg` | `ffmpeg-8.1.3.tar.gz` `bd458826a039b48a9606e794554c75eb4c4984b84173f7afa3128eae89336f2b` (OpenPGP signature checked) | `toolchain` (so `test`, `dev`) and `runtime`, as `/usr/local/bin/ffmpeg` and `/usr/local/bin/ffprobe` |
+| nasm 2.16.03 | `build-ffmpeg` | `nasm-2.16.03.tar.gz` `5bc940dd8a4245686976a8f7e96ba9340a0915f2d5b88356874890e207bdb581` | nowhere: assembles FFmpeg's x86 code |
+| LAME 3.100 | `build-lame` | `lame-3.100.tar.gz` `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e` | `toolchain` only: MP3 test fixtures |
+
+- **The ffmpeg binaries are fully static.** The images hold the same bytes,
+  and the build is reproducible: a `--no-cache` rebuild gives the same
+  sha256.
+- **The version string** both tools report is `8.1.3-musiclib1`: the release
+  plus `--extra-version`, the revision of the configure line. `musiclibd`
+  refuses to boot with anything else (`media_tool_version`), and so does the
+  test gate (`TestPinnedToolsInstalled`).
+- **Bumping FFmpeg:**
+  1. Download the new tarball and its `.asc`, check the signature against the
+     FFmpeg release key, and compute the sha256.
+  2. Update `FFMPEG_VERSION` and `FFMPEG_SHA256`.
+  3. Reset `FFMPEG_EXTRA_VERSION` to `musiclib1`, or increase it when only
+     the configure line changes.
+  4. Update `media.PinnedVersion`, this table and NOTES.md.
+  5. Run `scripts/check.sh`. `TestMP3EstimationWarningOfThePinnedTool` and
+     the fixtures check the behaviours the adapter relies on.
+- **The first build** of the `build-ffmpeg` stage takes a few minutes. It is
+  cached afterwards, and shared by the `test`, `dev` and `app` images.
 
 ### Bumping a pin
 
