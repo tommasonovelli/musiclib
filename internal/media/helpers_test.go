@@ -36,9 +36,9 @@ const lamePath = "/usr/local/bin/lame"
 // newTools returns Tools on the real binaries, with a Runner of 4 slots.
 func newTools(t testing.TB) *Tools {
 	t.Helper()
-	tools, err := NewTools(t.Context(), NewRunner(4), FFmpegPath, FFprobePath)
+	tools, err := NewTools(t.Context(), NewRunner(4), FFmpegPath, FFprobePath, TagsPath)
 	if err != nil {
-		t.Fatalf("NewTools: %v (the pinned ffmpeg must be installed: run the tests in Docker, docs/docker.md)", err)
+		t.Fatalf("NewTools: %v (the pinned ffmpeg and musiclib-tags must be installed: run the tests in Docker, docs/docker.md)", err)
 	}
 	return tools
 }

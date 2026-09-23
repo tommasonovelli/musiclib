@@ -12,3 +12,6 @@ coverage.html
 
 # Default import directory mounted read-only on /import (compose.yaml)
 /import/
+
+# Local builds of the TagLib helper (it is built in Docker only)
+/native/musiclib-tags/build/

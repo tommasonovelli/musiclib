@@ -28,7 +28,12 @@ const (
 	// which). For the importer it is an album error, never an attachment.
 	ClassUnsupportedAudio Class = "unsupported_audio"
 	// ClassNoAudio was read by ffprobe and has no audio stream: an image, a
-	// video without sound. An attachment, for the importer.
+	// video without sound, but also a damaged audio file whose container is
+	// still recognized, like a .flac whose only stream is its cover (the
+	// case "only a cover" of classify_test.go). The rule is the
+	// importer's (§7.2): a file with a known audio extension and no audio
+	// stream is "audio corrotto", an album error, not an attachment; only
+	// the others become attachments.
 	ClassNoAudio Class = "no_audio"
 	// ClassUnreadable could not be read as media at all: empty, text, PDF,
 	// or damaged beyond recognition. Whether it is an attachment or a

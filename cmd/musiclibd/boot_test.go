@@ -45,7 +45,8 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	verified := false
 	for _, ev := range d.logs.events(t) {
 		if ev["msg"] == "media tools verified" {
-			verified = ev["ffmpeg"] == media.PinnedVersion && ev["ffprobe"] == media.PinnedVersion
+			verified = ev["ffmpeg"] == media.PinnedVersion && ev["ffprobe"] == media.PinnedVersion &&
+				ev["musiclib_tags"] == media.PinnedTagsVersion && ev["taglib"] == media.PinnedTagLibVersion
 		}
 	}
 	if !verified {
@@ -215,6 +216,28 @@ func TestBootRefusals(t *testing.T) {
 			name: "missing ffprobe", code: media.CodeToolUnavailable,
 			setup: func(t *testing.T, p *paths) string {
 				p.ffprobe = filepath.Join(t.TempDir(), "ffprobe")
+				return pgtest.EmptyDB(t)
+			},
+		},
+		{
+			name: "missing musiclib-tags", code: media.CodeToolUnavailable,
+			setup: func(t *testing.T, p *paths) string {
+				p.tags = filepath.Join(t.TempDir(), "musiclib-tags")
+				return pgtest.EmptyDB(t)
+			},
+		},
+		{
+			// The helper at another version: a TagLib bump without the
+			// matching media.PinnedTagLibVersion.
+			name: "musiclib-tags of another version", code: media.CodeToolVersion,
+			setup: func(t *testing.T, p *paths) string {
+				p.tags = filepath.Join(t.TempDir(), "musiclib-tags")
+				writeFile(t, p.tags, `#!/bin/sh
+echo '{"helper":"1","taglib":"2.3.1-musiclib1"}'
+`)
+				if err := os.Chmod(p.tags, 0o755); err != nil {
+					t.Fatal(err)
+				}
 				return pgtest.EmptyDB(t)
 			},
 		},

@@ -118,6 +118,10 @@ first render, and it must include an identifier of the version of the
 
 The ffmpeg/ffprobe part is available since 2026-09-22: `media.Tools.Versions()`
 returns the versions read from the tools at boot, never assumed (N-080).
+Since 2026-09-23 it also returns the TagLib helper's two versions:
+`Versions.Tags` (the helper, `1`) and `Versions.TagLib` (`2.3.2-musiclib1`,
+N-083). The helper's version also covers the managed-field table and the
+bytes it writes, so it is the "mapping dei tag" input of §2.1.
 
 ### N-011 · No CI check on ext4 — RESOLVED (local), OPEN (CI)
 The Docker gate (`scripts/check.sh`) refuses to run unless `TMPDIR` is on
@@ -127,8 +131,8 @@ same scripts on a native Engine is still to be set up: see N-017.
 ### N-012 · The whole project must be containerized — RESOLVED
 Build, vet, gofmt, race tests, fuzzing and shell lint run in Docker
 (`Dockerfile`, `compose.yaml`, `scripts/`, `docs/docker.md`). ffmpeg is in
-the images since 2026-09-22 (N-073); the TagLib helper is still a TODO in the
-`Dockerfile` (N-025).
+the images since 2026-09-22 (N-073), the TagLib helper since 2026-09-23
+(N-083).
 
 ---
 
@@ -194,16 +198,19 @@ dropped `WITH (FORCE)` at the end of the test). It reads
 when `MUSICLIB_REQUIRE_DB=1`, which only the `test` service sets. Swapping the
 launcher later touches only that helper.
 
-### N-025 · How to pin ffmpeg and TagLib — RESOLVED (ffmpeg), OPEN (TagLib)
+### N-025 · How to pin ffmpeg and TagLib — RESOLVED
 `apt-get install ffmpeg=<ver>` is reproducible only with a pinned
 `snapshot.debian.org`; alternatives are a static build or a source build
 pinned by sha256. TagLib 2.x: source tarball pinned by sha256, built on the
 runtime's Debian release. Both feed `render_version`.
 
 **ffmpeg (2026-09-22):** a static source build of FFmpeg 8.1.3 pinned by
-sha256, the same bytes in the test, dev and runtime images (N-073). TagLib
-stays open for the `native/musiclib-tags` round; the `build-ffmpeg` stage is
-the pattern to follow.
+sha256, the same bytes in the test, dev and runtime images (N-073).
+
+**TagLib (2026-09-23):** TagLib 2.3.2 from its release tarball pinned by
+sha256, built static, linked into a fully static `musiclib-tags`: the same
+bytes in the test, dev and runtime images, reproducible with `--no-cache`
+(N-083).
 
 ### N-026 · `WORKERS` default — RESOLVED
 The old entry said "§11.1 gives no default; default = 2, TO CONFIRM". That was
@@ -919,7 +926,12 @@ What is built (Dockerfile, stage `build-ffmpeg`):
 Consequences of the minimal configuration:
 - **No zlib** (the Go image has no `zlib1g-dev`, and autodetect is off):
   - no PNG encoder or decoder. A PNG still probes as `png_pipe` or as an
-    attached picture; the tests build PNG fixtures with Go's `image/png`;
+    attached picture; the tests build PNG fixtures with Go's `image/png`.
+    The "decodifica valida" of covers in §8.5 must therefore be done in Go
+    (`image/png`, `image/jpeg`), never by ffmpeg. For the same reason the
+    pinned ffmpeg cannot mux a PNG cover into a FLAC (`-c:v copy` fails: no
+    decoder, so no dimensions); the fixture `flac-cover-png` is written by
+    the tests' own FLAC codec (2026-09-23);
   - QuickTime compressed `moov` atoms (`cmov`) are unreadable, so such an
     M4A is ClassUnreadable, an album error. None of FLAC, MP3, AAC, ALAC or
     plain MP4 needs zlib.
@@ -1016,7 +1028,7 @@ the server's environment) and `/` as working directory.
     `runtime.LockOSThread`. Nothing in the application does that. A future
     use must not start tools from such a goroutine.
   - A process that leaves the group (`setsid`, `setpgid`) escapes the group
-    kill. ffmpeg, ffprobe and the future TagLib helper never do.
+    kill. ffmpeg, ffprobe and the TagLib helper never do.
   - Orphans are reaped by PID 1. Compose runs the app with `init: true`
     (tini). Without an init, a group member orphaned by the kill would stay
     a zombie, and `Run` would fail with `media_io` after 10 s instead of
@@ -1050,7 +1062,9 @@ the server's environment) and `/` as working directory.
   multistream audio". Refusing is the conservative reading: the file is
   visibly refused, rather than accepted with content that the tag writer and
   the verification were never tested on. Audiobook-style M4A with chapter
-  tracks would be refused.
+  tracks would be refused. Video chapter-thumbnail tracks, on the other
+  hand, carry the attached-picture flag and are therefore accepted; only
+  text chapter tracks are refused (`other_stream`).
 - **Encryption (DRM):**
   - ffprobe reports a CENC-encrypted AAC like a clear one: codec `aac`, tag
     `mp4a`, no stream flag. The probe therefore reads the first 16 packets
@@ -1161,3 +1175,359 @@ Cyrillic look-alikes are not.
 `Error()` never includes it. A decoder's warnings can quote tag contents,
 which §11.1 keeps out of the logs by default. A later round that wants
 stderr in a job's `error_message` reads the field explicitly.
+
+---
+
+## `native/musiclib-tags` and the tag adapter (2026-09-23)
+
+### N-083 · TagLib 2.3.2: pin, build and reproducibility — DECIDED
+Resolves N-025 for TagLib. Dockerfile stage `build-tags`.
+- **Release:** TagLib 2.3.2 (2026-09-05), the latest point release; the 2.3
+  branch has had two. Pinned as `taglib-2.3.2.tar.gz` (GitHub release
+  asset), sha256
+  `3ca2d8afaa7f1cf7f6ed10e511ebc368bfacd6dcaa3dbfa690b89e502e8963dc`.
+  TagLib publishes **no signature**. The sha256 matches three sources:
+  - GitHub's digest of the release asset;
+  - taglib.org/releases, which serves the same bytes;
+  - Homebrew's `taglib.rb`, which pins it independently.
+- **utfcpp**, TagLib 2's one dependency, is bundled in the tarball
+  (`3rdparty/utfcpp`): there is no separate download.
+- **CMake 4.4.3**, Kitware's binary release, sha256
+  `d6c83076c575bc00b823522ac974bda66d0af05d6ddc30e739c12385cf32c6cc`. The
+  signed list `cmake-4.4.3-SHA-256.txt.asc` was checked in a throwaway
+  container:
+  - "Good signature from Brad King";
+  - primary key `CBA2 3971 357C 2E65 90D9 EFD3 EC8F EF3A 7BFB 4EDA`;
+  - signing subkey `C6C2 6532 4BBE BDC3 50B5 13D0 2D2C EF10 3492 1684`.
+
+  The keyserver copy says that the key has expired; gpg still reports the
+  signature as good. CMake runs only in the build stage.
+- **Modules:**
+  - on: `WITH_VORBIS` (FLAC), `WITH_MP4` and `WITH_APE` (MPEG and ID3 are
+    always built);
+  - off: ASF, DSF, Matroska, MOD, RIFF, Shorten, TrueAudio, bindings, tests
+    and examples.
+- **No zlib.** Only compressed ID3v2 frames need it. Without it they are
+  `UnknownFrame`s, which the Phase 4 MP3 reader must report as opaque, so
+  that a render refuses them rather than losing them. FLAC and MP4 never
+  need zlib.
+- **Two builds of the same sources:**
+  - release: static `libtag.a` and a fully static helper, libc and
+    libstdc++ included (`ldd`: "not a dynamic executable", 3.0 MB);
+  - asan: TagLib and the helper under ASan and UBSan,
+    `-fno-sanitize-recover=all`, for the hostile-input tests only (25 MB,
+    toolchain images only, never in `runtime`).
+- **Optimization:** `-O2` goes in `CMAKE_CXX_FLAGS`, with
+  `CMAKE_CXX_FLAGS_RELEASE=-DNDEBUG`, because the Release build type would
+  otherwise add `-O3`. `NDEBUG` also keeps TagLib's `debug()` messages off
+  standard error, where they would break the failure protocol (N-084).
+- **Reproducibility:** `-ffile-prefix-map` in TagLib's and the helper's
+  flags keeps `/build` out of the objects. Two `docker build --no-cache
+  --target build-tags` gave the same sha256:
+  - `musiclib-tags`
+    `1f390a3271bd38b0425ae5cc4c68f6f50f68384cab28c879a3eb422eec0cf4b2`;
+  - `musiclib-tags-asan`
+    `630c65c612a643e16042c8b4fad4705cce37e37f576d18acfccd0b9b1369f9cb`;
+  - `libtag.a`
+    `5b1358dfd51c8654d030b85666788309e65f159f2862192d5b5f048465fb976f`.
+
+  The `runtime` image and the `test` and `dev` images hold the same
+  `/usr/local/bin/musiclib-tags`. As for ffmpeg (N-073), this holds on the
+  same machine and architecture (amd64).
+- **The unit tests of the helper's own parsers** (`make check`: UTF-8,
+  base64, JSON, SHA-256) run under ASan and UBSan in the build stage, which
+  fails if they fail.
+- **Version string:** `2.3.2-musiclib1`. The first part is
+  `TagLib::runtimeVersion()`, read at run time from the linked library; the
+  suffix is `TAGLIB_BUILD_REVISION`, the revision of the cmake line (like
+  FFmpeg's `--extra-version`). The helper's own version is `1`
+  (`src/version.h`). `musiclib-tags version` prints both, and
+  `media.NewTools` requires `media.PinnedTagsVersion` and
+  `media.PinnedTagLibVersion`: the boot refuses anything else
+  (`media_tool_version`), and so does the gate (`TestPinnedToolsInstalled`).
+- **Cost:** a `--no-cache` build of the stage (CMake download, TagLib twice,
+  the helper twice) takes 70 to 80 s on 12 CPUs, once per cache
+  invalidation. The runtime image grows by 3 MB.
+- **Checked end to end:** `docker compose --profile app up --wait` on the
+  runtime image logs `media tools verified` with `musiclib_tags` `1` and
+  `taglib` `2.3.2-musiclib1`, in the hardened container (read-only root,
+  no capabilities), and turns ready.
+
+### N-084 · The helper's protocol — DECIDED
+- `musiclib-tags <op>`, with `op` one of `version`, `inspect`,
+  `extract-images` and `write-managed-tags`. Any other argument count or
+  operation is `invalid_request`. The request is JSON on standard input, at
+  most 256 KiB, read before anything else.
+- **Success:** exit 0 and one JSON value on standard output.
+- **Typed failure:** exit 3 and `{"code","message"}` on standard error. The
+  codes are `invalid_request`, `bad_descriptor`, `unsupported_format`,
+  `format_mismatch`, `corrupt`, `opaque_field`, `too_large`,
+  `picture_not_found`, `io` and `internal`, mapped one to one to
+  `media_tags_*`.
+  - The message is cut to 4 KiB, on a character boundary. It can quote a
+    request string, and the JSON must fit in the 64 KiB of stderr the Runner
+    keeps (§8.5). Found by the raw-request tests: a 100 KB format name gave
+    `media_tool_failed` instead of `unsupported_format`.
+  - Any other exit status, a signal, or stderr that is not exactly one such
+    object is `media_tool_failed`. A sanitizer finding exits 86.
+- **Files are descriptors, never paths** (N-075):
+  - fd 3 is the audio file: readable for `inspect` and `extract-images`,
+    read-write and not `O_APPEND` for a write;
+  - `extract-images` writes picture *i* of the request to fd 4+*i*. These
+    are empty regular files that the caller creates through fsops. That is
+    the reading of §8.1's "file estratti in una directory assegnata"
+    without giving the helper a directory: the caller assigns every output;
+  - a write reads the cover from fd 4.
+
+  Every descriptor must be a regular file (`fstat`), so a FIFO, a device or
+  a directory is `bad_descriptor` without a read, and the helper cannot
+  block. Every destination is checked, and every index resolved, before the
+  first byte is written.
+- **Every key of a write request is required;** `null` means absent. A field
+  the caller forgot therefore cannot be removed silently. Text must be
+  non-empty and without NUL; numbers are integers in 1..2³¹-1; the cover's
+  MIME type is 1..255 printable ASCII characters.
+- **The helper's JSON parser is its own and strict:**
+  - integers only, depth 8, no duplicate keys, strict UTF-8, no lone
+    surrogates;
+  - its writer refuses to print invalid UTF-8.
+
+  On the Go side, `decodeStrict` checks that the output is valid UTF-8
+  before decoding: `encoding/json` would replace invalid bytes silently. It
+  also rejects unknown fields and trailing data.
+- **I/O goes through `FdStream`**, an `IOStream` on pread and pwrite. TagLib's
+  `FileStream` could not be used, because it ignores errors of `fwrite` and
+  `ftruncate`. In `FdStream` the first error sticks: every later operation
+  is a no-op, and the save is reported as `io`.
+  - A write that fails half way can leave the staging copy partially
+    rewritten. The caller discards it on any error (§9.1). Tested with
+    `ulimit -f`, which gives EFBIG in the middle of a write.
+  - Moving the audio frames forward (the metadata grows) copies back to
+    front; moving them back (it shrinks by more than TagLib's padding
+    threshold) copies front to back.
+- **Timeout:** the 30 s of §8.5 (`InspectTimeout`), for all three
+  operations.
+
+### N-085 · The FLAC reader is independent of TagLib; TagLib is the writer — DECIDED
+TagLib's reading silently drops or alters what it cannot represent, and
+saving writes back only what it read. The helper therefore reads the metadata
+with its own strict parser, written from RFC 9639, and uses TagLib only to
+write. Everything TagLib 2.3.2 would drop or alter was found in its source,
+and the reader reports it as opaque or corrupt:
+- an entry without `=`, or with an empty key;
+- a key outside 0x20..0x7D. TagLib's `String` also truncates it at a NUL;
+- invalid UTF-8: TagLib replaces the value with an empty string, which is
+  then dropped;
+- a NUL in a value: TagLib truncates it;
+- more than 50,000 fields: TagLib keeps none (`MAX_XIPH_COMMENT_FIELD_COUNT`,
+  checked with `>`). The writer also refuses to *produce* such a comment
+  (`too_large`): a file at the limit plus new managed fields could not be
+  read back;
+- a field count or entry length beyond the block: TagLib drops the rest
+  (`corrupt`);
+- a second Vorbis comment block: TagLib discards it;
+- iXML and bext APPLICATION blocks (`riff`+`iXML`/`bext`, or `iXML`/`bext`
+  directly): TagLib 2.3 extracts them on read and re-renders them in
+  another form and position on save;
+- a new block of 16 MiB or more: dropped silently on save. The helper checks
+  the rendered comment and the cover block before saving;
+- `Tag::duplicate` in `save()` when the file had no comment block: it
+  deletes a DATE that is not a number ("Spring 1999"). `writeFlac` therefore
+  saves a second time;
+- ID3 tags in a FLAC file (N-090).
+
+Checks around the write:
+- **Before saving:** TagLib must read the same file as the reader: the same
+  ID3 tags, the same iXML or bext, and the same field map and vendor. The
+  field map and vendor are compared only when the comment has no opaque
+  entry. Then TagLib's field map, after the managed fields were applied,
+  must equal the expected one.
+- **After saving:** the file is read back by the reader, and compared with
+  what was asked: fields, vendor, kept blocks, and cover.
+
+Either failing is `internal`. The mutation tests show that each layer
+catches faults on its own:
+- the second save removed: the read-back fails;
+- the read-back also removed: the Go `VerifyTags` fails;
+- the cover block check removed: TagLib drops the block, and the read-back
+  fails;
+- the UTF-8 classification of values removed: the TagLib cross-check fails.
+
+TagLib pads with 4 KiB, and resets the padding to 4 KiB when a write leaves
+more than max(1% of the file, 4 KiB), capped at 1 MiB. A write whose padding
+stays within that bound rewrites the metadata in place, and the audio does
+not move. The output is a function of the input bytes and the request only:
+byte-identical for the same input (tested three times on the same file),
+and a second identical write gives the same bytes.
+
+### N-086 · Canonical unmanaged form, opaque reasons, and what VerifyTags compares — DECIDED
+- **Unmanaged keys:**
+  - `vorbis:KEY`: the key in upper case, values in file order;
+  - `vorbis.vendor`: only when not empty;
+  - `flac.blocks`: `type:sha256` of every block a write keeps byte for byte
+    (STREAMINFO, SEEKTABLE, APPLICATION, CUESHEET, reserved types), in file
+    order.
+
+  Sorted by key. The written comment is ordered by key, as TagLib's field
+  map is. The order between different keys is not preserved, but the order
+  of the values of one key is: §8.3's "preservazione semantica".
+- An empty value counts as absent, as in TagLib. Bytes after the last Vorbis
+  entry are ignored: they are not a field.
+- **Opaque reasons** (`inspection.h`): `malformed_entry`, `invalid_key`,
+  `invalid_utf8`, `nul_byte`, `duplicate_block`, `foreign_metadata`,
+  `foreign_tag`, `invalid_picture`. `removed=true` means that a write
+  removes the field anyway (a managed key, alias, sort key or picture).
+  Only fields with `removed=false` block a write (`opaque_field`, §8.3:
+  "provocano un errore di render"). `Inspection.Blocking()` lists them.
+- **`VerifyTags` (§9.1 step 6)** requires:
+  - the managed fields exactly as asked, and no conflict left;
+  - exactly the expected cover, or no picture;
+  - no opaque field after the write, and **no blocking opaque field
+    before** it. An opaque field is absent from `Unmanaged` on both sides,
+    so the comparison could not see it lost. Mutation-found: with the
+    helper's refusal disabled, several hostile writes succeeded, and the
+    first `VerifyTags` accepted them;
+  - the unmanaged fields equal, key by key and value by value.
+
+  Only managed fields, their aliases and sort keys, and pictures can differ;
+  they are outside `Unmanaged` by construction. The ID3v1 migration of
+  §8.3 is MP3 only (N-094). Because `flac.blocks` covers STREAMINFO, whose
+  MD5 is that of the samples, a writer that changed the audio of a FLAC
+  would also fail this comparison, besides the digest.
+
+### N-087 · Pictures are wholly managed; cover attributes — DECIDED
+- §8.2: "una cover assente nel DB significa nessuna immagine incorporata";
+  §8.5: "unica cover incorporata". A write therefore removes every picture
+  of every type: PICTURE blocks, METADATA_BLOCK_PICTURE, COVERART and
+  COVERARTMIME. It then adds at most one front cover (type 3), with an
+  empty description. The originals keep every picture (§7.4).
+- **Inspect lists every picture**, with location, type, MIME type,
+  dimensions and SHA-256. `extract-images` writes the embedded bytes
+  unchanged. A legacy `COVERART` has type 0 and no MIME type.
+- **The picture's width, height, depth and colors are computed as libFLAC's
+  metaflac computes them** (`share/grabbag/picture.c`), from the image
+  header, in Go:
+  - JPEG: 8-bit precision × components (gray 8, YCbCr 24, CMYK 32);
+  - PNG: IHDR bit depth × samples per pixel, and 24 for any palette image,
+    with the palette size as the number of colors.
+
+  The first draft derived the depth from Go's color model, which gets RGB
+  (32 instead of 24), gray+alpha, low-bit gray and 48-bit RGB wrong. It was
+  fixed before any file was written.
+- **The adapter checks only the header** (`DecodeConfig`), and that it
+  matches the declared format. A full decode of the cover (§8.5 "decodifica
+  valida", 40 Mpixel) is the caller's check when it accepts a cover.
+- **Observation for the importer (§7.4):** ffmpeg writes its attached
+  picture into a FLAC as type 0, "Other", unless told otherwise. Real files
+  muxed that way have no front cover, and the selection falls to "la prima
+  immagine incorporata valida".
+
+### N-088 · The FLAC alias and sort table — DECIDED
+The table is `native/musiclib-tags/src/fields.h` (§8.2: "tabella costante
+dell'adapter, coperta da fixture"). Canonical key, then its aliases in
+reading order:
+
+| Field | Canonical | Aliases (read as a fallback, always removed) |
+|---|---|---|
+| album artist | `ALBUMARTIST` | `ALBUM ARTIST`, `ALBUM_ARTIST` |
+| track | `TRACKNUMBER` | `TRACKNUM` (TagLib's own alias) |
+| track total | `TRACKTOTAL` | `TOTALTRACKS`; then the `/M` of `TRACKNUMBER=N/M` |
+| disc | `DISCNUMBER` | — |
+| disc total | `DISCTOTAL` | `TOTALDISCS`; then the `/M` of `DISCNUMBER=N/M` |
+| date | `DATE` | `YEAR` (TagLib's own alias) |
+
+- `TITLE`, `ARTIST`, `ALBUM`, `GENRE` and `COMPILATION` have no alias.
+- The sort keys removed are `TITLESORT`, `ARTISTSORT`, `ALBUMARTISTSORT` and
+  `ALBUMSORT`. `COMPOSERSORT` and every other sort key are unmanaged, and
+  stay.
+- Sources that disagree with the chosen one are reported as a conflict.
+- A write sets only canonical keys, through explicit field names: no
+  property map and no `Tag::set*`, whose aliases and conversions are
+  TagLib's.
+- Totals come from the caller (§8.2: "massimo numero presente").
+- `TagNumber` parses one value of ASCII digits. A number that is too large
+  becomes `MaxInt32`, so that the caller refuses it rather than truncating
+  (§7.3).
+
+### N-089 · Compilation false removes the field — DECIDED
+`true` is written as `COMPILATION=1`, and `false` removes the field. §8.2
+says only "valore assente significa rimozione". Since the DB column is a
+non-null boolean, false is the absence of the flag. `TagBool` reads "1",
+"0", "true" and "false", case-insensitively.
+
+### N-090 · ID3 tags inside a FLAC are refused as opaque — TO CONFIRM
+§8.2 and §8.3 say nothing about ID3v2 or ID3v1 tags in a FLAC file. TagLib
+reads them and would rewrite them on save. The helper reports them as
+`foreign_tag`, not removed, so a render of such a file fails
+(`opaque_field`). That is conservative: nothing is lost, and the album
+cannot be rendered until the owner decides:
+- refuse, as now;
+- remove them (they duplicate the Vorbis fields);
+- or keep them as they are.
+
+The ID3v1 detection mirrors TagLib's heuristic: "TAG" 128 bytes before the
+end, unless that is the end of an APEv2 footer. A FLAC whose last frame
+happens to end with those bytes is refused, about 1 file in 16 million:
+ACCEPTED.
+
+### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — TO CONFIRM
+§8.5 accepts covers up to 20 MiB, but a FLAC metadata block holds at most
+16 MiB - 1: the picture structure and a MIME type of about 40 bytes, plus
+the image. Between the two, the render of a FLAC album fails with
+`media_tags_too_large`. The helper refuses covers of 16 MiB or more before
+reading them; the FLAC writer refuses the rest before writing. That is
+conservative: nothing is embedded wrongly or silently dropped (TagLib would
+drop the block). The owner decides whether:
+- the cover limit for FLAC albums should be lower;
+- such a cover should stay external only;
+- or the error should stay.
+
+### N-092 · Invalid UTF-8 in unmanaged Vorbis fields — TO CONFIRM
+A FLAC whose unmanaged field is not valid UTF-8 (Latin-1 tags from old
+tools) imports: the file and its audio are fine. It cannot be rendered,
+though: the field is opaque (N-085), and TagLib would empty it. The same
+holds for a NUL in a value, a malformed entry and an invalid key. The
+choice is the owner's:
+- as now: the render fails with `media_tags_opaque_field`, and the album
+  stays unpublished until its source is fixed;
+- the importer refuses such files up front: `Inspection.Blocking()` exists
+  for that;
+- the render drops the field. That is a silent loss, which §8.3 forbids
+  unless the owner decides otherwise.
+
+The same field in a *managed* key (a Latin-1 `TITLE`) is no problem: the
+write replaces it.
+
+### N-093 · The pinned ffmpeg refuses FLAC files with an invalid PICTURE block — ACCEPTED
+FFmpeg's FLAC demuxer fails to open a file whose PICTURE block does not
+parse ("Error parsing attached picture"), whatever the audio. Probe and
+`AudioDigest` therefore refuse such a file. With its `.flac` extension, it is
+an album error (§7.2), and it never reaches a render. The helper still
+handles it: `invalid_picture`, removed by a write, which succeeds. That is
+tested with the audio frames compared byte for byte, since no digest is
+possible. A test pins the ffmpeg behaviour, so a bump that changes it
+fails the gate.
+
+### N-094 · MP3 and M4A: designed now, implemented in Phase 4 — DECIDED
+This round implements FLAC completely. For the other formats:
+- **Now:**
+  - the request and response types, and the `Format` enum;
+  - `fields.h` holds the per-format table layout;
+  - every MP3 and M4A operation fails with a typed `unsupported_format`
+    (`media_tags_unsupported_format`, tested);
+  - the TagLib build already has the MPEG, ID3v2, APE and MP4 modules.
+- **Phase 4, MP3:**
+  - the reader: ID3v2, then APE, then ID3v1, first non-empty value, with
+    conflicts (§8.1). It must be independent of TagLib, like the FLAC one,
+    with a raw ID3v2 scan: TagLib drops or upgrades frames on the v2.3→v2.4
+    conversion, and compressed frames need zlib (N-083);
+  - the writer: ID3v2.4, APE cleanup of managed keys, covers and sort keys
+    only, ID3v1 removal with the comment moved to COMM `legacy-id3v1`
+    (§8.3);
+  - its alias table: old ID3 year and date frames (TYER, TDAT, TIME, TRDA,
+    TORY), and the sort frames TSOT, TSOP, TSO2 and TSOA;
+  - the ID3v1-migration exclusion in `VerifyTags`.
+- **Phase 4, M4A:** the reader and the writer of the `©nam`, `©ART`,
+  `aART`, `©alb`, `trkn`, `disk`, `©day`, `©gen`, `cpil` and `covr` atoms,
+  the sort atoms `sonm`, `soar`, `soaa` and `soal`, and the numeric `gnre`
+  removed when the textual `©gen` is written (§8.2).

@@ -111,7 +111,7 @@ func testConfig(dbURL string) Config {
 // testPaths are a fresh data volume and import source.
 func testPaths(t *testing.T) paths {
 	t.Helper()
-	return paths{data: t.TempDir(), imports: t.TempDir(), ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath}
+	return paths{data: t.TempDir(), imports: t.TempDir(), ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath, tags: media.TagsPath}
 }
 
 // testDaemon is one run() in a goroutine.

@@ -44,8 +44,9 @@ type daemon struct {
 	pool *pgxpool.Pool
 
 	// runner is the one Runner of the process: every native tool runs
-	// through it, bounded by WORKERS (§6.1). tools are the verified ffmpeg
-	// and ffprobe; their versions feed render_version (§2.1, N-010).
+	// through it, bounded by WORKERS (§6.1). tools are the verified ffmpeg,
+	// ffprobe and musiclib-tags; their versions feed render_version (§2.1,
+	// N-010).
 	runner *media.Runner
 	tools  *media.Tools
 
@@ -189,18 +190,19 @@ func (d *daemon) identifyVolume(ctx context.Context) error {
 }
 
 // checkTools creates the process's tool Runner, with WORKERS slots (§6.1),
-// and verifies that ffmpeg and ffprobe are present and at the pinned
-// version (§2.1, §11.1 step 3). A missing or different tool is fatal:
-// media_tool_unavailable or media_tool_version.
+// and verifies that ffmpeg, ffprobe and the TagLib helper musiclib-tags are
+// present and at the pinned versions (§2.1, §11.1 step 3). A missing or
+// different tool is fatal: media_tool_unavailable or media_tool_version.
 func (d *daemon) checkTools(ctx context.Context) error {
 	d.runner = media.NewRunner(d.cfg.Workers)
-	tools, err := media.NewTools(ctx, d.runner, d.paths.ffmpeg, d.paths.ffprobe)
+	tools, err := media.NewTools(ctx, d.runner, d.paths.ffmpeg, d.paths.ffprobe, d.paths.tags)
 	if err != nil {
 		return err
 	}
 	d.tools = tools
 	v := tools.Versions()
-	d.log.Info("media tools verified", "ffmpeg", v.FFmpeg, "ffprobe", v.FFprobe)
+	d.log.Info("media tools verified", "ffmpeg", v.FFmpeg, "ffprobe", v.FFprobe,
+		"musiclib_tags", v.Tags, "taglib", v.TagLib)
 	return nil
 }
 

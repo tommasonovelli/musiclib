@@ -11,11 +11,12 @@
 # Targets:
 #   build-ffmpeg  ffmpeg + ffprobe from a pinned, signed source tarball (static)
 #   build-lame    the LAME command line encoder, for the MP3 test fixtures only
-#   toolchain     Go compiler + gcc (race detector), ffmpeg, lame, non-root `dev` user
+#   build-tags    TagLib 2.3.2 (pinned tarball) and native/musiclib-tags, static + ASan
+#   toolchain     Go compiler + gcc (race detector), ffmpeg, lame, musiclib-tags, non-root `dev` user
 #   deps          toolchain + module cache downloaded from go.mod/go.sum
 #   test          deps + a read-only snapshot of the source tree (scripts/check.sh)
 #   build-app     compiles ./cmd/musiclibd (static, CGO_ENABLED=0)
-#   runtime       the image of the `app` service (DESIGN.md §11.1), with ffmpeg
+#   runtime       the image of the `app` service (DESIGN.md §11.1), with ffmpeg and musiclib-tags
 
 ARG GO_IMAGE=golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
 ARG RUNTIME_IMAGE=debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
@@ -101,6 +102,80 @@ RUN curl -fsSL -o lame.tar.gz "https://downloads.sourceforge.net/project/lame/la
  && /opt/lame/bin/lame --version | head -n 1
 
 # ---------------------------------------------------------------------------
+# The TagLib helper native/musiclib-tags (DESIGN.md §2.1, §8.1; NOTES.md
+# N-025, N-083).
+#
+# TagLib is built from its release tarball, pinned by version and sha256.
+# TagLib publishes no signature; the sha256 is the digest GitHub reports for
+# the release asset and the one Homebrew's formula pins independently.
+# utfcpp, the one dependency TagLib 2 needs, is bundled in that tarball
+# (3rdparty/utfcpp). CMake is Kitware's binary release, pinned by sha256; the
+# SHA-256 list it comes from is signed by Kitware's release key (checked when
+# the pin was set). No zlib: only compressed ID3v2 frames need it (N-083).
+#
+# Only the TagLib modules of the supported formats are built: Vorbis (FLAC),
+# MP4, and APE (the APE tags of MP3; MPEG and ID3 are always built).
+#
+# Two builds of the same sources:
+#   - release: static TagLib and a fully static helper (libc and libstdc++
+#     included), the same bytes in the test, dev and runtime images;
+#   - asan: TagLib and the helper under AddressSanitizer and UBSan, used by
+#     the hostile-input tests only, never in `runtime`.
+# TAGLIB_BUILD_REVISION is the revision of this configuration: it is part of
+# the version the helper prints and the application checks at boot. Bump it
+# whenever the cmake line changes, and update media.PinnedTagLibVersion.
+FROM ${GO_IMAGE} AS build-tags
+
+ARG CMAKE_VERSION=4.4.3
+ARG CMAKE_SHA256=d6c83076c575bc00b823522ac974bda66d0af05d6ddc30e739c12385cf32c6cc
+ARG TAGLIB_VERSION=2.3.2
+ARG TAGLIB_SHA256=3ca2d8afaa7f1cf7f6ed10e511ebc368bfacd6dcaa3dbfa690b89e502e8963dc
+ARG TAGLIB_BUILD_REVISION=musiclib1
+
+WORKDIR /build
+RUN curl -fsSL -o cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+ && echo "${CMAKE_SHA256}  cmake.tar.gz" | sha256sum -c - \
+ && mkdir cmake \
+ && tar -xzf cmake.tar.gz -C cmake --strip-components=1 \
+ && rm cmake.tar.gz
+# CMAKE_*_FLAGS_RELEASE only keeps NDEBUG: the optimization level is set in
+# CMAKE_CXX_FLAGS, per variant. -ffile-prefix-map keeps /build out of the
+# objects, so that the build is reproducible byte for byte.
+RUN curl -fsSL -o taglib.tar.gz "https://github.com/taglib/taglib/releases/download/v${TAGLIB_VERSION}/taglib-${TAGLIB_VERSION}.tar.gz" \
+ && echo "${TAGLIB_SHA256}  taglib.tar.gz" | sha256sum -c - \
+ && tar -xzf taglib.tar.gz \
+ && for variant in release asan; do \
+      if [ "${variant}" = release ]; then \
+        flags="-O2"; prefix=/opt/taglib; \
+      else \
+        flags="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"; prefix=/opt/taglib-asan; \
+      fi; \
+      /build/cmake/bin/cmake -S "taglib-${TAGLIB_VERSION}" -B "taglib-${variant}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS="${flags} -ffile-prefix-map=/build=." \
+        -DCMAKE_CXX_FLAGS="${flags} -ffile-prefix-map=/build=." \
+        -DCMAKE_C_FLAGS_RELEASE=-DNDEBUG -DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG \
+        -DCMAKE_INSTALL_PREFIX="${prefix}" \
+        -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BINDINGS=OFF \
+        -DWITH_ZLIB=OFF \
+        -DWITH_VORBIS=ON -DWITH_MP4=ON -DWITH_APE=ON \
+        -DWITH_ASF=OFF -DWITH_DSF=OFF -DWITH_MATROSKA=OFF -DWITH_MOD=OFF -DWITH_RIFF=OFF \
+        -DWITH_SHORTEN=OFF -DWITH_TRUEAUDIO=OFF \
+      && /build/cmake/bin/cmake --build "taglib-${variant}" --parallel "$(nproc)" \
+      && /build/cmake/bin/cmake --install "taglib-${variant}" \
+      || exit 1; \
+    done
+COPY native/musiclib-tags/ /build/musiclib-tags/
+RUN make -C musiclib-tags check \
+ && make -C musiclib-tags MODE=release TAGLIB=/opt/taglib TAGLIB_BUILD="${TAGLIB_BUILD_REVISION}" \
+ && make -C musiclib-tags MODE=asan TAGLIB=/opt/taglib-asan TAGLIB_BUILD="${TAGLIB_BUILD_REVISION}" \
+ && install -D -m 0755 musiclib-tags/build/release/musiclib-tags /opt/musiclib-tags/bin/musiclib-tags \
+ && install -D -m 0755 musiclib-tags/build/asan/musiclib-tags /opt/musiclib-tags/bin/musiclib-tags-asan \
+ && /opt/musiclib-tags/bin/musiclib-tags version \
+ && /opt/musiclib-tags/bin/musiclib-tags-asan version \
+ && ! ldd /opt/musiclib-tags/bin/musiclib-tags
+
+# ---------------------------------------------------------------------------
 FROM ${GO_IMAGE} AS toolchain
 
 # UID/GID of the unprivileged user that builds and runs the tests. The scripts
@@ -135,6 +210,9 @@ RUN groupadd --non-unique --gid "${DEV_GID}" dev \
 # (DESIGN.md §12.1). lame only generates MP3 fixtures in the tests.
 COPY --from=build-ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 COPY --from=build-lame /opt/lame/bin/lame /usr/local/bin/lame
+# The TagLib helper, the same bytes as in `runtime`, and its sanitized build
+# for the hostile-input tests (toolchain images only).
+COPY --from=build-tags /opt/musiclib-tags/bin/musiclib-tags /opt/musiclib-tags/bin/musiclib-tags-asan /usr/local/bin/
 
 WORKDIR /src
 USER dev
@@ -172,11 +250,6 @@ COPY . .
 RUN --mount=type=cache,target=/home/dev/.cache/go-build,uid=${DEV_UID},gid=${DEV_GID} \
     CGO_ENABLED=0 go build -trimpath -o /home/dev/out/musiclibd ./cmd/musiclibd
 
-# TODO(phase 2, DESIGN.md §2.1, §8.1): add a `build-tags` stage that compiles
-# native/musiclib-tags against TagLib 2.x from a source tarball pinned by
-# version and sha256, on the same Debian release as RUNTIME_IMAGE, and COPY
-# the resulting binary into `runtime`. Its version feeds render_version.
-
 # ---------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
 
@@ -190,6 +263,9 @@ ARG APP_GID=1000
 # ffmpeg and ffprobe (DESIGN.md §2.1, §8.4): static, the same bytes as in the
 # test and dev images. musiclibd checks their version at boot (§11.1 step 3).
 COPY --from=build-ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
+# The TagLib helper (DESIGN.md §2.1, §8.1): static, the same bytes as in the
+# test and dev images. musiclibd checks its version at boot.
+COPY --from=build-tags /opt/musiclib-tags/bin/musiclib-tags /usr/local/bin/
 
 RUN install -d -o "${APP_UID}" -g "${APP_GID}" -m 0755 /data \
  && install -d -o root -g root -m 0755 /import

@@ -9,16 +9,20 @@ import (
 )
 
 // The installed tools are the pinned ones, and their versions are read, not
-// assumed (§2.1, N-010). A Dockerfile bump without a matching PinnedVersion
-// fails here, in the gate, before it can fail a boot.
+// assumed (§2.1, N-010). A Dockerfile bump without a matching pinned
+// constant fails here, in the gate, before it can fail a boot.
 func TestPinnedToolsInstalled(t *testing.T) {
 	tools := newTools(t)
-	want := Versions{FFmpeg: PinnedVersion, FFprobe: PinnedVersion}
+	want := Versions{FFmpeg: PinnedVersion, FFprobe: PinnedVersion, Tags: PinnedTagsVersion, TagLib: PinnedTagLibVersion}
 	if got := tools.Versions(); got != want {
 		t.Fatalf("Versions() = %+v, want %+v", got, want)
 	}
 	if PinnedVersion != "8.1.3-musiclib1" {
 		t.Fatalf("PinnedVersion changed to %q: update NOTES.md N-073, docs/docker.md and the Dockerfile together", PinnedVersion)
+	}
+	if PinnedTagLibVersion != "2.3.2-musiclib1" || PinnedTagsVersion != "1" {
+		t.Fatalf("the helper's pinned versions changed to %q / %q: update NOTES.md N-083, docs/docker.md, "+
+			"the Dockerfile and native/musiclib-tags/src/version.h together", PinnedTagsVersion, PinnedTagLibVersion)
 	}
 }
 
@@ -45,23 +49,39 @@ func TestNewToolsRefusesWrongTools(t *testing.T) {
 	oldFFprobe := fake("ffprobe-old", `echo "ffprobe version 8.1.3 Copyright (c) 2007-2026 the FFmpeg developers"`)
 	garbled := fake("garbled", `echo "hello"`)
 	failing := fake("failing", `echo "ffmpeg version `+PinnedVersion+`"; exit 1`)
+	tagsVersion := func(name, helper, taglib string) string {
+		return fake(name, `echo '{"helper":"`+helper+`","taglib":"`+taglib+`"}'`)
+	}
+	oldHelper := tagsVersion("tags-old-helper", "0", PinnedTagLibVersion)
+	oldTagLib := tagsVersion("tags-old-taglib", PinnedTagsVersion, "2.3.1-musiclib1")
+	unsuffixed := tagsVersion("tags-unsuffixed", PinnedTagsVersion, "2.3.2")
+	tagsExtra := fake("tags-extra", `echo '{"helper":"1","taglib":"`+PinnedTagLibVersion+`","extra":1}'`)
+	tagsFailing := fake("tags-failing", `echo '{"helper":"1","taglib":"`+PinnedTagLibVersion+`"}'; exit 1`)
 
 	for _, tc := range []struct {
-		name            string
-		ffmpeg, ffprobe string
-		code            string
+		name                  string
+		ffmpeg, ffprobe, tags string
+		code                  string
 	}{
-		{"ffmpeg missing", filepath.Join(dir, "none"), FFprobePath, CodeToolUnavailable},
-		{"ffprobe missing", FFmpegPath, filepath.Join(dir, "none"), CodeToolUnavailable},
-		{"ffmpeg of another version", oldFFmpeg, FFprobePath, CodeToolVersion},
-		{"ffprobe without the configuration suffix", FFmpegPath, oldFFprobe, CodeToolVersion},
-		{"not a version line", garbled, FFprobePath, CodeToolUnavailable},
-		{"ffprobe at the ffmpeg path", FFprobePath, FFprobePath, CodeToolUnavailable},
-		{"ffmpeg at the ffprobe path", FFmpegPath, FFmpegPath, CodeToolUnavailable},
-		{"version printed, exit 1", failing, FFprobePath, CodeToolUnavailable},
+		{"ffmpeg missing", filepath.Join(dir, "none"), FFprobePath, TagsPath, CodeToolUnavailable},
+		{"ffprobe missing", FFmpegPath, filepath.Join(dir, "none"), TagsPath, CodeToolUnavailable},
+		{"musiclib-tags missing", FFmpegPath, FFprobePath, filepath.Join(dir, "none"), CodeToolUnavailable},
+		{"ffmpeg of another version", oldFFmpeg, FFprobePath, TagsPath, CodeToolVersion},
+		{"ffprobe without the configuration suffix", FFmpegPath, oldFFprobe, TagsPath, CodeToolVersion},
+		{"not a version line", garbled, FFprobePath, TagsPath, CodeToolUnavailable},
+		{"ffprobe at the ffmpeg path", FFprobePath, FFprobePath, TagsPath, CodeToolUnavailable},
+		{"ffmpeg at the ffprobe path", FFmpegPath, FFmpegPath, TagsPath, CodeToolUnavailable},
+		{"version printed, exit 1", failing, FFprobePath, TagsPath, CodeToolUnavailable},
+		{"musiclib-tags of another version", FFmpegPath, FFprobePath, oldHelper, CodeToolVersion},
+		{"musiclib-tags with another TagLib", FFmpegPath, FFprobePath, oldTagLib, CodeToolVersion},
+		{"TagLib without the build suffix", FFmpegPath, FFprobePath, unsuffixed, CodeToolVersion},
+		{"musiclib-tags version with an unknown field", FFmpegPath, FFprobePath, tagsExtra, CodeToolUnavailable},
+		{"musiclib-tags version, exit 1", FFmpegPath, FFprobePath, tagsFailing, CodeToolUnavailable},
+		{"ffmpeg at the musiclib-tags path", FFmpegPath, FFprobePath, FFmpegPath, CodeToolUnavailable},
+		{"garbled musiclib-tags version", FFmpegPath, FFprobePath, garbled, CodeToolUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewTools(t.Context(), NewRunner(1), tc.ffmpeg, tc.ffprobe)
+			_, err := NewTools(t.Context(), NewRunner(1), tc.ffmpeg, tc.ffprobe, tc.tags)
 			wantCode(t, err, tc.code)
 		})
 	}

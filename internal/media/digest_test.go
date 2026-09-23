@@ -169,6 +169,10 @@ func TestAudioDigestInvariants(t *testing.T) {
 		same(t, a, gen(t, dir, "a-tagged.flac", "-i", a, "-c", "copy", "-metadata", "title=Another title", "-metadata", "artist=É"))
 		same(t, a, gen(t, dir, "a-level12.flac", "-i", wav, "-c:a", "flac", "-compression_level", "12"))
 		same(t, a, gen(t, dir, "a-cover.flac", "-i", a, "-i", jpg, "-map", "0", "-map", "1", "-c", "copy", "-disposition:v", "attached_pic"))
+		// A PNG cover, which only the test codec can add (N-073).
+		png := pngImage(t, 8, 8, 3)
+		same(t, a, writeFLAC(t, dir, "a-cover-png.flac", parseFLAC(t, readFile(t, a)).with(
+			flacPictureData{typ: 3, mime: "image/png", width: 8, height: 8, depth: 32, data: png}.block())))
 	})
 	t.Run("mp3 tags", func(t *testing.T) {
 		a := lame(t, wav, dir, "a.mp3", "-V", "2")

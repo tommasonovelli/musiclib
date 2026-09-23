@@ -62,6 +62,11 @@ func fixtures(t testing.TB, dir string) map[string]string {
 		t.Fatal(err)
 	}
 	f["cover.png"] = writeFile(t, filepath.Join(dir, "cover.png"), img.Bytes())
+	// A PNG front cover in a FLAC PICTURE block. The pinned ffmpeg cannot mux
+	// it (no PNG decoder, N-073), so the independent codec of
+	// flacmeta_test.go writes it.
+	f["flac-cover-png"] = writeFLAC(t, dir, "cover-png.flac", parseFLAC(t, readFile(t, f["flac16"])).with(
+		flacPictureData{typ: 3, mime: "image/png", width: 16, height: 16, depth: 32, data: img.Bytes()}.block()))
 	return f
 }
 
@@ -84,6 +89,7 @@ func TestProbeClassifies(t *testing.T) {
 		{"flac-5.1", ProbeResult{Class: ClassAudio, Container: "flac", Format: FormatFLAC, DeclaredFrames: 132300,
 			Audio: AudioInfo{Codec: "flac", SampleRate: 44100, Channels: 6, Layout: "5.1", Duration: 3 * time.Second}}},
 		{"flac-cover", ProbeResult{Class: ClassAudio, Container: "flac", Format: FormatFLAC, Audio: stereo("flac"), DeclaredFrames: 132300, AttachedPictures: 1}},
+		{"flac-cover-png", ProbeResult{Class: ClassAudio, Container: "flac", Format: FormatFLAC, Audio: stereo("flac"), DeclaredFrames: 132300, AttachedPictures: 1}},
 		{"silence", ProbeResult{Class: ClassAudio, Container: "flac", Format: FormatFLAC, DeclaredFrames: 96000,
 			Audio: AudioInfo{Codec: "flac", SampleRate: 48000, Channels: 2, Layout: "stereo", Duration: 2 * time.Second}}},
 		{"mp3-cbr", ProbeResult{Class: ClassAudio, Container: "mp3", Format: FormatMP3, Audio: stereo("mp3"), DeclaredFrames: 132300}},

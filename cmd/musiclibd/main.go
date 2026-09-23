@@ -53,10 +53,11 @@ type paths struct {
 	imports string
 	ffmpeg  string
 	ffprobe string
+	tags    string
 }
 
 // defaultPaths are the fixed paths of the images.
-var defaultPaths = paths{data: dataPath, imports: importPath, ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath}
+var defaultPaths = paths{data: dataPath, imports: importPath, ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath, tags: media.TagsPath}
 
 func main() {
 	os.Exit(musiclibd(os.Args[1:], os.Getenv, os.Stderr))

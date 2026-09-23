@@ -32,7 +32,7 @@ func TestHelperProcess(t *testing.T) {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	os.Exit(serve(log, os.Getenv, paths{data: os.Getenv("TEST_DATA"), imports: os.Getenv("TEST_IMPORT"),
-		ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath}))
+		ffmpeg: media.FFmpegPath, ffprobe: media.FFprobePath, tags: media.TagsPath}))
 }
 
 // serverProcess is a musiclibd server running as a real child process.

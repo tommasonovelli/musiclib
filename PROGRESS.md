@@ -28,7 +28,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
 - [ ] Full repository layout (§2.3): `cmd/musiclibd`, `internal/volume` (N-060) and `internal/media` now exist; the other packages arrive with their phases
-- [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). ffmpeg/ffprobe are in the runtime image since Phase 2 (N-073); TagLib is still to come (N-025)
+- [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). ffmpeg/ffprobe (N-073) and the static TagLib helper `musiclib-tags` (N-083) are in the runtime image since Phase 2
 - [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
 - [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
 - [x] pgx pool with `WORKERS + 8` connections (§11.1) and UUIDv7 ids (§2.1) — `store.NewPool`, `store.NewID`
@@ -42,8 +42,8 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 ## Phase 2 — First vertical slice (one FLAC album)
 
 - [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
-- [ ] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1)
-- [ ] Managed tag mapping and alias removal (§8.2, §8.3)
+- [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`; MP3 and M4A answer a typed `unsupported_format` until Phase 4 (N-094)
+- [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC complete** (table in `native/musiclib-tags/src/fields.h`, N-088); the MP3 and M4A tables are Phase 4 (N-094)
 - [ ] `internal/importer`: import of a single album candidate
 - [ ] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3)
 - [ ] `internal/render`: snapshot → pure plan → build in staging (§9.1)
@@ -64,11 +64,11 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
 ## Phase 4 — Formats and content
 
-- [ ] MP3 (ID3v2.4, APE, ID3v1 migration), M4A AAC/ALAC (§8.1–8.3)
+- [ ] MP3 (ID3v2.4, APE, ID3v1 migration), M4A AAC/ALAC (§8.1–8.3) — in `native/musiclib-tags`: independent MP3 and M4A readers, the writers, their alias and sort tables, and the ID3v1 exclusion in `VerifyTags` (N-094); probe and `AudioDigest` already handle both
 - [ ] Covers: selection, limits, upload, removal (§7.4, §8.5)
 - [ ] LRC files associated with tracks (§7.4)
 - [ ] Attachments under `Extras/` (§5.1, §7.4)
-- [ ] Verification and preservation of unmanaged tags (§8.3)
+- [~] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086); MP3 and M4A with their readers (N-094)
 
 ## Phase 5 — Full experience
 
@@ -344,7 +344,7 @@ logs JSON on stderr.
 | 1 | HTTP serving with negative readiness; `volume.Acquire` | |
 | (N-065) | `CheckMaintenance`, before anything touches the database | |
 | 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` | |
-| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg/ffprobe, `media_tool_unavailable` / `media_tool_version`), `/import` listable | |
+| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg, ffprobe and musiclib-tags, `media_tool_unavailable` / `media_tool_version`), `/import` listable | |
 | 4 | — | journal recovery |
 | 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)` | running → pending; `work/render`, `work/retired` |
 | 6 | — | enqueue stale renders |
@@ -400,7 +400,8 @@ docker compose --profile app up -d --build --wait     # docs/docker.md
 ### `internal/media` — ffprobe/ffmpeg adapter, `AudioDigest` (§6.1, §7.2, §7.6, §8.1, §8.4, §8.5) ✔
 
 The adapter of the native media tools (§2.3). The TagLib helper
-(`native/musiclib-tags`) will join it, reusing the Runner.
+(`native/musiclib-tags`) joined it in round 3, through the same Runner: see
+the next section.
 
 **Tools in the images (N-073).** FFmpeg 8.1.3 is built from its signed
 release tarball, pinned by sha256, fully static, with
@@ -415,8 +416,8 @@ Public API:
 | `NewRunner(workers)` | the process's one tool runner and the global semaphore of §6.1; built at boot, passed explicitly |
 | `Runner.Run(ctx, Command)` | argv only; own process group and `Pdeathsig` SIGKILL; empty environment, cwd `/`; stdin `/dev/null` or explicit bytes; only the given descriptors (3, 4, ...); stdout streamed to a writer, optionally bounded; the first 64 KiB of stderr kept; required timeout; on every outcome the group is killed and waited for |
 | `InspectTimeout` / `DecodeTimeout` | 30 s / 30 min (§8.5) |
-| `NewTools(ctx, runner, ffmpeg, ffprobe)` | reads both `-version` lines and requires `PinnedVersion` |
-| `Tools.Versions()` | the versions read, an input of `render_version` (N-080) |
+| `NewTools(ctx, runner, ffmpeg, ffprobe, tags)` | reads the `-version` lines of ffmpeg and ffprobe and requires `PinnedVersion`; reads `musiclib-tags version` and requires `PinnedTagsVersion` and `PinnedTagLibVersion` |
+| `Tools.Versions()` | the versions read (`FFmpeg`, `FFprobe`, `Tags`, `TagLib`), inputs of `render_version` (N-080, N-010) |
 | `Tools.Probe(ctx, f)` | classification by content: `audio` (with `Format` = `flac`, `mp3`, `m4a-aac`, `m4a-alac`, codec, rate, channels, layout, duration, declared frames), `unsupported_audio` (reason), `no_audio`, `unreadable`; attached pictures counted |
 | `Tools.AudioDigest(ctx, f)` | §8.4: probe, full decode to `pcm_f64le`, streamed SHA-256, frames = bytes / (8 × channels), declared length enforced; returns `(SampleRate, Channels, Layout, Frames, PCMSHA256)` |
 | `KnownAudioExtensions()` / `HasKnownAudioExtension` | the fixed list of §7.2, for the importer's rule (N-081) |
@@ -508,8 +509,10 @@ committed.
   - output limit and a failing writer;
   - no descriptor leak across every outcome.
 - **Tool versions:** missing, older, unsuffixed, swapped, garbled and failing
-  tools are refused. The boot refuses a missing ffprobe and an ffmpeg of
-  another version, and logs the verified versions.
+  tools are refused, the TagLib helper included (another helper or TagLib
+  version, no build suffix, an unknown field, exit 1). The boot refuses a
+  missing ffprobe or helper and an ffmpeg or helper of another version, and
+  logs the four verified versions.
 
 Mutation-checked: each of the following makes a test fail:
 - in the Runner: no own process group; no `Pdeathsig`; no group kill after
@@ -530,6 +533,155 @@ scripts/check.sh ./internal/media/...
 scripts/dev.sh go test -race -count=20 -run 'TestRun|TestNewTools|TestProbeToolFailures|TestAudioDigestDecoderFailures' ./internal/media/
 scripts/dev.sh go test -run '^$' -bench AudioDigest5Min -benchtime 10x ./internal/media/
 ```
+
+### `native/musiclib-tags` + the tag adapter (§2.1, §8.1–§8.3, §8.5, §9.1 step 6, §12.2) — FLAC ✔, MP3/M4A Phase 4
+
+The TagLib helper and its Go adapter in `internal/media`. **FLAC is
+complete.** Every MP3 and M4A operation answers a typed
+`unsupported_format` until Phase 4 (N-094).
+
+**The helper (C++20, `native/musiclib-tags/`).** It knows no domain (§13.2).
+It gets JSON on stdin and files as descriptors only: fd 3 the audio file,
+fd 4.. the extract destinations or the cover. Its protocol is N-084.
+
+| Source | Role |
+|---|---|
+| `src/main.cpp` | the four operations (`version`, `inspect`, `extract-images`, `write-managed-tags`), the 256 KiB request limit, the failure protocol (exit 3, `{"code","message"}`, message ≤ 4 KiB) |
+| `src/request.{h,cpp}` | typed requests; every key required, `null` = absent |
+| `src/json.{h,cpp}` | strict JSON reader (integers, depth 8, unique keys, strict UTF-8) and writer |
+| `src/fdio.{h,cpp}` | `checkDescriptor` (regular file, access mode, no `O_APPEND`), `FdStream`: TagLib `IOStream` on pread/pwrite with sticky errors |
+| `src/flac.{h,cpp}` | the independent FLAC reader, the analysis, and `writeFlac` (TagLib) with its checks before and after the save (N-085) |
+| `src/fields.h` | the constant table of managed fields, aliases, sort keys and picture keys (§8.2, N-088) |
+| `src/inspection.{h,cpp}` | the inspection and its JSON; opaque reasons (N-086) |
+| `src/text.{h,cpp}`, `src/sha256.{h,cpp}` | UTF-8 validation, base64, SHA-256 |
+| `src/version.h` | `kHelperVersion` = `1` |
+| `tests/unit_tests.cpp` | the parsers under ASan and UBSan (`make check`, run by the build) |
+
+**Pinned TagLib (N-083).**
+- TagLib 2.3.2 and CMake 4.4.3 are pinned by sha256 and built in the
+  Dockerfile stage `build-tags`, static, with no zlib.
+- The helper is fully static (3 MB) and has the same bytes in the `test`,
+  `dev` and `runtime` images. Two `--no-cache` builds gave the same sha256.
+- A second, ASan and UBSan, build of TagLib and the helper is in the
+  toolchain images only.
+- The version is `{"helper":"1","taglib":"2.3.2-musiclib1"}`, checked at
+  boot and in the gate.
+
+**Go adapter (`internal/media`).**
+
+| Function | Role |
+|---|---|
+| `Tools.Inspect(ctx, f, format)` | managed fields by §8.1, as ordered lists; conflicts between canonical key and aliases; pictures; unmanaged fields in canonical form; opaque fields |
+| `Tools.ExtractImages(ctx, f, format, targets)` | byte-exact pictures into empty destination files; nothing written unless every index exists |
+| `Tools.WriteManagedTags(ctx, f, format, TagValues, *Cover)` | complete rewrite of the managed fields; zero value = removed; totals from the caller; exactly one front cover or no picture at all; aliases, sort keys and picture keys removed; unmanaged fields kept, the file not rebuilt |
+| `VerifyTags(want, cover, before, after)` | §9.1 step 6: managed values and cover as asked, nothing opaque (and nothing blocking before), unmanaged fields identical: `media_tags_verification` otherwise (§12.2) |
+| `Inspection.Blocking()` | the opaque fields that make a write fail (§8.3) |
+| `JoinValues`, `TagNumber`, `TagBool` | "; "-join of multi-valued text (§7.3); strict parsing of numbers (never truncated) and of the compilation flag |
+| `media_tags_*` codes | one per helper failure code, plus `media_tags_verification` |
+
+**How it maps to DESIGN.md.**
+- **§8.1: reading.** The canonical key wins, then the aliases in table
+  order, then the `/M` of `N/M`. A disagreement is a conflict. TagLib's
+  property map and implicit precedences are never used: the reader is the
+  helper's own (N-085).
+- **§8.2: writing.** Only canonical keys are written, through explicit
+  names. The table removes `ALBUM ARTIST`, `ALBUM_ARTIST`, `TRACKNUM`,
+  `TOTALTRACKS`, `TOTALDISCS`, `YEAR` and the four sort keys (N-088). A
+  compilation is written as `1`, and false removes it (N-089). Pictures are
+  wholly managed (N-087).
+- **§8.3: unmanaged fields.** No rebuild of the file and no clearing of the
+  map: the writer removes only the table's keys.
+  - What TagLib would lose is refused before writing (`opaque_field`), or
+    removed when it is managed anyway.
+  - Two checks surround the save: TagLib's map against the expected one
+    before, a re-read after.
+  - The output is byte-identical for the same input.
+- **§8.5:** the 30 s limit, the Runner's process group, and descriptors
+  only.
+
+**Tests** (real pinned helper and ffmpeg, fixtures made at test time by
+lavfi, `image/png`, and an independent Go FLAC codec, `flacmeta_test.go`):
+- **Contract:**
+  - no tags;
+  - every managed field, multi-valued fields, keys in any case;
+  - aliases, "canonical wins" and conflicts;
+  - sort keys removed, `COMPOSERSORT` kept;
+  - Unicode and NFD byte-exact, astral characters;
+  - unmanaged fields preserved (ReplayGain, COMPOSER, COMMENT ×2, custom
+    keys with `=`, lyrics with CR/LF, APPLICATION blocks, STREAMINFO);
+  - five pictures in blocks and comments, listed, extracted byte-exact,
+    replaced by a JPEG or PNG front cover or removed;
+  - a write that only removes;
+  - idempotence, byte-identical;
+  - determinism over three copies;
+  - a shrinking write;
+  - inspect writes nothing;
+  - MP3 and M4A refused, a FLAC declared as MP3 refused;
+  - the probe fixtures' JPEG cover (ffmpeg's, type 0) and the new PNG cover
+    fixture, extracted byte-exact.
+- **Audio integrity:** every successful write in the tests goes through
+  `writeChecked`:
+  - AudioDigest before and after must be equal;
+  - the audio frames must be byte-identical;
+  - `VerifyTags` must pass.
+
+  `TestTagsAlteredSamplesAreCaught` shows that a changed sample passes every
+  tag check and fails only the digest comparison.
+- **Hostile input, every case on the release and the ASan/UBSan helper:**
+  - 12 corrupt structures;
+  - 4 format mismatches;
+  - 23 opaque-field cases (refused, or removed and written);
+  - the field-count limit at 50,000;
+  - covers of 16 MiB and 16 MiB − 20 B, and a comment at the block limit;
+  - 55 raw requests (size limit and exactly 256 KiB, malformed JSON,
+    unknown or missing keys at every level, wrong types, NUL, surrogates,
+    ranges, floats, unknown format or operation, a 100 KB format name);
+  - 17 descriptor cases (FIFO under a 5 s guard, directory, `/dev/null`,
+    no fd, wrong access modes, `O_APPEND`, non-empty or missing
+    destinations);
+  - a missing picture leaves every destination empty;
+  - EFBIG in the middle of a write gives `media_tags_io`.
+
+  Every refusal leaves the file byte-identical, mtime included.
+- **Adapter:**
+  - failure mapping (exit status, strict stderr object, unknown code,
+    invalid UTF-8, trailing data, a signal);
+  - timeout and cancellation with a fake helper;
+  - `VerifyTags` with 29 mutations;
+  - `TagNumber`, `TagBool`, `JoinValues`;
+  - cover attributes by libFLAC's rule for 10 image kinds, written into the
+    block;
+  - invalid arguments refused before the helper runs.
+- **Boot:** the four versions logged; a missing helper or a helper of
+  another version refuses the boot.
+
+**Mutation-checked**, each makes a test fail:
+- in the helper:
+  - no second save;
+  - no second save and no read-back: the Go `VerifyTags` fails instead;
+  - `moveRange` off by one, back to front and front to back;
+  - `refuseOpaque` off;
+  - `TOTALDISCS` dropped from the table;
+  - no field-count limit;
+  - no failure-message bound;
+  - no regular-file check;
+  - no UTF-8 check of values: the TagLib cross-check fails;
+  - no cover block-size check: the read-back fails;
+- in Go:
+  - `decodeStrict` without its UTF-8 check;
+  - `tagsFailure` without its exit-3 check;
+  - `VerifyTags` without the unmanaged comparison, or without the check of
+    blocking fields before the write;
+  - the digest comparison of the §9.1 check off.
+
+```sh
+scripts/check.sh ./internal/media/...
+scripts/dev.sh go test -race -count=20 -run 'TestTags|TestVerify|TestDescribe|TestNewTools' ./internal/media/
+docker build --target build-tags .           # the helper and its unit tests alone
+```
+
+**Open for the owner:** N-090 (ID3 in FLAC), N-091 (covers between 16 and
+20 MiB in FLAC), N-092 (invalid UTF-8 in unmanaged fields).
 
 ---
 
