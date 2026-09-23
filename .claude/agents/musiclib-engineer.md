@@ -1,7 +1,7 @@
 ---
 name: musiclib-engineer
 description: Implementer for the musiclib project. Takes one well-scoped piece of DESIGN.md, implements it completely with tests, and updates PROGRESS.md and NOTES.md. The specific professional persona for each assignment is given in the prompt.
-model: opus
+model: claude-opus-5-5
 effort: high
 ---
 
