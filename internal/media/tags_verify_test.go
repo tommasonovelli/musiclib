@@ -34,8 +34,10 @@ func verifyFixture() (TagValues, *ExpectedCover, Inspection, Inspection) {
 		Conflicts: []Conflict{{Field: "album_artist"}},
 		Pictures:  []Picture{{Index: 0, Location: "block", Type: 4}},
 		Unmanaged: unmanaged(),
-		// Before the write, opaque fields that the write removes are fine.
-		Opaque: []OpaqueField{{Key: "vorbis:TITLE", Reason: "invalid_utf8", Removed: true}},
+		// Before the write, opaque fields that the write removes are fine,
+		// the ID3 tags of a FLAC included (N-090).
+		Opaque: []OpaqueField{{Key: "id3v2", Reason: "foreign_tag", Removed: true},
+			{Key: "vorbis:TITLE", Reason: "invalid_utf8", Removed: true}, {Key: "id3v1", Reason: "foreign_tag", Removed: true}},
 	}
 	after := Inspection{
 		Format: FormatFLAC,
@@ -81,6 +83,18 @@ func TestVerifyTags(t *testing.T) {
 		}},
 		{"opaque field a write removes", func(_ *TagValues, _ **ExpectedCover, _, a *Inspection) {
 			a.Opaque = []OpaqueField{{Key: "vorbis:TITLE", Reason: "nul_byte", Removed: true}}
+		}},
+		// N-090: the ID3 tags are a declared removal only because the write
+		// strips them: one left after the write, or one an older helper
+		// reported as blocking, fails.
+		{"ID3v2 tag left after the write", func(_ *TagValues, _ **ExpectedCover, _, a *Inspection) {
+			a.Opaque = []OpaqueField{{Key: "id3v2", Reason: "foreign_tag", Removed: true}}
+		}},
+		{"ID3v1 tag left after the write", func(_ *TagValues, _ **ExpectedCover, _, a *Inspection) {
+			a.Opaque = []OpaqueField{{Key: "id3v1", Reason: "foreign_tag", Removed: true}}
+		}},
+		{"ID3 tag reported as blocking before the write", func(_ *TagValues, _ **ExpectedCover, b, _ *Inspection) {
+			b.Opaque = []OpaqueField{{Key: "id3v2", Reason: "foreign_tag"}}
 		}},
 		{"cover missing", func(_ *TagValues, _ **ExpectedCover, _, a *Inspection) { a.Pictures = nil }},
 		{"cover of another hash", func(_ *TagValues, _ **ExpectedCover, _, a *Inspection) {

@@ -21,10 +21,11 @@ type artistRef struct {
 	Exists    bool
 }
 
-// sameName is §7.6's identity of artist names: equal after NFC, trim and
-// casefold. name and other are already normalized texts (NFC, trimmed), so
-// what is left is the comparison key.
-func sameName(name, other string) bool {
+// SameArtistName is §7.6's identity of artist names: equal after NFC, trim
+// and casefold. name and other are already normalized texts (NFC, trimmed),
+// so what is left is the comparison key. The importer uses it for the "one
+// artist of the tracks" of §7.3 (NOTES.md N-121).
+func SameArtistName(name, other string) bool {
 	return names.Key(name) == names.Key(other)
 }
 
@@ -48,7 +49,7 @@ func resolveArtist(ctx context.Context, tx *store.CatalogTx, name string) (artis
 	if err != nil {
 		return artistRef{}, dbErr("looking up the artist folder "+key, err)
 	}
-	if !sameName(name, a.Name) {
+	if !SameArtistName(name, a.Name) {
 		return artistRef{}, folderConflict(name, a)
 	}
 	return artistRef{ID: a.ID, Name: a.Name, FolderKey: a.FolderKey, Exists: true}, nil

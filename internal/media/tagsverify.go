@@ -24,11 +24,20 @@ type ExpectedCover struct {
 //   - before has no opaque field that blocks a write (Inspection.Blocking):
 //     such a field is not in Unmanaged, so its loss would go unseen; and
 //     after has no opaque field at all;
-//   - the unmanaged fields are exactly the same in both. The canonical form
-//     of Inspection.Unmanaged already leaves out the managed fields, their
-//     aliases and the sort fields, which are the only ones a write may
-//     remove; the migration of an ID3v1 comment (§8.3) concerns MP3 only
-//     and comes with the MP3 writer (Phase 4).
+//   - the unmanaged fields are exactly the same in both.
+//
+// The comparison excludes what a write may remove, and nothing else (§8.3):
+//   - the managed fields, their aliases and the sort fields, which the
+//     canonical form of Inspection.Unmanaged leaves out;
+//   - the pictures, which are the managed cover (Inspection.Pictures);
+//   - the ID3v2 and ID3v1 tags of a FLAC file, which a write strips by the
+//     declared rule of NOTES.md N-090. They are never in Unmanaged: the
+//     inspection reports them as opaque fields, reason foreign_tag, with
+//     Removed set, so they are not Blocking; after must not have them, as
+//     it has no opaque field at all.
+//
+// The migration of an ID3v1 comment (§8.3) concerns MP3 only and comes with
+// the MP3 writer (Phase 4).
 //
 // Any difference is CodeTagsVerification: the album must not be published
 // (§12.2, "Tag writer ... perde un tag non gestito").

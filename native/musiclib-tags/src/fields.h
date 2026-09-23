@@ -8,7 +8,9 @@
 // the keys that carry pictures (managed as the cover).
 //
 // FLAC (Vorbis comments) is implemented and covered by the fixtures of
-// internal/media. The MP3 (ID3v2.4 / APE / ID3v1) and M4A tables are Phase 4
+// internal/media. Besides this table, a FLAC write has one declared removal
+// (NOTES.md N-090): ID3v2 and ID3v1 tags, which are not part of the format,
+// are stripped whole (writeFlac in flac.cpp). The MP3 (ID3v2.4 / APE / ID3v1) and M4A tables are Phase 4
 // (PROGRESS.md), together with their readers and writers.
 #pragma once
 

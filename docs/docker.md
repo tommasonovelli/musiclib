@@ -318,7 +318,7 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
   takes about 80 s without cache; a change under `native/musiclib-tags/`
   rebuilds only the helper.
 - **The helper's version** is two strings: `musiclib-tags version` prints
-  `{"helper":"1","taglib":"2.3.2-musiclib1"}`. `helper` is
+  `{"helper":"2","taglib":"2.3.2-musiclib1"}`. `helper` is
   `kHelperVersion` in `native/musiclib-tags/src/version.h`; `taglib` is the
   linked TagLib's own version plus `TAGLIB_BUILD_REVISION`, the revision of
   the cmake line. `musiclibd` refuses to boot with anything else

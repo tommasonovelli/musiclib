@@ -128,7 +128,7 @@ first render, and it must include an identifier of the version of the
 The ffmpeg/ffprobe part is available since 2026-09-22: `media.Tools.Versions()`
 returns the versions read from the tools at boot, never assumed (N-080).
 Since 2026-09-23 it also returns the TagLib helper's two versions:
-`Versions.Tags` (the helper, `1`) and `Versions.TagLib` (`2.3.2-musiclib1`,
+`Versions.Tags` (the helper, `2` since N-090) and `Versions.TagLib` (`2.3.2-musiclib1`,
 N-083). The helper's version also covers the managed-field table and the
 bytes it writes, so it is the "mapping dei tag" input of §2.1.
 
@@ -1236,15 +1236,19 @@ Resolves N-025 for TagLib. Dockerfile stage `build-tags`.
   standard error, where they would break the failure protocol (N-084).
 - **Reproducibility:** `-ffile-prefix-map` in TagLib's and the helper's
   flags keeps `/build` out of the objects. Two `docker build --no-cache
-  --target build-tags` gave the same sha256:
+  --target build-tags` gave the same sha256. Helper version `2` (round 6,
+  N-090), checked again with a `--no-cache` build against the images:
   - `musiclib-tags`
-    `1f390a3271bd38b0425ae5cc4c68f6f50f68384cab28c879a3eb422eec0cf4b2`;
+    `a80552042e2ae4f158a403f9887ace816c46a026592921ef3bee51c711d14a32`;
   - `musiclib-tags-asan`
-    `630c65c612a643e16042c8b4fad4705cce37e37f576d18acfccd0b9b1369f9cb`;
+    `5f29bcd2932709095b962502c6daa42d7177e9dcfa94c9dec66fa9fb5dc69f6a`;
   - `libtag.a`
-    `5b1358dfd51c8654d030b85666788309e65f159f2862192d5b5f048465fb976f`.
+    `5b1358dfd51c8654d030b85666788309e65f159f2862192d5b5f048465fb976f`
+    (unchanged: TagLib's build did not change).
 
-  The `runtime` image and the `test` and `dev` images hold the same
+  Version `1` was `1f390a3271bd38b0425ae5cc4c68f6f50f68384cab28c879a3eb422eec0cf4b2`
+  (release) and `630c65c612a643e16042c8b4fad4705cce37e37f576d18acfccd0b9b1369f9cb`
+  (ASan). The `runtime` image and the `test` and `dev` images hold the same
   `/usr/local/bin/musiclib-tags`. As for ffmpeg (N-073), this holds on the
   same machine and architecture (amd64).
 - **The unit tests of the helper's own parsers** (`make check`: UTF-8,
@@ -1254,7 +1258,7 @@ Resolves N-025 for TagLib. Dockerfile stage `build-tags`.
   `TagLib::runtimeVersion()`, read at run time from the linked library; the
   suffix is `TAGLIB_BUILD_REVISION`, the revision of the cmake line (like
   FFmpeg's `--extra-version`). The helper's own version is `1`
-  (`src/version.h`). `musiclib-tags version` prints both, and
+  (`src/version.h`), `2` since the ID3 strip of N-090 (round 6). `musiclib-tags version` prints both, and
   `media.NewTools` requires `media.PinnedTagsVersion` and
   `media.PinnedTagLibVersion`: the boot refuses anything else
   (`media_tool_version`), and so does the gate (`TestPinnedToolsInstalled`).
@@ -1347,11 +1351,12 @@ and the reader reports it as opaque or corrupt:
 - `Tag::duplicate` in `save()` when the file had no comment block: it
   deletes a DATE that is not a number ("Spring 1999"). `writeFlac` therefore
   saves a second time;
-- ID3 tags in a FLAC file (N-090).
+- ID3 tags in a FLAC file: TagLib reads them and would rewrite them on save.
+  They are reported, and a write strips them (N-090).
 
 Checks around the write:
 - **Before saving:** TagLib must read the same file as the reader: the same
-  ID3 tags, the same iXML or bext, and the same field map and vendor. The
+  ID3 tags (an ID3v2 tag of the same extent, N-090), the same iXML or bext, and the same field map and vendor. The
   field map and vendor are compared only when the comment has no opaque
   entry. Then TagLib's field map, after the managed fields were applied,
   must equal the expected one.
@@ -1389,7 +1394,8 @@ and a second identical write gives the same bytes.
 - **Opaque reasons** (`inspection.h`): `malformed_entry`, `invalid_key`,
   `invalid_utf8`, `nul_byte`, `duplicate_block`, `foreign_metadata`,
   `foreign_tag`, `invalid_picture`. `removed=true` means that a write
-  removes the field anyway (a managed key, alias, sort key or picture).
+  removes the field anyway (a managed key, alias, sort key or picture, and
+  since helper version `2` an ID3 tag in a FLAC, N-090).
   Only fields with `removed=false` block a write (`opaque_field`, §8.3:
   "provocano un errore di render"). `Inspection.Blocking()` lists them.
 - **`VerifyTags` (§9.1 step 6)** requires:
@@ -1402,9 +1408,9 @@ and a second identical write gives the same bytes.
     first `VerifyTags` accepted them;
   - the unmanaged fields equal, key by key and value by value.
 
-  Only managed fields, their aliases and sort keys, and pictures can differ;
-  they are outside `Unmanaged` by construction. The ID3v1 migration of
-  §8.3 is MP3 only (N-094). Because `flac.blocks` covers STREAMINFO, whose
+  Only managed fields, their aliases and sort keys, pictures, and the ID3
+  tags of a FLAC (N-090) can differ; they are outside `Unmanaged` by
+  construction. The ID3v1 migration of §8.3 is MP3 only (N-094). Because `flac.blocks` covers STREAMINFO, whose
   MD5 is that of the samples, a writer that changed the audio of a FLAC
   would also fail this comparison, besides the digest.
 
@@ -1468,40 +1474,122 @@ says only "valore assente significa rimozione". Since the DB column is a
 non-null boolean, false is the absence of the flag. `TagBool` reads "1",
 "0", "true" and "false", case-insensitively.
 
-### N-090 · ID3 tags inside a FLAC — DECIDED (owner, 2026-09-23): stripped by a declared rule; implementation pending
-**Round 5 (importer side, done):** the importer does not refuse such a file.
-`Inspection.Blocking()` reports the tags as `{"id3v2" or "id3v1", foreign_tag,
-removed=false}`; the importer lets exactly that reason through, with the
-warning `flac_id3_tag` on the job, and refuses every other blocking field
-(N-092). Tested with a real ID3v2.4 tag before `fLaC` (`TestImportUnrenderableTagsAndID3`):
-ffprobe, the full decode and the helper all accept it, and the Vorbis title
-wins. Mutation-checked. **Still pending:** the helper change that strips the
-tags at render; until it lands, such an album is imported but its render fails
-with `media_tags_opaque_field` (visible, nothing lost). 
+### N-090 · ID3 tags inside a FLAC — RESOLVED (owner decision 2026-09-23; importer round 5, helper round 6)
+**The rule.** ID3 is not part of the FLAC format, and stale TIT2/TPE1 values
+next to the Vorbis comments would contradict §8.2. A write of a FLAC removes
+every ID3v2 tag before `fLaC` and the ID3v1 tag at the end, by a declared
+rule of the adapter: an exception to §8.3, like the MP3 ID3v1 migration.
+Everything else is kept exactly as before (§8.2, §8.3): Vorbis fields,
+vendor, kept blocks, audio.
 
-**Owner decision (2026-09-23):** the render strips ID3v2 and ID3v1 tags from
-a FLAC output, through a declared rule of the adapter, in the same way as
-the ID3v1 migration of MP3 is declared (§8.3): a constant of the helper's
-table, covered by fixtures, and excluded explicitly from the unmanaged
-comparison of `VerifyTags`. It is a change of `native/musiclib-tags` and of
-`media.VerifyTags` for a later round, and it changes the helper's version,
-so `render_version` (N-010). Until it is implemented the helper keeps
-refusing such a file (`foreign_tag`, `opaque_field`), as described below:
-nothing is lost meanwhile.
+**The helper (`native/musiclib-tags`, version `2`).**
+- **Inspect** still reports each tag, as `{"id3v2" or "id3v1", foreign_tag,
+  removed=true}`. `Inspection.Blocking()` no longer includes them.
+- **The reader** (`readRawFlac`) locates the ID3v2 tag without parsing it.
+  Its extent must be exactly the one TagLib's `ID3v2::Header` computes,
+  because that is what TagLib removes:
+  - a size byte ≥ 0x80, or a version or revision of 0xFF (TagLib reads
+    those as a 10-byte tag of size 0), is `corrupt`;
+  - a declared size past the end of the file is `corrupt`;
+  - the footer flag adds 10 bytes;
+  - `checkTagLibAgrees` also compares TagLib's `completeTagSize()` with the
+    reader's (`internal` otherwise).
+- **An ID3v1 tag** that would start inside the metadata blocks is `corrupt`:
+  TagLib's save truncates the file where it starts.
+- **The write** calls `FLAC::File::strip(ID3v1 | ID3v2)` before the first
+  save:
+  - The save then removes the ID3v2 bytes and truncates the ID3v1.
+  - Stripping before the save also keeps `Tag::duplicate` (a file with no
+    comment block) from copying an ID3 title, comment, genre or date into
+    the new comment (`TestTagsFLACStripsID3WithoutComment`).
+- **A second save follows whenever a tag was stripped.** TagLib chooses the
+  padding against `length()` before it removes the ID3 bytes. With a large
+  ID3v2 (more than 1% of the file) the first save keeps a padding that a
+  later write of the output would reset. The second save chooses it against
+  the final length. So the output is byte for byte the output of the same
+  file without its ID3 tags, and a second write gives the same bytes.
+- **The read-back** fails (`internal`) if an ID3v2 or ID3v1 tag is still
+  there, before any other comparison.
 
-§8.2 and §8.3 say nothing about ID3v2 or ID3v1 tags in a FLAC file. TagLib
-reads them and would rewrite them on save. The helper reports them as
-`foreign_tag`, not removed, so a render of such a file fails
-(`opaque_field`). That is conservative: nothing is lost, and the album
-cannot be rendered until the owner decides:
-- refuse, as now;
-- remove them (they duplicate the Vorbis fields);
-- or keep them as they are.
+**Go.**
+- `media.VerifyTags` excludes exactly this removal. ID3 tags are never in
+  `Unmanaged`: they are removed opaque fields, not blocking before the
+  write, and forbidden after it (no opaque field at all). Its doc lists the
+  exclusions: managed fields, aliases, sort keys, pictures, and the ID3 tags
+  of a FLAC.
+- **The importer** gives the `flac_id3_tag` warning for each opaque field
+  with reason `foreign_tag` and `removed=true`. The message says the library
+  copy will not carry the tag, and that ID3 frames without a Vorbis
+  equivalent are dropped. Every field of `Blocking()` still refuses the file,
+  so an ID3 tag that a helper did not declare removed would be refused
+  (`TestTagWarnings`).
+- **The version bump** (`kHelperVersion` and `media.PinnedTagsVersion` `2`)
+  feeds `render_version` (N-010) and the boot check.
 
-The ID3v1 detection mirrors TagLib's heuristic: "TAG" 128 bytes before the
-end, unless that is the end of an APEv2 footer. A FLAC whose last frame
-happens to end with those bytes is refused, about 1 file in 16 million:
-ACCEPTED.
+**What is lost, by the owner's decision.** No ID3 frame is migrated into a
+Vorbis comment, and none is kept in the library copy:
+- frames with a Vorbis equivalent (TIT2, TPE1, TALB, TRCK, TDRC, TCON,
+  COMM...): the Vorbis comment is authoritative, and the managed fields come
+  from the DB;
+- frames without one: TXXX user fields, PRIV, UFID, APIC pictures, USLT
+  lyrics, POPM ratings, GEOB objects, and every other frame;
+- the whole ID3v1 tag (its comment and its genre byte included). This
+  differs from the MP3 rule of §8.3, which keeps an ID3v1 comment in COMM:
+  for FLAC the owner decided removal, and there is no ID3v2 in the output
+  to hold it.
+
+The original file stays unchanged in the blob store (§7.5), so nothing is
+lost from the library itself; only the rendered copy lacks the tags.
+`TestTagsFLACStripsID3` pins it with TXXX, PRIV and APIC frames: after the
+write, the Vorbis comment has no new field.
+
+**Tests** (`internal/media/tags_id3_test.go`, release and ASan/UBSan
+helper). Cases:
+- a leading ID3v2, a trailing ID3v1, and both;
+- an ID3v2 with a footer, of size 0, with a garbage body (unsynchronisation
+  and extended-header flags), and with garbage frames;
+- an 800 KB ID3v2.
+
+For each one:
+- the inspection equals the file's without ID3, apart from the removed
+  opaque fields;
+- the output decodes to the samples of the file without ID3;
+- the output is byte for byte the reference's (the same file without ID3,
+  written the same way);
+- no ID3 is left;
+- another copy gives the same bytes, and a second write too.
+
+The hostile table adds:
+- an ID3v2 larger than the file, with and without a footer;
+- an ID3v2 version or revision of 0xFF;
+- an ID3v1 inside the metadata blocks.
+
+The earlier non-synchsafe case stays `corrupt`.
+
+**Mutation-checked:**
+- no strip: the read-back fails;
+- no strip and no read-back checks: `VerifyTags` fails;
+- no second save: the 800 KB case differs from the reference;
+- no 0xFF check: the extent cross-check fails the inspection;
+- no ID3v1 overlap check;
+- in the importer: warning without `removed`, and no refusal.
+
+**ACCEPTED limits:**
+- **The ID3v1 detection mirrors TagLib's heuristic:** "TAG" 128 bytes before
+  the end, unless that is the end of an APEv2 footer. A FLAC whose audio
+  happens to have those bytes there (about 1 in 16 million) decodes, so it
+  is imported, with a misleading `flac_id3_tag` warning. Its render would
+  truncate those 128 bytes of audio. The helper's read-back does not compare
+  the audio, but the digest comparison of §9.1 step 6 does, so the render
+  fails and nothing wrong is published. Version `1` refused such a file up
+  front (`opaque_field`); the owner's rule accepts this trade.
+- **Two stacked ID3v1 tags:** only the last is detected. The write strips
+  it, the read-back finds the next one and fails the render with
+  `media_tags_internal`. Nothing is lost silently.
+- **An ID3v2 appended at the end of the file** (footer `3DI`) is detected
+  neither by TagLib's FLAC code nor by the reader. It is trailing bytes
+  after the audio, kept as they are; the pinned decoder refuses such a
+  file at import too, as it refuses the ID3v1 (N-128).
 
 ### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
 **Round 5 (done):** `media.MaxEmbeddedCover(audioFormat, coverFormat)` and
@@ -1703,6 +1791,22 @@ and by the boot helper of step 6. Flagged for the reviewer.
 Not to `/import`: `jobs.source_rel` locates the candidate. This is also the
 "percorso relativo originale" of the fingerprint (§7.6), and it keeps the
 paths stable if the same candidate is imported from another place.
+
+**The fingerprint's serializer** (`importer.fingerprintJSON`, round 5) is
+Go's `encoding/json` encoder with `SetEscapeHTML(false)`, and no trailing
+newline. That is the "serializzatore comune senza escape HTML" of §7.6,
+with one caveat: the encoder still escapes U+2028 and U+2029 as ` `
+and ` `, even with HTML escaping off, and it replaces invalid UTF-8
+with U+FFFD (the paths are valid UTF-8 by §5.2, so that never happens).
+Other serializers would write U+2028 and U+2029 raw. This does not affect
+determinism: the same input always gives the same bytes. It does matter for
+compatibility, because the fingerprint is frozen once albums exist
+(`albums.import_fingerprint`, §7.6). Recomputing it with another serializer
+(another language, a later Go that changed this behaviour) must reproduce
+these two escapes, or a candidate with such a character in a path would no
+longer be recognized as a duplicate. `TestFingerprintGolden` pins the
+bytes for HTML characters and non-ASCII text, not for U+2028; a Go bump
+that changed the escaping would show up only on such a path.
 
 ### N-100 · An empty album genre is stored as NULL — DECIDED
 §4.1 distinguishes NULL and `""` for a *track* genre (inherit or explicitly
@@ -2025,15 +2129,48 @@ candidates, `CD1` and `Bonus`, in Phase 2 as in Phase 5.
 A track's disc number comes from its tag, or is 1: §7.3's rule for albums
 without disc directories.
 
-### N-121 · How names are compared in §7.3 — DECIDED
-- **Exact comparison after normalization.** Album tags, album artist tags and
-  track artists are compared after the §5.2 text normalization (NFC, trim),
-  not by casefold. This is conservative: the importer never picks one of two
-  spellings.
-  - Two album artists that differ only in case are "discordanti": the import
-    is refused, and an explicit artist resolves it.
-  - A track artist that differs from the album artist only in case is kept as
-    the track's override.
+### N-121 · How names are compared in §7.3 — DECIDED (track artists: owner decision, 2026-09-23)
+- **Track artists: §7.6's identity (owner decision, 2026-09-23).** Round 5
+  compared them exactly, so an album with no `album artist` tag and tracks
+  by `Abba` and `ABBA` became Various Artists, compilation true. The owner
+  decided that, for "unico artista non vuoto delle tracce" of §7.3, artists
+  equal after NFC, trim and casefold (the comparison §7.6 uses for artist
+  identity) count as one artist. Implemented in round 6:
+  - **One implementation:** `catalog.SameArtistName` (formerly the
+    unexported `sameName` of `resolveArtist`), used by the importer's
+    `trackArtist`. It is `names.Key` on the normalized texts: Unicode full
+    case folding, so `Strauß` and `STRAUSS` are one artist too.
+  - **The spelling, deterministic:** the one the most tracks use; a tie goes
+    to the smallest in the bytes of the normalized text, as the genre
+    (N-004). `abba`, `ABBA`, `Abba` once each give `ABBA`. Tracks without an
+    artist do not count.
+  - **Genuinely different artists** still give Various Artists and
+    compilation true. For example `Abba`, `ABBA` and `Queen`: every track
+    keeps its own spelling as its override, since none equals `Various
+    Artists`.
+  - **The track-artist override** of §7.3 ("NULL se ... uguale all'artista
+    album normalizzato") uses the same comparison. That applies whatever
+    chose the album artist: the `album artist` tag, the tracks, or the
+    explicit override.
+- **What that loses, decided explicitly:** a track whose artist differs from
+  the album artist only in case gets NULL and inherits. Its own spelling is
+  not kept in the catalog, and the render writes the album artist's
+  spelling into its ARTIST tag. This follows from the owner's rule: the
+  override exists for a *different* artist, and §7.6 says the two spellings
+  are the same artist. The alternative (keeping the differing spelling as an
+  override) would leave `ABBA` next to `Abba` in the output, the inconsistency
+  the rule removes. Nothing is lost from the library itself: the original
+  file keeps its tag in the blob store, and the editor can set a per-track
+  artist. Pinned by `TestInferMetadata` ("track artist differing in case
+  inherits", "... from the artist override inherits").
+- **Album tags and album artist tags** are still compared exactly after the
+  §5.2 normalization (NFC, trim). Two album artist tags that differ only in
+  case are "discordanti": the import is refused
+  (`ambiguous_album_artist`), and an explicit artist resolves it. The
+  reviewer judged this correct and the owner did not change it (pinned: "album
+  artists differing in case stay ambiguous").
+- **Mutation-checked:** the identity by bytes, the tie to the largest, and
+  the override compared by bytes each make `TestInferMetadata` fail.
 - **Genre differences are kept** (§7.3: "differenze conservate come override
   traccia"). A track whose genre differs from the album genre keeps its own:
   - a track with no genre then gets `""`, explicitly none (§4.1);
@@ -2054,6 +2191,9 @@ without disc directories.
   opened.
   - Outside every branch, each one is a `rejected_entry` warning.
   - Inside a candidate, they fail it with `source_rejected_entry` (§5.2).
+    Only regular files are ever ignored: a symlink named `.DS_Store`,
+    `Thumbs.db` or `desktop.ini` inside a candidate fails the album with
+    `source_rejected_entry`, like any other symlink (importer review).
   - An invalid name (not UTF-8, or deeper than 16 levels under `/import`)
     cannot be a `Warning.Path`, so it appears only quoted in the message.
 - **No valid candidate:** the scan job is **failed** with
@@ -2123,8 +2263,8 @@ not the user's. Without an album tag, the import therefore fails with
 ### N-126 · What the stability check sees, and what it cannot — ACCEPTED
 The checks, in order:
 1. When the import walks the candidate, it records the identity (st_dev,
-   st_ino), size and mtime (ns) of every directory and every non-ignored
-   file.
+   st_ino), size and mtime (ns) of every directory (the candidate's root
+   included) and every non-ignored file.
 2. Every file is opened and `fstat`ed, and must match; its copied size must
    match too.
 3. After everything is read, just before the commit, the whole candidate is
@@ -2137,7 +2277,17 @@ What they cannot see:
 - a rewrite that keeps the size and the mtime to the nanosecond. §7.1
   promises identity, size and mtime, nothing more; the fingerprint covers the
   bytes actually copied;
-- a change of the ignored files (`.DS_Store`...), which are not compared.
+- an in-place rewrite of an ignored file (`.DS_Store`, `Thumbs.db`,
+  `desktop.ini`), which is not compared.
+
+**Correction (importer review):** adding or removing an ignored file during
+the import *does* refuse it as `source_changed`. The file is not compared,
+but its directory's mtime is, and creating or deleting an entry changes it.
+Only an in-place rewrite of an existing ignored file goes unseen. This is
+conservative: a spurious refusal is retried, while an unseen change is not.
+The cost is that Finder or Explorer browsing the share during an import can
+create a `.DS_Store` or `Thumbs.db` and make the import fail as
+`source_changed`; retrying the job imports it.
 
 The source is never written:
 - `/import` is reachable only through the `source` type: stat, list, open for
@@ -2159,3 +2309,48 @@ The subtest logs it, and the fsops suite has the same gap (N-038).
 
 The walk opens nothing but regular files, by lstat, so a device is handled
 like the FIFO.
+
+---
+
+## Round 6: carry-over before the renderer (2026-09-23)
+
+N-090 and N-121 were implemented, and N-099, N-122 and N-126 corrected
+after the importer review; see those entries.
+
+### N-128 · The full decode refuses a FLAC with a trailing ID3v1 or an appended ID3v2 — TO CONFIRM
+**The finding.** Writing the N-090 tests showed that the pinned ffmpeg
+(8.1.3, with `-err_detect crccheck+explode -xerror`, N-074) fails to decode
+a FLAC that has 128 bytes of ID3v1 after its last frame. It fails the same
+way with an ID3v2 tag appended at the end ("3DI" footer): "invalid sync
+code", exit 183, `media_decode`. So `AudioDigest` refuses the file, and the
+importer fails the album with `corrupt_audio` (§7.6, §8.4) before the tags
+are read. A **leading** ID3v2 decodes to the same samples and is imported,
+with the `flac_id3_tag` warning.
+
+**Consequence.** The N-090 decision ("the import must still accept these
+files") holds for a leading ID3v2 only. A FLAC with a trailing ID3v1, which
+old taggers write and players ignore, is refused as corrupt audio. The
+message says "not a valid audio file", which the user may find surprising
+for a file that plays. The helper strips an ID3v1 correctly at render, as
+tested, but such a file never reaches a render.
+
+**Why it was not changed here.** The decode's strictness is §8.4, and N-074
+is an owner decision: trailing bytes after the last frame are exactly what
+`explode` turns into an error. Accepting them would mean one of:
+- decoding only the audio extent (the file minus the ID3v1 tag);
+- or relaxing the decoder options.
+
+Either is a change of the audio verification, outside this round and outside
+DESIGN.md's letter. It is conservative as it is: nothing wrong is imported,
+and the file stays in `/import`.
+
+**Pinned:**
+- `TestTagsFLACStripsID3` requires `media_decode` for the ID3v1 inputs, so a
+  bump of ffmpeg that changes this fails the gate;
+- `TestImportUnrenderableTagsAndID3` requires `corrupt_audio` for an album
+  whose FLAC has a trailing ID3v1.
+
+**For the owner:** keep the refusal, or have `AudioDigest` decode only the
+bytes before a detected trailing ID3v1. The second is the reading closest to
+the N-090 intent, and needs the same detection as the helper (TagLib's
+heuristic, N-090's ACCEPTED limits).

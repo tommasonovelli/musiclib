@@ -42,7 +42,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 ## Phase 2 — First vertical slice (one FLAC album)
 
 - [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
-- [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`; MP3 and M4A answer a typed `unsupported_format` until Phase 4 (N-094)
+- [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`, ID3 tags in a FLAC stripped by a declared rule (N-090); MP3 and M4A answer a typed `unsupported_format` until Phase 4 (N-094)
 - [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC complete** (table in `native/musiclib-tags/src/fields.h`, N-088); the MP3 and M4A tables are Phase 4 (N-094)
 - [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC candidate (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); MP3 and M4A fail as `audio_format_not_supported_yet` until Phase 4. The executors (`ExecuteScan`, `ExecuteImport`) have the form `jobs.Pool` expects and are **not wired** into `cmd/musiclibd`: the pool starts in the publish round with the journal recovery (N-107, N-125); only `importer.CleanWork` joined boot step 5
 - [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
@@ -68,7 +68,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [~] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits are done (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`); upload and removal come with the API
 - [~] LRC files associated with tracks (§7.4) — at import, done (N-117); assignment and upload with the API
 - [~] Attachments under `Extras/` (§5.1, §7.4) — collected at import; their materialization is the renderer's
-- [~] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086); MP3 and M4A with their readers (N-094)
+- [~] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086, the ID3-in-FLAC exclusion N-090); MP3 and M4A with their readers (N-094)
 
 ## Phase 5 — Full experience
 
@@ -554,7 +554,7 @@ fd 4.. the extract destinations or the cover. Its protocol is N-084.
 | `src/fields.h` | the constant table of managed fields, aliases, sort keys and picture keys (§8.2, N-088) |
 | `src/inspection.{h,cpp}` | the inspection and its JSON; opaque reasons (N-086) |
 | `src/text.{h,cpp}`, `src/sha256.{h,cpp}` | UTF-8 validation, base64, SHA-256 |
-| `src/version.h` | `kHelperVersion` = `1` |
+| `src/version.h` | `kHelperVersion` = `2` (`1` refused ID3 tags in a FLAC; `2` strips them, N-090) |
 | `tests/unit_tests.cpp` | the parsers under ASan and UBSan (`make check`, run by the build) |
 
 **Pinned TagLib (N-083).**
@@ -564,7 +564,7 @@ fd 4.. the extract destinations or the cover. Its protocol is N-084.
   `dev` and `runtime` images. Two `--no-cache` builds gave the same sha256.
 - A second, ASan and UBSan, build of TagLib and the helper is in the
   toolchain images only.
-- The version is `{"helper":"1","taglib":"2.3.2-musiclib1"}`, checked at
+- The version is `{"helper":"2","taglib":"2.3.2-musiclib1"}`, checked at
   boot and in the gate.
 
 **Go adapter (`internal/media`).**
@@ -596,6 +596,11 @@ fd 4.. the extract destinations or the cover. Its protocol is N-084.
   - Two checks surround the save: TagLib's map against the expected one
     before, a re-read after.
   - The output is byte-identical for the same input.
+  - **Declared exception (N-090):** ID3v2 and ID3v1 tags inside a FLAC are
+    stripped. The inspection reports them as removed opaque fields, never
+    blocking; the read-back and `VerifyTags` require that none is left. The
+    output is the one the same file without its ID3 tags would give, byte
+    for byte.
 - **§8.5:** the 30 s limit, the Runner's process group, and descriptors
   only.
 
@@ -619,6 +624,13 @@ lavfi, `image/png`, and an independent Go FLAC codec, `flacmeta_test.go`):
   - MP3 and M4A refused, a FLAC declared as MP3 refused;
   - the probe fixtures' JPEG cover (ffmpeg's, type 0) and the new PNG cover
     fixture, extracted byte-exact.
+  - ID3 in FLAC (N-090): a leading ID3v2 (with frames that have no Vorbis
+    equivalent), a trailing ID3v1, both, a footer, a size of 0, a garbage
+    body, garbage frames, and an 800 KB tag that moves TagLib's padding
+    choice; on both helpers each is stripped, the samples are those of the
+    file without ID3, the output is byte for byte the reference's, and it is
+    deterministic and idempotent. A file with no comment block gets no ID3
+    value copied into the new one.
 - **Audio integrity:** every successful write in the tests goes through
   `writeChecked`:
   - AudioDigest before and after must be equal;
@@ -628,9 +640,11 @@ lavfi, `image/png`, and an independent Go FLAC codec, `flacmeta_test.go`):
   `TestTagsAlteredSamplesAreCaught` shows that a changed sample passes every
   tag check and fails only the digest comparison.
 - **Hostile input, every case on the release and the ASan/UBSan helper:**
-  - 12 corrupt structures;
+  - 17 corrupt structures, among them an ID3v2 larger than the file (with
+    and without a footer), an ID3v2 version or revision of 0xFF, and an
+    ID3v1 inside the metadata blocks;
   - 4 format mismatches;
-  - 23 opaque-field cases (refused, or removed and written);
+  - 21 opaque-field cases (refused, or removed and written);
   - the field-count limit at 50,000;
   - covers of 16 MiB and 16 MiB − 20 B, and a comment at the block limit;
   - 55 raw requests (size limit and exactly 256 KiB, malformed JSON,
@@ -647,7 +661,7 @@ lavfi, `image/png`, and an independent Go FLAC codec, `flacmeta_test.go`):
   - failure mapping (exit status, strict stderr object, unknown code,
     invalid UTF-8, trailing data, a signal);
   - timeout and cancellation with a fake helper;
-  - `VerifyTags` with 29 mutations;
+  - `VerifyTags` with 32 mutations (three for the ID3 tags);
   - `TagNumber`, `TagBool`, `JoinValues`;
   - cover attributes by libFLAC's rule for 10 image kinds, written into the
     block;
@@ -667,6 +681,12 @@ lavfi, `image/png`, and an independent Go FLAC codec, `flacmeta_test.go`):
   - no regular-file check;
   - no UTF-8 check of values: the TagLib cross-check fails;
   - no cover block-size check: the read-back fails;
+  - no ID3 strip: the read-back fails; no strip and no read-back: the Go
+    `VerifyTags` fails;
+  - no second save after a strip: the output of the 800 KB ID3v2 differs
+    from the reference;
+  - no 0xFF version check: the TagLib extent cross-check fails the
+    inspection (internal, not corrupt); no ID3v1 overlap check;
 - in Go:
   - `decodeStrict` without its UTF-8 check;
   - `tagsFailure` without its exit-3 check;
@@ -685,9 +705,10 @@ docker build --target build-tags .           # the helper and its unit tests alo
   and N-092 (the importer refuses invalid UTF-8 and other blocking unmanaged
   fields) are done since round 5: `media.MaxEmbeddedCover` /
   `EmbeddedCoverFits`, and the importer.
-- N-090 (ID3 in FLAC stripped by a declared rule) is half done: the importer
-  accepts such files with a warning; the helper change that strips the tags
-  at render is still to do.
+- N-090 (ID3 in FLAC stripped by a declared rule) is done: the importer
+  accepts such files with a warning (round 5), and the helper strips the
+  tags at render since helper version `2` (round 6). A FLAC with a trailing
+  ID3v1 is still refused at import by the full decode (N-128).
 
 ### `internal/store` — transaction runner and catalog lock (§5.3, §6.2, §6.4) ✔
 
@@ -911,12 +932,16 @@ without one, and the job stays running until the boot recovers it.
 - **§7.6, §8.4:** `AudioDigest` decodes every track completely. A failed
   decode is `corrupt_audio`.
 - **N-092, N-090:** a field from `Inspection.Blocking()` is
-  `unrenderable_tag`, naming the file and the field. An ID3 tag in a FLAC is
-  accepted, with a warning.
+  `unrenderable_tag`, naming the file and the field. An ID3 tag in a FLAC,
+  which the helper reports as removed, is accepted with the warning
+  `flac_id3_tag`; a render strips it. A trailing ID3v1 makes the full decode
+  fail first (N-128).
 - **§7.3:** the whole table, as a pure function (`inferMetadata`): album,
   album artist, track artist, title, disc, numbers, year, genre (N-004),
   compilation, `mixed_album`, multi-valued text, overrides. The details are
-  N-116, N-119 and N-121.
+  N-116, N-119 and N-121. Track artists equal under §7.6 (NFC, trim,
+  casefold, `catalog.SameArtistName`) are one artist, and a track artist
+  equal to the album artist that way inherits it (N-121, owner decision).
 - **§7.4:** the LRC association (N-117); the cover selection and its limits
   (§8.5, N-091, N-124). An external cover also stays an attachment.
 - **§7.6:** the fingerprint: compact JSON with no HTML escaping and no
@@ -958,7 +983,8 @@ job, every source entry's bytes, inode, mode and mtime are compared, and
     overrides;
   - out-of-range numbers.
 - **LRC:** matched, not UTF-8, ambiguous, unmatched.
-- **Owner decisions:** N-092 refused; N-090 accepted.
+- **Owner decisions:** N-092 refused; N-090 accepted (and a trailing ID3v1
+  refused by the decode, N-128).
 - **Formats:** a corrupt FLAC, text named `.mp3`, M4A, WAV, and a FLAC
   without an extension.
 - **Layouts:** multi-disc; an ambiguous branch next to a good one, with the
@@ -985,7 +1011,8 @@ job, every source entry's bytes, inode, mode and mtime are compared, and
 - **Shutdown and staleness:** a cancellation leaves the job running; a stale
   attempt changes nothing; space; `CleanWork`.
 - **Pure tests:** natural order, grouping, disc names, ignored names, the
-  §7.3 table (25 cases), the golden fingerprint, LRC, UTF-8, image
+  §7.3 table (29 cases, seven of them for N-121), `tagWarnings`, the golden
+  fingerprint, LRC, UTF-8, image
   validation, the candidate orders, snapshots.
 
 **Mutation-checked:** each of the following makes a test fail:
@@ -996,9 +1023,14 @@ job, every source entry's bytes, inode, mode and mtime are compared, and
   check; mtime not compared;
 - in the metadata: the genre or the year tie going to the largest, the track
   artist kept when equal to the album artist;
+- N-121: the track artists compared by bytes instead of §7.6's identity,
+  the spelling tie going to the largest, the track-artist override compared
+  by bytes;
 - in the covers: `folder.*` before `cover.*`, the tie by bytes only, the
   front covers by ascending count, no N-091 check, no pixel limit, no full
   decode;
+- N-090: an ID3 tag warned about without being declared removed; the
+  blocking fields not refused;
 - elsewhere: Unicode folding of the ignored names, N-090 not excepted, N-092
   not refused, no probe at the scan, no disc layout detection, the LRC UTF-8
   check off, rejected entries ignored in candidates, the import and scan

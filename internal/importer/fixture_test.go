@@ -180,10 +180,12 @@ type track struct {
 	tags     []string
 	pictures []flacBlock
 	id3v2    bool
+	id3v1    bool
 }
 
 // flac renders a track: the base audio, one comment block with the tags,
-// the pictures, and optionally an ID3v2 tag before "fLaC".
+// the pictures, and optionally an ID3v2 tag before "fLaC" and an ID3v1 tag
+// at the end.
 func (tr track) flac(t testing.TB) []byte {
 	t.Helper()
 	freq := tr.freq
@@ -195,7 +197,13 @@ func (tr track) flac(t testing.TB) []byte {
 	if tr.id3v2 {
 		f.prefix = id3v2Tag("An ID3 title")
 	}
-	return f.bytes()
+	b := f.bytes()
+	if tr.id3v1 {
+		v1 := make([]byte, 128)
+		copy(v1, "TAGAn ID3v1 title")
+		b = append(b, v1...)
+	}
+	return b
 }
 
 // id3v2Tag is a minimal ID3v2.4 tag with one TIT2 frame.

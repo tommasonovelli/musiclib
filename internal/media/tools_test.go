@@ -20,7 +20,7 @@ func TestPinnedToolsInstalled(t *testing.T) {
 	if PinnedVersion != "8.1.3-musiclib1" {
 		t.Fatalf("PinnedVersion changed to %q: update NOTES.md N-073, docs/docker.md and the Dockerfile together", PinnedVersion)
 	}
-	if PinnedTagLibVersion != "2.3.2-musiclib1" || PinnedTagsVersion != "1" {
+	if PinnedTagLibVersion != "2.3.2-musiclib1" || PinnedTagsVersion != "2" {
 		t.Fatalf("the helper's pinned versions changed to %q / %q: update NOTES.md N-083, docs/docker.md, "+
 			"the Dockerfile and native/musiclib-tags/src/version.h together", PinnedTagsVersion, PinnedTagLibVersion)
 	}
@@ -52,11 +52,12 @@ func TestNewToolsRefusesWrongTools(t *testing.T) {
 	tagsVersion := func(name, helper, taglib string) string {
 		return fake(name, `echo '{"helper":"`+helper+`","taglib":"`+taglib+`"}'`)
 	}
-	oldHelper := tagsVersion("tags-old-helper", "0", PinnedTagLibVersion)
+	// "1" is the release before N-090 (ID3 in FLAC refused, not stripped).
+	oldHelper := tagsVersion("tags-old-helper", "1", PinnedTagLibVersion)
 	oldTagLib := tagsVersion("tags-old-taglib", PinnedTagsVersion, "2.3.1-musiclib1")
 	unsuffixed := tagsVersion("tags-unsuffixed", PinnedTagsVersion, "2.3.2")
-	tagsExtra := fake("tags-extra", `echo '{"helper":"1","taglib":"`+PinnedTagLibVersion+`","extra":1}'`)
-	tagsFailing := fake("tags-failing", `echo '{"helper":"1","taglib":"`+PinnedTagLibVersion+`"}'; exit 1`)
+	tagsExtra := fake("tags-extra", `echo '{"helper":"`+PinnedTagsVersion+`","taglib":"`+PinnedTagLibVersion+`","extra":1}'`)
+	tagsFailing := fake("tags-failing", `echo '{"helper":"`+PinnedTagsVersion+`","taglib":"`+PinnedTagLibVersion+`"}'; exit 1`)
 
 	for _, tc := range []struct {
 		name                  string

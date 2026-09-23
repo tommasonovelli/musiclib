@@ -93,7 +93,9 @@ func inferMetadata(dirName string, tracks []trackTags, ov jobs.Overrides) (album
 				return albumMeta{}, err
 			}
 		}
-		if r.artist != "" && r.artist != m.Artist {
+		// §7.3: NULL when equal to the album artist, with §7.6's comparison
+		// (N-121): a spelling that differs only in case inherits.
+		if r.artist != "" && !catalog.SameArtistName(r.artist, m.Artist) {
 			t.Artist = &r.artist
 		}
 		m.Tracks[i] = t
@@ -211,9 +213,9 @@ func albumTitle(dirName string, rs []readTrack, override *string) (string, error
 
 // albumArtist is §7.3's album artist: the explicit artist; otherwise the one
 // non-empty album artist tag (several are CodeAmbiguousAlbumArtist, which
-// only an explicit artist resolves); otherwise the one non-empty artist of
-// the tracks; Various Artists if they are several (auto is then true);
-// Unknown Artist if there is none.
+// only an explicit artist resolves, even when they differ only in case);
+// otherwise the one artist of the tracks (trackArtist); Various Artists if
+// they are several (auto is then true); Unknown Artist if there is none.
 func albumArtist(rs []readTrack, override *string) (name string, auto bool, err error) {
 	if override != nil {
 		name, err = requiredText(*override, "the artist override")
@@ -227,14 +229,50 @@ func albumArtist(rs []readTrack, override *string) (name string, auto bool, err 
 	case len(aas) == 1:
 		return aas[0], false, nil
 	}
-	artists := distinct(rs, func(r readTrack) string { return r.artist })
-	switch len(artists) {
+	switch artist, n := trackArtist(rs); n {
 	case 0:
 		return UnknownArtist, false, nil
 	case 1:
-		return artists[0], false, nil
+		return artist, false, nil
 	}
 	return VariousArtists, true, nil
+}
+
+// trackArtist is the "unico artista non vuoto delle tracce" of §7.3, with the
+// owner's decision of NOTES.md N-121: spellings that are the same artist
+// under §7.6 (catalog.SameArtistName: NFC, trim, casefold) count as one. It
+// returns how many different artists the tracks have and, when there is
+// exactly one, its spelling: the one the most tracks use, a tie going to the
+// smallest in the bytes of the normalized text (as the genre, N-004).
+func trackArtist(rs []readTrack) (name string, artists int) {
+	count := map[string]int{}
+	var spellings []string
+	for _, r := range rs {
+		if r.artist == "" {
+			continue
+		}
+		if count[r.artist] == 0 {
+			spellings = append(spellings, r.artist)
+		}
+		count[r.artist]++
+	}
+	slices.Sort(spellings)
+	var identities []string
+	for _, s := range spellings {
+		if !slices.ContainsFunc(identities, func(i string) bool { return catalog.SameArtistName(i, s) }) {
+			identities = append(identities, s)
+		}
+	}
+	if len(identities) != 1 {
+		return "", len(identities)
+	}
+	best := spellings[0]
+	for _, s := range spellings {
+		if count[s] > count[best] {
+			best = s
+		}
+	}
+	return best, 1
 }
 
 // basenameTitle is the fallback title of a track (§7.3): its file name

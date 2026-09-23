@@ -154,8 +154,8 @@ type OpaqueField struct {
 	// invalid_picture (NOTES.md N-086).
 	Reason string `json:"reason"`
 	// Removed is true when a write removes the field anyway (a managed key,
-	// an alias, a sort key, a picture): it is lost by design, not by the
-	// adapter.
+	// an alias, a sort key, a picture, an ID3v2 or ID3v1 tag in a FLAC
+	// file, NOTES.md N-090): it is lost by design, not by the adapter.
 	Removed bool `json:"removed"`
 }
 

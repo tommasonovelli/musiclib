@@ -139,11 +139,13 @@ func TestImportLyrics(t *testing.T) {
 }
 
 // N-092: an unmanaged field that cannot be written back refuses the file,
-// naming file and field. N-090: ID3 tags in a FLAC do not.
+// naming file and field. N-090: ID3 tags in a FLAC do not: a render strips
+// them. N-128: the full decode refuses a FLAC with a trailing ID3v1 first.
 func TestImportUnrenderableTagsAndID3(t *testing.T) {
 	e := newEnv(t)
 	e.flac("Latin1/1.flac", track{tags: []string{"ALBUM=L", "COMMENT=caf\xe9"}})
 	e.flac("ID3/1.flac", track{tags: []string{"ALBUM=I", "TITLE=Vorbis title"}, id3v2: true})
+	e.flac("ID3v1/1.flac", track{tags: []string{"ALBUM=J"}, id3v1: true})
 	b := e.importDir("")
 	j := e.failed(b, "Latin1", CodeUnrenderableTag)
 	if !strings.Contains(j.Message, `"1.flac"`) || !strings.Contains(j.Message, "vorbis:COMMENT") || !strings.Contains(j.Message, "invalid_utf8") {
@@ -156,6 +158,7 @@ func TestImportUnrenderableTagsAndID3(t *testing.T) {
 	if !hasWarning(e.importJob(b, "ID3").Warnings, jobs.WarnFLACID3, "1.flac") {
 		t.Error("no ID3 warning")
 	}
+	e.failed(b, "ID3v1", CodeCorruptAudio)
 }
 
 // Content decides (§7.2): a corrupt .flac is an album error, M4A is not

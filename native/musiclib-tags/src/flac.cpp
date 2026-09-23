@@ -11,6 +11,8 @@
 
 #include <taglib/flacfile.h>
 #include <taglib/flacpicture.h>
+#include <taglib/id3v2header.h>
+#include <taglib/id3v2tag.h>
 #include <taglib/tstring.h>
 #include <taglib/tstringlist.h>
 #include <taglib/xiphcomment.h>
@@ -82,12 +84,18 @@ struct Block {
 
 struct RawFlac {
   bool id3v2 = false;
+  // The complete size of the ID3v2 tag: header, body and footer.
+  std::uint64_t id3v2Size = 0;
   bool id3v1 = false;
   std::vector<Block> blocks;  // every block but PADDING, in file order
 };
 
 // readRawFlac reads the metadata blocks. The stream must start with "fLaC",
-// after an ID3v2 tag at most (reported, not parsed: it is refused anyway).
+// after an ID3v2 tag at most. The ID3v2 tag is located, not parsed: a write
+// strips it whole (NOTES.md N-090). Its extent must be exactly the one
+// TagLib's ID3v2::Header computes, which is the extent TagLib removes:
+// a header TagLib reads as a 10-byte tag of size 0 (a size byte of 0x80 or
+// more, a version or revision of 0xFF) is Failure(corrupt).
 RawFlac readRawFlac(int fd) {
   const std::uint64_t size = fileSize(fd);
   RawFlac raw;
@@ -96,6 +104,9 @@ RawFlac readRawFlac(int fd) {
     const std::string h = readAt(fd, 0, 10, "the file");
     if (h.compare(0, 3, "ID3") == 0) {
       raw.id3v2 = true;
+      if (static_cast<unsigned char>(h[3]) == 0xFF || static_cast<unsigned char>(h[4]) == 0xFF) {
+        corrupt("the version of the ID3v2 tag is 0xFF");
+      }
       std::uint64_t tagSize = 0;
       for (std::size_t i = 6; i < 10; ++i) {
         const auto b = static_cast<unsigned char>(h[i]);
@@ -103,7 +114,9 @@ RawFlac readRawFlac(int fd) {
         tagSize = (tagSize << 7) | b;
       }
       const bool footer = (static_cast<unsigned char>(h[5]) & 0x10) != 0;
-      pos = 10 + tagSize + (footer ? 10 : 0);
+      raw.id3v2Size = 10 + tagSize + (footer ? 10 : 0);
+      if (raw.id3v2Size > size) corrupt("the ID3v2 tag extends past the end of the file");
+      pos = raw.id3v2Size;
     }
   }
   if (size < pos + 4 || readAt(fd, pos, 4, "the file") != "fLaC") {
@@ -138,6 +151,9 @@ RawFlac readRawFlac(int fd) {
   } else if (size >= 128) {
     raw.id3v1 = readAt(fd, size - 128, 3, "the end of the file") == "TAG";
   }
+  // A write truncates the file where the ID3v1 tag starts: it must start
+  // after the metadata blocks.
+  if (raw.id3v1 && size - 128 < pos) corrupt("an ID3v1 tag overlaps the metadata blocks");
   return raw;
 }
 
@@ -300,7 +316,8 @@ struct Analysis {
 
 Analysis analyze(const RawFlac &raw) {
   Analysis a;
-  if (raw.id3v2) a.opaque.push_back({"id3v2", reason::kForeignTag, false});
+  // ID3 tags are not part of FLAC: a write strips them (NOTES.md N-090).
+  if (raw.id3v2) a.opaque.push_back({"id3v2", reason::kForeignTag, true});
   for (const Block &b : raw.blocks) {
     const std::string where = "flac.block#" + std::to_string(b.index);
     if (b.type == kVorbisComment) {
@@ -325,7 +342,7 @@ Analysis analyze(const RawFlac &raw) {
       a.blocks.push_back(std::to_string(b.type) + ":" + sha256Hex(b.data));
     }
   }
-  if (raw.id3v1) a.opaque.push_back({"id3v1", reason::kForeignTag, false});
+  if (raw.id3v1) a.opaque.push_back({"id3v1", reason::kForeignTag, true});
   return a;
 }
 
@@ -436,11 +453,18 @@ std::string describeDifference(const FieldMap &got, const FieldMap &want) {
 }
 
 // checkTagLibAgrees verifies that TagLib reads the same file the reader
-// read: the same foreign tags and, when the comment has nothing opaque, the
-// same fields and vendor.
+// read: the same foreign tags, an ID3v2 tag of the same extent (the bytes a
+// write strips, N-090) and, when the comment has nothing opaque, the same
+// fields and vendor.
 void checkTagLibAgrees(TagLib::FLAC::File &file, const RawFlac &raw, const Analysis &a) {
   if (file.hasID3v2Tag() != raw.id3v2 || file.hasID3v1Tag() != raw.id3v1) {
     internal("TagLib and the helper disagree on the ID3 tags of the file");
+  }
+  if (raw.id3v2) {
+    const TagLib::ID3v2::Tag *id3 = file.ID3v2Tag(false);
+    if (id3 == nullptr || id3->header()->completeTagSize() != raw.id3v2Size) {
+      internal("TagLib and the helper disagree on the size of the ID3v2 tag");
+    }
   }
   const bool foreign = file.hasiXMLData() || file.hasBEXTData();
   const bool reported = std::any_of(a.opaque.begin(), a.opaque.end(),
@@ -511,11 +535,14 @@ void save(TagLib::FLAC::File &file, FdStream &stream) {
 }
 
 // verifyWritten reads the written file back with the reader and compares it
-// with what was asked: the fields, the vendor, the kept blocks and the
-// cover. Any difference is Failure(internal); the caller discards the file.
+// with what was asked: no ID3 tag, the fields, the vendor, the kept blocks
+// and the cover. Any difference is Failure(internal); the caller discards
+// the file.
 void verifyWritten(int fd, const Analysis &before, const FieldMap &want, const std::string &vendor,
                    const WriteRequest &req, const std::string &cover) {
-  const Analysis after = analyze(readRawFlac(fd));
+  const RawFlac raw = readRawFlac(fd);
+  if (raw.id3v2 || raw.id3v1) internal("the written file still has an ID3 tag");
+  const Analysis after = analyze(raw);
   if (!after.opaque.empty()) internal("the written file has a field the helper cannot save back");
   if (!after.hasComment) internal("the written file has no Vorbis comment");
   if (after.comment.fields != want) {
@@ -615,18 +642,30 @@ void writeFlac(int fd, const WriteRequest &req, const std::string &cover) {
     file.addPicture(pic.release());  // from here on the file owns it
   }
 
-  // 4. Save. When the file had no comment block, FLAC::File::save first
+  // 4. ID3 tags are not part of FLAC: the output never carries them
+  //    (DESIGN.md §8.3, declared rule of NOTES.md N-090). Stripped from
+  //    TagLib's view before the first save, so that Tag::duplicate below
+  //    cannot copy an ID3 value into a new comment block either; the save
+  //    then removes the leading ID3v2 and truncates the trailing ID3v1.
+  file.strip(TagLib::FLAC::File::ID3v1 | TagLib::FLAC::File::ID3v2);
+
+  // 5. Save. When the file had no comment block, FLAC::File::save first
   //    copies the other tags into the new one with Tag::duplicate, which
   //    removes a DATE that is not a number; the second save, on a file that
   //    now has a comment block, writes the requested values again.
+  //    When an ID3 tag was stripped, the first save chose the padding
+  //    against the length of the file with the tag (it removes the tag
+  //    after writing the metadata); the second save chooses it against the
+  //    final length, as a later write of the output would, so that writing
+  //    the output again gives the same bytes.
   save(file, stream);
-  if (!before.hasComment) {
+  if (!before.hasComment || raw.id3v2 || raw.id3v1) {
     applyManaged(*x, req.values);
     checkTagLibWillWrite(*x, want, vendor);
     save(file, stream);
   }
 
-  // 5. Read it back.
+  // 6. Read it back.
   verifyWritten(fd, before, want, vendor, req, cover);
 }
 

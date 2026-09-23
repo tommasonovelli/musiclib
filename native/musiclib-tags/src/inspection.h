@@ -40,7 +40,8 @@ struct Picture {
 
 // A field that cannot be saved back without loss (DESIGN.md §8.3). removed
 // is true when a write removes it anyway (a managed key, an alias, a sort
-// key, a picture): only the others make write-managed-tags refuse the file.
+// key, a picture, an ID3 tag in a FLAC file): only the others make
+// write-managed-tags refuse the file.
 struct Opaque {
   std::string key;
   std::string reason;
@@ -55,7 +56,7 @@ inline constexpr const char *kInvalidUTF8 = "invalid_utf8";
 inline constexpr const char *kNulByte = "nul_byte";
 inline constexpr const char *kDuplicateBlock = "duplicate_block";    // a second Vorbis comment block
 inline constexpr const char *kForeignMetadata = "foreign_metadata";  // iXML / bext APPLICATION blocks
-inline constexpr const char *kForeignTag = "foreign_tag";            // ID3v2 or ID3v1 in a FLAC file
+inline constexpr const char *kForeignTag = "foreign_tag";            // ID3v2 or ID3v1 in a FLAC file, stripped by a write (N-090)
 inline constexpr const char *kInvalidPicture = "invalid_picture";
 }  // namespace reason
 

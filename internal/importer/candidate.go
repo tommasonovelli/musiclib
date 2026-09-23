@@ -250,19 +250,25 @@ func corrupt(rel string, err error, codes ...string) error {
 }
 
 // foreignTag is the opaque reason of an ID3v2 or ID3v1 tag inside a FLAC
-// (the helper's kForeignTag).
+// (the helper's kForeignTag). The helper reports it as removed: a render
+// strips it (N-090).
 const foreignTag = "foreign_tag"
 
 // tagWarnings applies N-092 and N-090 to an inspection and reports the
-// conflicts of managed fields (§8.1).
+// conflicts of managed fields (§8.1):
+//   - an ID3 tag in a FLAC, which a render strips, is a warning;
+//   - any other field a write cannot keep (Inspection.Blocking) refuses the
+//     file. An ID3 tag the helper did not declare removed would be one.
 func tagWarnings(rel string, in media.Inspection) ([]jobs.Warning, error) {
 	var ws []jobs.Warning
-	for _, o := range in.Blocking() {
-		if o.Reason == foreignTag {
+	for _, o := range in.Opaque {
+		if o.Reason == foreignTag && o.Removed {
 			ws = append(ws, jobs.Warning{Code: jobs.WarnFLACID3, Path: rel,
-				Message: fmt.Sprintf("%q carries an %s tag, which the library copy will not carry: the Vorbis comments are the tags", rel, o.Key)})
-			continue
+				Message: fmt.Sprintf("%q carries an %s tag, which the library copy will not carry: the Vorbis comments are the tags, and ID3 frames without a Vorbis equivalent are dropped", rel, o.Key)})
 		}
+	}
+	if b := in.Blocking(); len(b) > 0 {
+		o := b[0]
 		return ws, &Error{Code: CodeUnrenderableTag, Path: rel,
 			Message: fmt.Sprintf("%q: the field %q cannot be written back without loss (%s): fix it in the source and retry", rel, o.Key, o.Reason)}
 	}

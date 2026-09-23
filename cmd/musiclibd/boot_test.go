@@ -233,7 +233,7 @@ func TestBootRefusals(t *testing.T) {
 			setup: func(t *testing.T, p *paths) string {
 				p.tags = filepath.Join(t.TempDir(), "musiclib-tags")
 				writeFile(t, p.tags, `#!/bin/sh
-echo '{"helper":"1","taglib":"2.3.1-musiclib1"}'
+echo '{"helper":"2","taglib":"2.3.1-musiclib1"}'
 `)
 				if err := os.Chmod(p.tags, 0o755); err != nil {
 					t.Fatal(err)

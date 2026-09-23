@@ -79,10 +79,6 @@ func hostileFiles(t *testing.T, dir string) []hostileFile {
 		many = append(many, flacBlock{typ: flacPadding})
 	}
 	mp3 := readFile(t, lame(t, wav16(t, dir, "src.wav", sine3s), dir, "s.mp3", "-b", "128"))
-	withPrefix := base.with(vorbisBlock("v", "TITLE=x"))
-	withPrefix.prefix = id3v2Tag()
-	withSuffix := base.with(vorbisBlock("v", "TITLE=x"))
-	withSuffix.audio = append(bytes.Clone(withSuffix.audio), id3v1Tag()...)
 	junk := base
 	junk.prefix = []byte("JUNK")
 	ixml := []byte("<BWFXML/>")
@@ -115,6 +111,12 @@ func hostileFiles(t *testing.T, dir string) []hostileFile {
 		corrupt("empty APPLICATION block", base.with(flacBlock{typ: flacApplication}).bytes()),
 		corrupt("50001 blocks", base.with(many...).bytes()),
 		corrupt("ID3v2 size not synchsafe", append([]byte{'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0x80}, good...)),
+		// N-090: the extent of an ID3v2 tag must be the one TagLib strips.
+		corrupt("ID3v2 size beyond the end of the file", append([]byte{'I', 'D', '3', 4, 0, 0, 0x7F, 0x7F, 0x7F, 0x7F}, good...)),
+		corrupt("ID3v2 size beyond the end, with a footer", append(append([]byte{'I', 'D', '3', 4, 0, 0x10}, synchsafe(len(good)-4)...), good...)),
+		corrupt("ID3v2 version 0xFF", append(id3v2Tag()[:3:3], append([]byte{0xFF}, append(id3v2Tag()[4:], good...)...)...)),
+		corrupt("ID3v2 revision 0xFF", append(id3v2Tag()[:4:4], append([]byte{0xFF}, append(id3v2Tag()[5:], good...)...)...)),
+		corrupt("ID3v1 inside the metadata", flacFile{blocks: base.with(rawBlock(flacApplication, []byte("TEST"), make([]byte, 100), id3v1Tag())).blocks}.bytes()),
 
 		// Not a FLAC stream.
 		mismatch("random bytes", garbage(7, 4096)),
@@ -146,8 +148,6 @@ func hostileFiles(t *testing.T, dir string) []hostileFile {
 		refused("APPLICATION iXML", base.with(rawBlock(flacApplication, []byte("iXML"), ixml)),
 			opaque("flac.block#"+strconv.Itoa(len(base.blocks)), "foreign_metadata", false)),
 		removed("APPLICATION riff LIST is not foreign", base.with(rawBlock(flacApplication, []byte("riffLIST"), le32(4), []byte("INFO"))), nil),
-		refused("ID3v2 before fLaC", withPrefix, opaque("id3v2", "foreign_tag", false)),
-		refused("ID3v1 at the end", withSuffix, opaque("id3v1", "foreign_tag", false)),
 		removed("invalid PICTURE block", base.with(rawBlock(flacPicture, garbage(2, 10))),
 			opaque("flac.block#"+strconv.Itoa(len(base.blocks)), "invalid_picture", true), true),
 		// TagLib's check of the MIME length (pos + length + 24 > size)

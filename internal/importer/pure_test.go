@@ -238,8 +238,28 @@ func TestInferMetadata(t *testing.T) {
 			artist: "A", title: "D", compilation: true, nos: []int{1}, titles: []string{"1"}, artists: []string{""}, genres: []string{"-"}}},
 		{"track artist equal after normalization", "D", []trackTags{tt("1", "ALBUMARTIST=Zé", "ARTIST= Zé ", "TRACKNUMBER=1")}, none, want{
 			artist: "Zé", title: "D", nos: []int{1}, titles: []string{"1"}, artists: []string{""}, genres: []string{"-"}}},
-		{"track artist differing in case is kept", "D", []trackTags{tt("1", "ALBUMARTIST=abba", "ARTIST=ABBA", "TRACKNUMBER=1")}, none, want{
-			artist: "abba", title: "D", nos: []int{1}, titles: []string{"1"}, artists: []string{"ABBA"}, genres: []string{"-"}}},
+		// N-121 (owner, 2026-09-23): artists equal under §7.6 (NFC, trim,
+		// casefold) are one artist. A track whose spelling differs only in
+		// case inherits the album artist: its own spelling is not kept.
+		{"track artist differing in case inherits", "D", []trackTags{tt("1", "ALBUMARTIST=abba", "ARTIST=ABBA", "TRACKNUMBER=1")}, none, want{
+			artist: "abba", title: "D", nos: []int{1}, titles: []string{"1"}, artists: []string{""}, genres: []string{"-"}}},
+		{"track artists differing in case: the most frequent spelling", "D", []trackTags{tt("1", "ARTIST=Abba", "TRACKNUMBER=1"),
+			tt("2", "ARTIST=ABBA", "TRACKNUMBER=2"), tt("3", "ARTIST=Abba", "TRACKNUMBER=3"), tt("4", "TRACKNUMBER=4")}, none, want{
+			artist: "Abba", title: "D", nos: []int{1, 2, 3, 4}, titles: []string{"1", "2", "3", "4"}, artists: make([]string, 4), genres: slices.Repeat([]string{"-"}, 4)}},
+		{"track artists differing in case: a tie goes to the smallest bytes", "D", []trackTags{tt("1", "ARTIST=abba", "TRACKNUMBER=1"),
+			tt("2", "ARTIST=ABBA", "TRACKNUMBER=2"), tt("3", "ARTIST=Abba", "TRACKNUMBER=3")}, none, want{
+			artist: "ABBA", title: "D", nos: []int{1, 2, 3}, titles: []string{"1", "2", "3"}, artists: make([]string, 3), genres: slices.Repeat([]string{"-"}, 3)}},
+		// Full case folding, not lower(): "ß" folds to "ss".
+		{"track artists equal by case folding", "D", []trackTags{tt("1", "ARTIST=Strauß", "TRACKNUMBER=1"), tt("2", "ARTIST=STRAUSS", "TRACKNUMBER=2")}, none, want{
+			artist: "STRAUSS", title: "D", nos: []int{1, 2}, titles: []string{"1", "2"}, artists: []string{"", ""}, genres: []string{"-", "-"}}},
+		{"case variants and another artist", "D", []trackTags{tt("1", "ARTIST=Abba", "TRACKNUMBER=1"), tt("2", "ARTIST=ABBA", "TRACKNUMBER=2"),
+			tt("3", "ARTIST=Queen", "TRACKNUMBER=3")}, none, want{
+			artist: VariousArtists, title: "D", compilation: true, nos: []int{1, 2, 3}, titles: []string{"1", "2", "3"},
+			artists: []string{"Abba", "ABBA", "Queen"}, genres: slices.Repeat([]string{"-"}, 3)}},
+		{"album artists differing in case stay ambiguous", "D", []trackTags{tt("1", "ALBUMARTIST=Abba"), tt("2", "ALBUMARTIST=ABBA")}, none, want{code: CodeAmbiguousAlbumArtist}},
+		{"track artist differing in case from the artist override inherits", "D", []trackTags{tt("1", "ARTIST=queen", "TRACKNUMBER=1"), tt("2", "ARTIST=Abba", "TRACKNUMBER=2")},
+			jobs.Overrides{Artist: ptr("Queen")}, want{artist: "Queen", title: "D", nos: []int{1, 2}, titles: []string{"1", "2"},
+				artists: []string{"", "Abba"}, genres: []string{"-", "-"}}},
 		{"mixed album", "D", []trackTags{tt("1", "ALBUM=X"), tt("2", "ALBUM=Y"), tt("3")}, none, want{code: CodeMixedAlbum}},
 		{"title override resolves mixed", "D", []trackTags{tt("1", "ALBUM=X", "TRACKNUMBER=1"), tt("2", "ALBUM=Y", "TRACKNUMBER=2")},
 			jobs.Overrides{Title: ptr("T")}, want{artist: UnknownArtist, title: "T", nos: []int{1, 2}, titles: []string{"1", "2"},
@@ -488,5 +508,41 @@ func TestCompareSnapshots(t *testing.T) {
 		if _, diff := compareSnapshots(base, m); !diff {
 			t.Errorf("%s: not seen", name)
 		}
+	}
+}
+
+// N-090 and N-092 on an inspection: an ID3 tag in a FLAC, which the helper
+// declares removed, is a warning and the file is accepted; every other field
+// a write cannot keep refuses it, and so would an ID3 tag the helper did not
+// declare removed (a helper older than N-090).
+func TestTagWarnings(t *testing.T) {
+	id3v2 := media.OpaqueField{Key: "id3v2", Reason: foreignTag, Removed: true}
+	id3v1 := media.OpaqueField{Key: "id3v1", Reason: foreignTag, Removed: true}
+	for _, tc := range []struct {
+		name     string
+		opaque   []media.OpaqueField
+		warnings int
+		code     string
+	}{
+		{"nothing opaque", nil, 0, ""},
+		{"both ID3 tags", []media.OpaqueField{id3v2, id3v1}, 2, ""},
+		{"a managed field the write removes", []media.OpaqueField{{Key: "vorbis:TITLE", Reason: "invalid_utf8", Removed: true}}, 0, ""},
+		{"an ID3 tag not declared removed", []media.OpaqueField{{Key: "id3v2", Reason: foreignTag}}, 0, CodeUnrenderableTag},
+		{"an ID3 tag and a blocking field", []media.OpaqueField{id3v2, {Key: "vorbis:COMMENT", Reason: "invalid_utf8"}}, 1, CodeUnrenderableTag},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws, err := tagWarnings("a/1.flac", media.Inspection{Opaque: tc.opaque})
+			if Code(err) != tc.code || (tc.code == "") != (err == nil) {
+				t.Fatalf("err %v, want %q", err, tc.code)
+			}
+			if len(ws) != tc.warnings {
+				t.Fatalf("%d warnings, want %d: %+v", len(ws), tc.warnings, ws)
+			}
+			for _, w := range ws {
+				if w.Code != jobs.WarnFLACID3 || w.Path != "a/1.flac" || !strings.Contains(w.Message, "will not carry") {
+					t.Errorf("warning %+v", w)
+				}
+			}
+		})
 	}
 }

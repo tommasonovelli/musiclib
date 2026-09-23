@@ -39,7 +39,7 @@ const (
 	// PinnedTagsVersion is the version of native/musiclib-tags
 	// (kHelperVersion in src/version.h): it changes whenever an inspection
 	// or a written file can change.
-	PinnedTagsVersion = "1"
+	PinnedTagsVersion = "2"
 	// PinnedTagLibVersion is the TagLib the helper is linked with, as the
 	// library reports it at run time, plus the revision of its build
 	// configuration (Dockerfile, TAGLIB_BUILD_REVISION).
