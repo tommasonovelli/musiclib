@@ -377,25 +377,33 @@ func TestDecodeArgs(t *testing.T) {
 
 // BenchmarkAudioDigest5MinFLAC measures AudioDigest (probe + full decode +
 // SHA-256) on a typical track: 5 minutes of 44.1 kHz 16-bit stereo pink
-// noise, about 36 MB of FLAC (N-079).
+// noise, about 36 MB of FLAC (N-079). "id3v1" is the same file with a
+// trailing ID3v1 tag, which the decoder reads through a pipe (N-128).
 //
 //	scripts/dev.sh go test -run '^$' -bench AudioDigest5Min -benchtime 10x ./internal/media/
 func BenchmarkAudioDigest5MinFLAC(b *testing.B) {
 	dir := b.TempDir()
 	tools := newTools(b)
 	p := gen(b, dir, "long.flac", append(lavfi("anoisesrc=color=pink:sample_rate=44100:seed=42:duration=300"), "-ac", "2", "-c:a", "flac")...)
-	f := open(b, p)
-	b.ResetTimer()
-	for b.Loop() {
-		d, err := tools.AudioDigest(b.Context(), f)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if d.Frames != 300*44100 {
-			b.Fatalf("%d frames", d.Frames)
-		}
+	files := map[string]string{
+		"whole": p,
+		"id3v1": writeFile(b, filepath.Join(dir, "id3v1.flac"), slices.Concat(readFile(b, p), id3v1Tag())),
 	}
-	b.ReportMetric(float64(300*44100*2*8)/1e6, "MB_pcm/op")
+	for _, name := range []string{"whole", "id3v1"} {
+		b.Run(name, func(b *testing.B) {
+			f := open(b, files[name])
+			for b.Loop() {
+				d, err := tools.AudioDigest(b.Context(), f)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if d.Frames != 300*44100 {
+					b.Fatalf("%d frames", d.Frames)
+				}
+			}
+			b.ReportMetric(float64(300*44100*2*8)/1e6, "MB_pcm/op")
+		})
+	}
 }
 
 // The checks on the decoder's output, with a fake ffmpeg (and the real

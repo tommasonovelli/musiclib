@@ -239,12 +239,23 @@ func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warni
 	return tagWarnings(rel, in)
 }
 
+// corruptMessages are the messages of the failures of the decode and of the
+// tag reader that are the file's fault. They say which check failed: such a
+// file may well play (N-128).
+var corruptMessages = map[string]string{
+	media.CodeDecode: "%q does not decode completely: an audio frame is damaged or missing, " +
+		"or the file has bytes after its last frame that are not audio (an ID3v2 tag appended at the end is one)",
+	media.CodeNotSupported:       "%q is not supported audio",
+	media.CodeTagsCorrupt:        "%q has a damaged metadata structure",
+	media.CodeTagsFormatMismatch: "%q is not a FLAC stream the tag reader accepts",
+}
+
 // corrupt types a failure of the decode or of the tag reader: the file's
-// fault (codes) is CodeCorruptAudio; anything else (a timeout, a tool
-// failure) keeps its own code.
+// fault (codes, each one of corruptMessages) is CodeCorruptAudio; anything
+// else (a timeout, a tool failure) keeps its own code.
 func corrupt(rel string, err error, codes ...string) error {
-	if slices.Contains(codes, media.Code(err)) {
-		return &Error{Code: CodeCorruptAudio, Path: rel, Message: fmt.Sprintf("%q is not a valid audio file", rel), Err: err}
+	if code := media.Code(err); slices.Contains(codes, code) {
+		return &Error{Code: CodeCorruptAudio, Path: rel, Message: fmt.Sprintf(corruptMessages[code], rel), Err: err}
 	}
 	return err
 }

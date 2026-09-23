@@ -419,7 +419,7 @@ Public API:
 | `NewTools(ctx, runner, ffmpeg, ffprobe, tags)` | reads the `-version` lines of ffmpeg and ffprobe and requires `PinnedVersion`; reads `musiclib-tags version` and requires `PinnedTagsVersion` and `PinnedTagLibVersion` |
 | `Tools.Versions()` | the versions read (`FFmpeg`, `FFprobe`, `Tags`, `TagLib`), inputs of `render_version` (N-080, N-010) |
 | `Tools.Probe(ctx, f)` | classification by content: `audio` (with `Format` = `flac`, `mp3`, `m4a-aac`, `m4a-alac`, codec, rate, channels, layout, duration, declared frames), `unsupported_audio` (reason), `no_audio`, `unreadable`; attached pictures counted |
-| `Tools.AudioDigest(ctx, f)` | §8.4: probe, full decode to `pcm_f64le`, streamed SHA-256, frames = bytes / (8 × channels), declared length enforced; returns `(SampleRate, Channels, Layout, Frames, PCMSHA256)` |
+| `Tools.AudioDigest(ctx, f)` | §8.4: probe, full decode to `pcm_f64le`, streamed SHA-256, frames = bytes / (8 × channels), declared length enforced; a FLAC's trailing ID3v1 left out of the decode (N-128); returns `(SampleRate, Channels, Layout, Frames, PCMSHA256)` |
 | `KnownAudioExtensions()` / `HasKnownAudioExtension` | the fixed list of §7.2, for the importer's rule (N-081) |
 | `Error` / `Code` | `media_tool_unavailable`, `media_tool_version`, `media_timeout`, `media_canceled`, `media_tool_failed`, `media_output_too_large`, `media_output_invalid`, `media_not_supported`, `media_decode`, `media_io`, `media_invalid_argument`; stderr kept in a field, never in `Error()` (N-082) |
 
@@ -443,12 +443,18 @@ How it maps to DESIGN.md:
     Xing/Info/VBRI header declares is refused (N-078).
   - The digest is comparable only on the same binary and machine, which §8.4
     requires anyway (N-079).
+  - For a FLAC with a trailing ID3v1 tag (TagLib's rule, the helper's, pinned
+    by a cross-check), the decoder reads only the bytes before the tag,
+    through a pipe that carries exactly those bytes, with the same command.
+    The render's §9.1 step 6 comparison then needs no knowledge of ID3
+    (N-128, owner decision).
 - **§11.1 step 3:** the boot builds the Runner with `WORKERS` slots and runs
   `NewTools`. A missing or different tool is a fatal boot error with its
   code.
 
 **Cost (N-079):** `AudioDigest` of a 5-minute 44.1 kHz stereo FLAC takes 0.56
-s in the dev container. ALAC, AAC and MP3 decode in 0.55 to 0.61 s.
+s in the dev container. With a trailing ID3v1, read through the pipe of N-128,
+the time is the same within noise. ALAC, AAC and MP3 decode in 0.55 to 0.61 s.
 
 Tests run the real pinned ffprobe, ffmpeg and LAME, on fixtures generated at
 test time (lavfi sine, fixed-seed noise, silence; `image/png`). Nothing is
@@ -491,6 +497,17 @@ committed.
   - unsupported files refused before any decode;
   - decoder failures with a fake ffmpeg: exit 1 after plausible PCM,
     killed, empty output, a partial frame, the wrong length.
+- **Trailing ID3v1 (N-128):**
+  - the Go rule agrees with the release and the ASan helper on 14 files
+    (APEv2 identifiers, near misses, stacked tags, appended ID3v2, audio
+    that spells "TAG", a tag inside the metadata);
+  - the digest with the tag equals the digest without it, with and without
+    a declared length, and with a leading ID3v2;
+  - a fake ffmpeg receives exactly the bytes before the tag;
+  - audio cut short by 1 to 1000 bytes before an ID3v1, a false "TAG" match,
+    two ID3v1, an `APETAGEX` and an appended ID3v2 are refused;
+  - the feeder: exact lengths, short and unreadable inputs, a decoder that
+    does not read, a cancellation.
 - **Runner, on real processes:**
   - a timeout on a real 10-minute decode;
   - cancellation kills and reaps a shell and two children, checked in
@@ -522,6 +539,9 @@ Mutation-checked: each of the following makes a test fail:
 - in the decoder: no `-reinit_filter 0`; a bare `explode`; no `-err_detect`;
   no `-xerror`; no declared-length, partial-frame or empty-output check; no
   rewind before the decode or the probe; unsupported files decoded;
+- for the trailing ID3v1: no byte limit; the extent one byte short or long;
+  a divergent detector (no `APETAGEX` exclusion, "TAG" at 129 bytes); the
+  feeder one byte short; a decoder that does not read accepted;
 - in the probe: an estimated MP3 length taken as exact; no encryption,
   video, multistream or other-stream check; AAC accepted outside MP4; any
   failing exit taken as unreadable; EIO taken as unreadable; the undeclared
@@ -531,6 +551,7 @@ Mutation-checked: each of the following makes a test fail:
 ```sh
 scripts/check.sh ./internal/media/...
 scripts/dev.sh go test -race -count=20 -run 'TestRun|TestNewTools|TestProbeToolFailures|TestAudioDigestDecoderFailures' ./internal/media/
+scripts/dev.sh go test -race -count=10 -run 'ID3v1|FeedPrefix|LimitedInput|FeedsExactly' ./internal/media/
 scripts/dev.sh go test -run '^$' -bench AudioDigest5Min -benchtime 10x ./internal/media/
 ```
 
@@ -708,7 +729,8 @@ docker build --target build-tags .           # the helper and its unit tests alo
 - N-090 (ID3 in FLAC stripped by a declared rule) is done: the importer
   accepts such files with a warning (round 5), and the helper strips the
   tags at render since helper version `2` (round 6). A FLAC with a trailing
-  ID3v1 is still refused at import by the full decode (N-128).
+  ID3v1 is imported too since round 7: the full decode reads only the bytes
+  before the tag (N-128).
 
 ### `internal/store` — transaction runner and catalog lock (§5.3, §6.2, §6.4) ✔
 
@@ -934,8 +956,9 @@ without one, and the job stays running until the boot recovers it.
 - **N-092, N-090:** a field from `Inspection.Blocking()` is
   `unrenderable_tag`, naming the file and the field. An ID3 tag in a FLAC,
   which the helper reports as removed, is accepted with the warning
-  `flac_id3_tag`; a render strips it. A trailing ID3v1 makes the full decode
-  fail first (N-128).
+  `flac_id3_tag`; a render strips it. The full decode of a FLAC with a
+  trailing ID3v1 reads only the bytes before the tag (N-128). A file still
+  refused as `corrupt_audio` gets a message that names the failed check.
 - **§7.3:** the whole table, as a pure function (`inferMetadata`): album,
   album artist, track artist, title, disc, numbers, year, genre (N-004),
   compilation, `mixed_album`, multi-valued text, overrides. The details are
@@ -983,8 +1006,9 @@ job, every source entry's bytes, inode, mode and mtime are compared, and
     overrides;
   - out-of-range numbers.
 - **LRC:** matched, not UTF-8, ambiguous, unmatched.
-- **Owner decisions:** N-092 refused; N-090 accepted (and a trailing ID3v1
-  refused by the decode, N-128).
+- **Owner decisions:** N-092 refused; N-090 accepted, a trailing ID3v1
+  included (N-128); an ID3v2 appended at the end refused by the decode, with
+  a message that says so.
 - **Formats:** a corrupt FLAC, text named `.mp3`, M4A, WAV, and a FLAC
   without an extension.
 - **Layouts:** multi-disc; an ambiguous branch next to a good one, with the

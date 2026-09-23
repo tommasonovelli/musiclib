@@ -1014,6 +1014,11 @@ The descriptor shares its file offset with the caller. `Probe` and
 `AudioDigest` seek it to 0 before each tool run, and the caller must not use
 it concurrently. The offset is unspecified afterwards.
 
+For a FLAC with a trailing ID3v1 tag, the decoder's descriptor 3 is instead
+the read end of a pipe, which the adapter fills with exactly the bytes
+before the tag, read with pread (N-128). Still a descriptor, never a path,
+and the same command line.
+
 Every tool also gets an empty environment (no `FFREPORT` or `AV_LOG_*` from
 the server's environment) and `/` as working directory.
 
@@ -1162,6 +1167,9 @@ the server's environment) and `/` as working directory.
   The last three were timed on the same decode command outside Go. A render
   that digests each track twice spends about 1.1 s per 5 minutes of audio,
   per worker.
+
+  A FLAC with a trailing ID3v1, which the decoder reads through a pipe
+  (N-128), takes the same time within noise (0.57 to 0.60 s, round 7).
 
 ### N-080 · Tool versions for `render_version` — DECIDED
 `media.NewTools` runs `ffmpeg -version` and `ffprobe -version` through the
@@ -1477,8 +1485,9 @@ non-null boolean, false is the absence of the flag. `TagBool` reads "1",
 ### N-090 · ID3 tags inside a FLAC — RESOLVED (owner decision 2026-09-23; importer round 5, helper round 6)
 **The rule.** ID3 is not part of the FLAC format, and stale TIT2/TPE1 values
 next to the Vorbis comments would contradict §8.2. A write of a FLAC removes
-every ID3v2 tag before `fLaC` and the ID3v1 tag at the end, by a declared
+the one ID3v2 tag before `fLaC` and the ID3v1 tag at the end, by a declared
 rule of the adapter: an exception to §8.3, like the MP3 ID3v1 migration.
+(Stacked ID3v2 tags before `fLaC` are refused, see the ACCEPTED limits.)
 Everything else is kept exactly as before (§8.2, §8.3): Vorbis fields,
 vendor, kept blocks, audio.
 
@@ -1576,20 +1585,26 @@ The earlier non-synchsafe case stays `corrupt`.
 
 **ACCEPTED limits:**
 - **The ID3v1 detection mirrors TagLib's heuristic:** "TAG" 128 bytes before
-  the end, unless that is the end of an APEv2 footer. A FLAC whose audio
-  happens to have those bytes there (about 1 in 16 million) decodes, so it
-  is imported, with a misleading `flac_id3_tag` warning. Its render would
-  truncate those 128 bytes of audio. The helper's read-back does not compare
-  the audio, but the digest comparison of §9.1 step 6 does, so the render
-  fails and nothing wrong is published. Version `1` refused such a file up
-  front (`opaque_field`); the owner's rule accepts this trade.
-- **Two stacked ID3v1 tags:** only the last is detected. The write strips
-  it, the read-back finds the next one and fails the render with
-  `media_tags_internal`. Nothing is lost silently.
+  the end, unless those are the "TAG" of an "APETAGEX" that starts 131 bytes
+  before the end. A FLAC whose audio happens to have those bytes there
+  (about 1 in 16 million) is taken for a FLAC with an ID3v1. Since N-128 the
+  full decode at import leaves those 128 bytes out, cuts into the last
+  frame, and refuses the file (`corrupt_audio`), as tested with such a
+  file. Before N-128 it was imported with a misleading warning, and its
+  render failed at §9.1 step 6. Nothing wrong is published either way.
+- **Two stacked ID3v1 tags:** only the last is detected. Since N-128 the
+  full decode reads the other one as bytes after the audio and refuses the
+  file at import (`corrupt_audio`). A render would strip the last one, and
+  its read-back would find the next one and fail with `media_tags_internal`.
+  Nothing is lost silently.
+- **Stacked ID3v2 tags before `fLaC`:** the reader locates one ID3v2 tag and
+  then requires `fLaC`, so a second tag is `format_mismatch`: the import
+  refuses the file (`corrupt_audio`, "not a FLAC stream the tag reader
+  accepts"). The helper strips one tag, as TagLib does.
 - **An ID3v2 appended at the end of the file** (footer `3DI`) is detected
-  neither by TagLib's FLAC code nor by the reader. It is trailing bytes
-  after the audio, kept as they are; the pinned decoder refuses such a
-  file at import too, as it refuses the ID3v1 (N-128).
+  neither by TagLib's FLAC code nor by the reader, so a render would not
+  strip it. It is bytes after the audio, and the full decode refuses the
+  file at import (`corrupt_audio`, N-128).
 
 ### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
 **Round 5 (done):** `media.MaxEmbeddedCover(audioFormat, coverFormat)` and
@@ -2317,40 +2332,160 @@ like the FIFO.
 N-090 and N-121 were implemented, and N-099, N-122 and N-126 corrected
 after the importer review; see those entries.
 
-### N-128 · The full decode refuses a FLAC with a trailing ID3v1 or an appended ID3v2 — TO CONFIRM
-**The finding.** Writing the N-090 tests showed that the pinned ffmpeg
-(8.1.3, with `-err_detect crccheck+explode -xerror`, N-074) fails to decode
-a FLAC that has 128 bytes of ID3v1 after its last frame. It fails the same
-way with an ID3v2 tag appended at the end ("3DI" footer): "invalid sync
-code", exit 183, `media_decode`. So `AudioDigest` refuses the file, and the
-importer fails the album with `corrupt_audio` (§7.6, §8.4) before the tags
-are read. A **leading** ID3v2 decodes to the same samples and is imported,
-with the `flac_id3_tag` warning.
+### N-128 · The full decode of a FLAC with a trailing ID3v1 reads only the bytes before the tag — RESOLVED (owner decision 2026-09-23)
+**The finding (round 6).** The pinned ffmpeg (8.1.3, with `-err_detect
+crccheck+explode -xerror`, N-074) refuses to decode a FLAC that has 128
+bytes of ID3v1 after its last frame, and one with an ID3v2 tag appended at
+the end ("3DI" footer): "invalid sync code", exit 183, `media_decode`. So
+`AudioDigest` refused the file, and the importer failed the album with
+`corrupt_audio` before the tags were read, with the message "not a valid
+audio file", although the file plays and a render strips the ID3v1 anyway
+(N-090). A **leading** ID3v2 always decoded to the same samples.
 
-**Consequence.** The N-090 decision ("the import must still accept these
-files") holds for a leading ID3v2 only. A FLAC with a trailing ID3v1, which
-old taggers write and players ignore, is refused as corrupt audio. The
-message says "not a valid audio file", which the user may find surprising
-for a file that plays. The helper strips an ID3v1 correctly at render, as
-tested, but such a file never reaches a render.
+**The owner's rule (2026-09-23).** For a FLAC with a detected trailing
+ID3v1 tag, `AudioDigest` decodes only the bytes before the tag, with the
+same pinned ffmpeg and exactly the same command line (§8.4, N-074): no
+relaxation of `crccheck+explode`, no other transform. The 128 bytes left
+out are the bytes a render strips, so the input's digest and the output's
+describe the same stream.
 
-**Why it was not changed here.** The decode's strictness is §8.4, and N-074
-is an owner decision: trailing bytes after the last frame are exactly what
-`explode` turns into an error. Accepting them would mean one of:
-- decoding only the audio extent (the file minus the ID3v1 tag);
-- or relaxing the decoder options.
+**One detection rule (§13.2).** The rule is TagLib 2.3.2's
+`Utils::findID3v1`, which is also the helper's reader (`readRawFlac`) and
+the rule by which TagLib strips the tag at render: "TAG" 128 bytes before
+the end, unless those are the "TAG" of an "APETAGEX" that starts 131 bytes
+before the end; for a file of 128 to 130 bytes, "TAG" at the start (no
+FLAC can reach that branch: "fLaC" or "ID3" holds the first bytes).
+- **Where it lives:** `media.hasTrailingID3v1`, used by `flacAudioEnd`,
+  which `AudioDigest` calls for a file the probe classified as FLAC. It
+  reads the last 131 bytes with pread.
+- **Why in Go and not reported by the helper's `inspect`.** `AudioDigest`
+  keeps its signature `(ctx, f)` and its callers (the importer, the render's
+  §9.1 step 6) need no extra knowledge. Reporting the extent from `inspect`
+  would have meant either a new argument that every caller must fetch and
+  pass (the render could get it wrong), or `AudioDigest` running the helper
+  itself: a second tool run per digest, and a digest that fails with a tag
+  code when the metadata is damaged. It would also have bumped the helper
+  version, and so `render_version`, for 11 bytes of comparison. The rule is
+  three comparisons on fixed bytes. Written once in Go, it is pinned to the
+  helper by a test instead.
+- **The cross-check** (`TestTrailingID3v1IsTheHelpersRule`), with the
+  release and the ASan/UBSan helper, file by file: the Go rule and the
+  helper's inspection (`id3v1` reported, or `corrupt` "an ID3v1 tag
+  overlaps the metadata blocks") agree, and the Go extent is exactly the
+  last 128 bytes. The helper itself checks its reading against TagLib's
+  `hasID3v1Tag()` (`checkTagLibAgrees`), so all three agree. Cases: no tag;
+  an ID3v1; a leading ID3v2 and an ID3v1; two ID3v1; `APETAGEX`,
+  `APETAGEY` and `XPETAGEX` 131 bytes from the end; "TAG" 129 and 127 bytes
+  from the end; lower-case "tag"; an appended ID3v2, alone and followed by
+  an ID3v1; audio bytes that spell "TAG"; an ID3v1 inside the metadata.
+  `TestHasTrailingID3v1` covers the rule on its own, the short-file branch
+  included. That the render strips exactly these 128 bytes is
+  `TestTagsFLACStripsID3`: the output is byte for byte the output of the
+  file without the tag.
 
-Either is a change of the audio verification, outside this round and outside
-DESIGN.md's letter. It is conservative as it is: nothing wrong is imported,
-and the file stays in `/import`.
+**The byte limit.** The decoder never gets a path (N-075). For a limited
+file, descriptor 3 is the read end of a pipe, and a goroutine writes
+exactly the first `size − 128` bytes of the file into it with pread
+(`feedPrefix`), then closes it. Any other file is passed as today, as
+descriptor 3 itself. After the run the parent closes the read end, so a
+feeder still writing gets EPIPE and returns: nothing blocks or leaks, on any
+outcome. Its failures:
+- a failed read of the input is `media_io` (the machine's fault), whatever
+  the decoder made of the short stream;
+- a decoder that exits 0 without reading the whole stream is
+  `media_decode`;
+- otherwise the decoder's own failure, as before.
 
-**Pinned:**
-- `TestTagsFLACStripsID3` requires `media_decode` for the ID3v1 inputs, so a
-  bump of ffmpeg that changes this fails the gate;
-- `TestImportUnrenderableTagsAndID3` requires `corrupt_audio` for an album
-  whose FLAC has a trailing ID3v1.
+The pipe costs nothing measurable: `BenchmarkAudioDigest5MinFLAC`, 3 × 10
+runs of 5 minutes of FLAC, 0.56–0.57 s whole, 0.57–0.60 s with an ID3v1.
 
-**For the owner:** keep the refusal, or have `AudioDigest` decode only the
-bytes before a detected trailing ID3v1. The second is the reading closest to
-the N-090 intent, and needs the same detection as the helper (TagLib's
-heuristic, N-090's ACCEPTED limits).
+**Test evidence** (`internal/media/digest_id3v1_test.go`, real ffmpeg):
+- **Same samples:** the digest of a FLAC with a trailing ID3v1 equals the
+  digest of the same FLAC without it, with and without a declared length
+  (STREAMINFO total 0), and with a leading ID3v2 too. In
+  `TestTagsFLACStripsID3`, the input's digest now equals that of the file
+  without ID3 for every case, trailing ID3v1 included, and so does the
+  output's: the §9.1 step 6 comparison holds.
+- **Exactly the bytes:** a fake ffmpeg that copies its descriptor 3 to a
+  file receives exactly the file without its last 128 bytes (a single
+  ID3v1, two ID3v1, a leading ID3v2 too), and the whole file otherwise
+  (`APETAGEX`, no tag). The samples alone could not show an extent that
+  is a few bytes too long: see N-129.
+- **A real truncation is still refused:** audio cut short by 1, 2, 3, 10,
+  100 and 1000 bytes and followed by an ID3v1 is `media_decode`, also
+  without a declared length, so the refusal is the decoder's: "CRC error"
+  (the frame CRC-16 of N-074) for the shortest cuts, "invalid residual"
+  for the others.
+- **A false match is refused:** a valid FLAC of uniform noise, whose last
+  frame the encoder stores VERBATIM, with two samples set so that its audio
+  bytes spell "TAG" 128 bytes before the end. Read whole it decodes; under
+  the rule it is `media_decode`, with and without a declared length. Why
+  this holds in general: a FLAC frame starts with its sync code (0xFF), so
+  a "TAG" can never be where a frame starts, and the cut always falls
+  inside a frame. The file is then accepted only if that incomplete frame
+  parsed to its end and its CRC-16 matched by chance, **and** STREAMINFO
+  declares no total (otherwise the frame count of N-078 refuses it). Before
+  this rule such a file was imported and its render failed (N-090).
+- **What a render keeps stays refused:** an `APETAGEX` 131 bytes from the
+  end, two ID3v1 tags, an ID3v2 appended at the end (alone or followed by
+  an ID3v1).
+- **The feeder:** exactly n bytes for n at and around the read chunk; a
+  short input and an unreadable one are read failures; a decoder that
+  exits 0 or 1 without reading, and a cancellation during the decode, end
+  with `media_decode`, `media_decode` and `media_canceled`, with no leak
+  under `-race -count=10`.
+
+**The appended ID3v2** stays refused. The helper does not strip it:
+TagLib's FLAC code and the helper's reader only look for an ID3v2 before
+`fLaC` (N-090's ACCEPTED limits), and extending the helper is outside
+N-090. Its bytes would stay in the library copy, so they must not be left
+out of the digest either.
+
+**The importer** gives the `flac_id3_tag` warning for a FLAC with a trailing
+ID3v1 and imports it (`TestImportUnrenderableTagsAndID3`). The message of a
+file still refused now says which check failed (`corruptMessages`):
+- `media_decode`: "does not decode completely: an audio frame is damaged or
+  missing, or the file has bytes after its last frame that are not audio
+  (an ID3v2 tag appended at the end is one)";
+- `media_not_supported`: "is not supported audio";
+- `media_tags_corrupt`: "has a damaged metadata structure";
+- `media_tags_format_mismatch`: "is not a FLAC stream the tag reader
+  accepts".
+
+The code stays `corrupt_audio`, and the media error follows the message.
+
+**Mutation-checked:**
+- no byte limit (the whole file decoded): the same-samples tests, and
+  `TestTagsFLACStripsID3`, fail;
+- the extent one byte short: the same-samples tests fail;
+- the extent one byte long: the exact-bytes test fails; the samples do not
+  change (N-129);
+- a divergent detector (no `APETAGEX` exclusion; "TAG" looked for at 129
+  bytes from the end): the cross-check fails;
+- the feeder writing one byte less: the same-samples and feeder tests fail;
+- a decoder that exits 0 without reading accepted: the failure test fails.
+
+---
+
+## Round 7: the trailing ID3v1 in the full decode (2026-09-23)
+
+N-128 was resolved (owner decision), and N-075 and N-090 corrected; see
+those entries.
+
+### N-129 · The pinned ffmpeg ignores up to 9 bytes after the last FLAC frame — ACCEPTED
+Found while mutation-checking N-128. Measured on a 3-second FLAC, with the
+command line of §8.4 and N-074: after the last frame, 1 to 9 bytes of junk
+(zeros, "TAG…", random) decode with exit 0 to the same samples; 10 bytes or
+more fail with "invalid sync code". The parser does not treat a remainder
+too short for a frame header as a frame. This was true before N-128 too.
+- **Consequence:** a FLAC with up to 9 junk bytes at its end is imported,
+  and the digest does not cover those bytes. They are not audio: the
+  samples are complete and verified by the frame CRCs and the declared
+  length. A render keeps them, since they are not a tag, and its digest
+  comparison is unaffected.
+- **Why accepted:** refusing them would need a check outside ffmpeg of where
+  the last frame ends, which is a FLAC parser §8.4 does not ask for. The
+  bytes carry no audio and nothing is lost.
+- For N-128 it means that the samples alone cannot prove the extent to the
+  byte. `TestAudioDigestFeedsExactlyTheAudio` checks the bytes the decoder
+  receives instead.

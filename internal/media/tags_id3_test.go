@@ -80,10 +80,9 @@ func id3Cases(t testing.TB) []id3Case {
 	}
 }
 
-// writeStripping is writeChecked for a file with ID3 tags. The pinned
-// ffmpeg refuses to decode a FLAC with a trailing ID3v1 tag (NOTES.md
-// N-128), so the audio digest of the output is compared with d0, the one of
-// the same file without its ID3 tags.
+// writeStripping is writeChecked for a file with ID3 tags: the audio digest
+// of the output is compared with d0, the one of the same file without its
+// ID3 tags, which is also the input's (N-128).
 func writeStripping(t testing.TB, tools *Tools, path string, v TagValues, cover *coverFile, d0 Digest) Inspection {
 	t.Helper()
 	before := inspectFile(t, tools, path)
@@ -146,14 +145,12 @@ func TestTagsFLACStripsID3(t *testing.T) {
 					!reflect.DeepEqual(in.Pictures, plainIn.Pictures) {
 					t.Fatalf("the inspection differs from the file's without ID3:\n got %+v\nwant %+v", in, plainIn)
 				}
-				// N-128: the pinned ffmpeg decodes a FLAC with a leading ID3v2
-				// to the same samples, and refuses a trailing ID3v1.
-				if dg, err := tools.AudioDigest(t.Context(), open(t, p)); tc.suffix == nil {
-					if err != nil || dg != d0 {
-						t.Fatalf("AudioDigest of the input: %v, %+v", err, dg)
-					}
-				} else if Code(err) != CodeDecode {
-					t.Fatalf("the pinned ffmpeg no longer refuses a trailing ID3v1 (%v): update NOTES.md N-128", err)
+				// The input digests to the samples of the file without ID3:
+				// the pinned ffmpeg skips a leading ID3v2 itself, and
+				// AudioDigest leaves a trailing ID3v1 out of the decode
+				// (N-128). So §9.1 step 6 compares like with like.
+				if dg, err := tools.AudioDigest(t.Context(), open(t, p)); err != nil || dg != d0 {
+					t.Fatalf("AudioDigest of the input: %v, %+v", err, dg)
 				}
 
 				// §9.1 step 6: VerifyTags, the samples of the file without ID3.
