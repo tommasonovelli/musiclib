@@ -44,7 +44,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
 - [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`; MP3 and M4A answer a typed `unsupported_format` until Phase 4 (N-094)
 - [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC complete** (table in `native/musiclib-tags/src/fields.h`, N-088); the MP3 and M4A tables are Phase 4 (N-094)
-- [ ] `internal/importer`: import of a single album candidate
+- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC candidate (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); MP3 and M4A fail as `audio_format_not_supported_yet` until Phase 4. The executors (`ExecuteScan`, `ExecuteImport`) have the form `jobs.Pool` expects and are **not wired** into `cmd/musiclibd`: the pool starts in the publish round with the journal recovery (N-107, N-125); only `importer.CleanWork` joined boot step 5
 - [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
 - [ ] `internal/render`: snapshot → pure plan → build in staging (§9.1)
 - [ ] `.musiclib.json` receipt (§9.2)
@@ -65,16 +65,16 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 ## Phase 4 — Formats and content
 
 - [ ] MP3 (ID3v2.4, APE, ID3v1 migration), M4A AAC/ALAC (§8.1–8.3) — in `native/musiclib-tags`: independent MP3 and M4A readers, the writers, their alias and sort tables, and the ID3v1 exclusion in `VerifyTags` (N-094); probe and `AudioDigest` already handle both
-- [ ] Covers: selection, limits, upload, removal (§7.4, §8.5)
-- [ ] LRC files associated with tracks (§7.4)
-- [ ] Attachments under `Extras/` (§5.1, §7.4)
+- [~] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits are done (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`); upload and removal come with the API
+- [~] LRC files associated with tracks (§7.4) — at import, done (N-117); assignment and upload with the API
+- [~] Attachments under `Extras/` (§5.1, §7.4) — collected at import; their materialization is the renderer's
 - [~] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086); MP3 and M4A with their readers (N-094)
 
 ## Phase 5 — Full experience
 
-- [ ] Recursive scan and multi-disc grouping (§7.2)
-- [ ] Inferred initial metadata and import overrides (§7.3)
-- [ ] Fingerprinting and duplicate detection (§7.6)
+- [~] Recursive scan and multi-disc grouping (§7.2) — the recursive scan with rules 1, 4 and 5 and the unassigned-file report are done; rules 2 and 3 (multi-disc) fail explicitly until this phase (N-120)
+- [~] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer (tested through a retry done by SQL); disc directories come with rules 2 and 3, the retry endpoint with the API
+- [x] Fingerprinting and duplicate detection (§7.6) — the fingerprint in `internal/importer` (golden test), duplicates `skipped` by the import commit
 - [ ] Complete HTTP APIs (§10.2)
 - [ ] UI: Library, Album, Import, Activity (§10.3)
 - [ ] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4)
@@ -85,7 +85,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] `doctor`, normal and `--deep` (§11.3)
 - [ ] `rebuild` with maintenance marker (§11.3)
 - [ ] `backup` / `restore` (§11.4)
-- [ ] Space budget and `statfs` check (§11.2)
+- [~] Space budget and `statfs` check (§11.2) — the import's estimate and `statfs` check with the 1 GiB margin; the process-wide budget is the executor/pool round's (N-114)
 - [ ] Operations guide with Compose examples (§11)
 
 ---
@@ -680,11 +680,14 @@ scripts/dev.sh go test -race -count=20 -run 'TestTags|TestVerify|TestDescribe|Te
 docker build --target build-tags .           # the helper and its unit tests alone
 ```
 
-**Owner decisions of 2026-09-23, to implement:** N-090 (ID3 in FLAC: stripped
-by a declared rule, a helper change), N-091 (a per-format embeddable cover
-limit, checked when a cover is chosen: the catalog's `CoverFits` hook exists,
-the adapter's function comes with the importer), N-092 (the importer refuses
-invalid UTF-8 in unmanaged fields).
+**Owner decisions of 2026-09-23:**
+- N-091 (a per-format embeddable cover limit, checked when a cover is chosen)
+  and N-092 (the importer refuses invalid UTF-8 and other blocking unmanaged
+  fields) are done since round 5: `media.MaxEmbeddedCover` /
+  `EmbeddedCoverFits`, and the importer.
+- N-090 (ID3 in FLAC stripped by a declared rule) is half done: the importer
+  accepts such files with a warning; the helper change that strips the tags
+  at render is still to do.
 
 ### `internal/store` — transaction runner and catalog lock (§5.3, §6.2, §6.4) ✔
 
@@ -843,6 +846,169 @@ conditions, the claimed ticket, and the connection read before the rollback
 ```sh
 scripts/check.sh ./internal/catalog/...
 scripts/dev.sh go test -race -count=20 ./internal/store/... ./internal/jobs/ ./internal/catalog/
+```
+
+### `internal/importer` — scan and import of one candidate (§7.1–§7.6, §8.5, §11.2) ✔ (FLAC)
+
+This is Phase 2's FLAC slice. The scan groups a batch into candidates; the
+import turns one candidate into the closed input of `catalog.CommitImport`.
+`/import` is reached only through a `source` type that can stat, list and
+open for reading, and nothing else. Every order is explicit, never the
+filesystem's.
+
+| Function | Role |
+|---|---|
+| `New(Config)` | the importer, over the catalog, the tools, the blob store, `/import` and `/data/work`; creates `work/import` |
+| `ExecuteScan(ctx, *jobs.Claim)` | a scan job (§7.2): walk, group, then every import job and the scan's outcome in one transaction (`catalog.CommitScan`) |
+| `ExecuteImport(ctx, *jobs.Claim)` | an import job (§7.1–§7.6), ending in `catalog.CommitImport` |
+| `CoverFits` | N-091 in the form `catalog.New` expects (`media.EmbeddedCoverFits`) |
+| `CleanWork(ctx, work)` | boot step 5: empties `work/import` |
+| `MaxTracks`, `MaxFiles`, `MaxCoverBytes`, `MaxCoverPixels` | §7.2 and §8.5, pinned |
+| `VariousArtists`, `UnknownArtist` | the automatic artists of §7.3 |
+| `Error` / `Code` | stable codes (table below); never an absolute path |
+
+Both executors have the form `jobs.Pool` expects. Every non-fatal outcome
+ends in a completion (N-107). A shutdown or a fatal store error returns
+without one, and the job stays running until the boot recovers it.
+
+**Next to it:**
+- `catalog.CreateImportBatch` (§7.1: the same UUID and root give the same
+  batch; another root is `import_batch_conflict`; the root is validated as
+  in §5.2 and kept as on disk), `GetImportBatch`, `CommitScan`, `FailJob`,
+  and the exported `StemKey`;
+- `jobs.EnqueueScan`, `jobs.EnqueueImport`, and five warning codes;
+- `media.MaxEmbeddedCover` and `EmbeddedCoverFits`;
+- `fsops.Describe`;
+- four sqlc queries in `sql/jobs.sql`.
+
+**How it maps to DESIGN.md:**
+- **§7.2 scan.**
+  - The walk is recursive, uses lstat and getdents only, and is sorted by
+    bytes.
+  - It ignores exactly `.DS_Store`, `Thumbs.db` and `desktop.ini`, ASCII
+    case-insensitively. Hidden files are kept.
+  - Symlinks, special files and invalid names are rejected and never
+    opened.
+  - Audio is decided by the rule of N-115.
+  - Rules 1, 4 and 5 apply; the rule 2 and 3 shape fails as not supported
+    yet (N-120).
+  - The limits are checked on the tree.
+  - Unassigned files and rejected entries become warnings.
+  - With no valid candidate, the scan is failed with an explanation (N-122).
+- **§7.1, §7.2 import.**
+  - The candidate is revalidated with the scan's own functions.
+  - Its identity snapshot is taken, then the statfs check (N-114) runs.
+  - Every file is copied through `blobstore.Put`, after an fstat identity
+    check.
+  - Everything is read again from the copies.
+  - The candidate is walked again before the commit (N-126).
+- **§7.2 classification, on the copies.**
+  - FLAC is a track. MP3 and M4A are `audio_format_not_supported_yet`.
+  - Other audio is `unsupported_audio`.
+  - No audio with a known audio extension is `corrupt_audio`; without one,
+    it is an attachment.
+  - Audio in a subdirectory is `ambiguous_candidate`.
+- **§7.6, §8.4:** `AudioDigest` decodes every track completely. A failed
+  decode is `corrupt_audio`.
+- **N-092, N-090:** a field from `Inspection.Blocking()` is
+  `unrenderable_tag`, naming the file and the field. An ID3 tag in a FLAC is
+  accepted, with a warning.
+- **§7.3:** the whole table, as a pure function (`inferMetadata`): album,
+  album artist, track artist, title, disc, numbers, year, genre (N-004),
+  compilation, `mixed_album`, multi-valued text, overrides. The details are
+  N-116, N-119 and N-121.
+- **§7.4:** the LRC association (N-117); the cover selection and its limits
+  (§8.5, N-091, N-124). An external cover also stays an attachment.
+- **§7.6:** the fingerprint: compact JSON with no HTML escaping and no
+  newline, sorted by path bytes, SHA-256.
+
+**Codes:**
+
+| Code | When |
+|---|---|
+| `source_not_found`, `source_not_directory`, `source_rejected_entry` | the root or the candidate is missing, is not a directory, or holds or goes through a symlink or special file |
+| `source_changed` | §7.1 |
+| `ambiguous_candidate` | rule 4 |
+| `multidisc_not_supported_yet` | rules 2 and 3, until Phase 5 |
+| `not_a_candidate` | no direct audio any more |
+| `no_valid_candidate` | a scan with nothing to import |
+| `insufficient_space` | §11.2 |
+| `corrupt_audio`, `unsupported_audio`, `audio_format_not_supported_yet` | §7.2, §8.1 |
+| `unrenderable_tag` | N-092 |
+| `mixed_album`, `ambiguous_album_artist`, `album_title_missing` | §7.3 (an override resolves each) |
+| `invalid_tag` | a tag that is not a valid text |
+
+The catalog's own codes also apply: `too_many_files`, `invalid_disc`,
+`invalid_track_number`, `lyrics_association`.
+
+**Tests** use real PostgreSQL 17, real ext4 and the real pinned ffmpeg,
+ffprobe and musiclib-tags. The FLAC fixtures are generated by ffmpeg, with
+their metadata written by an independent Go codec in the tests. After every
+job, every source entry's bytes, inode, mode and mtime are compared, and
+`work/import` must be empty.
+- **Albums:**
+  - a normal album: tags, cover, LRC, nested and Unicode attachments, a
+    hidden file kept, the three ignored names ignored, and the fingerprint
+    recomputed independently;
+  - untagged files;
+  - `mixed_album` and `ambiguous_album_artist`, each resolved by an override
+    on retry;
+  - Various Artists and compilation;
+  - multi-valued tags, the year tie, the genre tie (N-004) and the genre
+    overrides;
+  - out-of-range numbers.
+- **LRC:** matched, not UTF-8, ambiguous, unmatched.
+- **Owner decisions:** N-092 refused; N-090 accepted.
+- **Formats:** a corrupt FLAC, text named `.mp3`, M4A, WAV, and a FLAC
+  without an extension.
+- **Layouts:** multi-disc; an ambiguous branch next to a good one, with the
+  unassigned files and a symlink reported; a symlink, a FIFO and a socket
+  inside a candidate (the device case needs CAP_MKNOD, N-127); root failures;
+  revalidation after the scan; `/import` itself as a candidate.
+- **Covers:**
+  - the external order and its tie by key;
+  - the embedded most frequent front cover, its tie by hash, type 0, and an
+    invalid front cover;
+  - a real ffmpeg-muxed attached picture;
+  - `cover.jpg` that is not a JPEG, a PNG that does not fit a FLAC block
+    (N-091), a file over 20 MiB, over 40 Mpixel, and no valid cover.
+- **Stability:** content, mtime only, a file added, removed, or replaced
+  before or after its copy, each injected at a named point.
+- **Idempotence:**
+  - the batch UUID repeated, including eight concurrent requests;
+  - the scan repeated after a crash, and a stale scan commit;
+  - the same import attempt run twice;
+  - an identical re-import, which is skipped.
+- **Pool:** two workers on two batches of the same three albums give three
+  albums, each duplicate skipped.
+- **Limits:** 10,001 real files; the exact limits on synthetic trees.
+- **Shutdown and staleness:** a cancellation leaves the job running; a stale
+  attempt changes nothing; space; `CleanWork`.
+- **Pure tests:** natural order, grouping, disc names, ignored names, the
+  §7.3 table (25 cases), the golden fingerprint, LRC, UTF-8, image
+  validation, the candidate orders, snapshots.
+
+**Mutation-checked:** each of the following makes a test fail:
+- in the natural order: digits compared as bytes, no path tie-break, leading
+  zeros counted;
+- in the fingerprint: HTML escaping, no sort, a trailing newline;
+- in stability: no final recheck; no final recheck and no open-time identity
+  check; mtime not compared;
+- in the metadata: the genre or the year tie going to the largest, the track
+  artist kept when equal to the album artist;
+- in the covers: `folder.*` before `cover.*`, the tie by bytes only, the
+  front covers by ascending count, no N-091 check, no pixel limit, no full
+  decode;
+- elsewhere: Unicode folding of the ignored names, N-090 not excepted, N-092
+  not refused, no probe at the scan, no disc layout detection, the LRC UTF-8
+  check off, rejected entries ignored in candidates, the import and scan
+  inserts without ON CONFLICT, and the batch conflict unchecked.
+
+The open-time identity check alone survives, by design (N-126).
+
+```sh
+scripts/check.sh ./internal/importer/...
+scripts/dev.sh go test -race -count=10 ./internal/importer/
 ```
 
 ---

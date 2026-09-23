@@ -421,3 +421,29 @@ func codeForType(t FileType) string {
 		return CodeSpecialFile
 	}
 }
+
+// Describe returns the FileInfo of an open file, read from its descriptor
+// with fstat: the identity of what was actually opened. A caller compares
+// it with an earlier [Root.Stat] of the same path to detect that the entry
+// was replaced in between (§7.1). Name is the last element of f.Name().
+func Describe(f *os.File) (FileInfo, error) {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return FileInfo{}, &Error{Code: CodeIO, Op: "fstat", Path: f.Name(), Err: err}
+	}
+	var st unix.Stat_t
+	var serr error
+	if err := rc.Control(func(fd uintptr) {
+		serr = retryEINTR(func() error { return unix.Fstat(int(fd), &st) })
+	}); err != nil {
+		return FileInfo{}, &Error{Code: CodeIO, Op: "fstat", Path: f.Name(), Err: err}
+	}
+	if serr != nil {
+		return FileInfo{}, errnoErr("fstat", "", f.Name(), serr)
+	}
+	name := f.Name()
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	return statToInfo(name, &st), nil
+}

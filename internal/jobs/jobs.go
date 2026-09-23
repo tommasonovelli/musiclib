@@ -81,13 +81,34 @@ const (
 	WarnYearDiscordant WarningCode = "year_discordant"
 	// WarnTagConflict: conflicting values of a managed field (§8.1).
 	WarnTagConflict WarningCode = "tag_conflict"
+	// WarnRejectedEntry: a symlink, a special file or a name that is not a
+	// valid relative path, outside every candidate: never followed nor
+	// opened (§5.2, §7.2).
+	WarnRejectedEntry WarningCode = "rejected_entry"
+	// WarnCoverSkipped: a cover candidate that is not a valid JPEG or PNG
+	// within §8.5's limits; selection moved to the next one (§7.4).
+	WarnCoverSkipped WarningCode = "cover_skipped"
+	// WarnCoverNotEmbeddable: a valid cover candidate that does not fit in
+	// an audio format of the album (N-091); it stays an attachment.
+	WarnCoverNotEmbeddable WarningCode = "cover_not_embeddable"
+	// WarnLyricsNotUTF8: an LRC file matching a track whose content is not
+	// valid UTF-8; it stays an attachment (§7.4, §10.2).
+	WarnLyricsNotUTF8 WarningCode = "lyrics_not_utf8"
+	// WarnFLACID3: a FLAC file carries ID3 tags, which the output will not
+	// carry (N-090).
+	WarnFLACID3 WarningCode = "flac_id3_tag"
 )
 
 var warningCodes = map[WarningCode]bool{
-	WarnUnassignedFile:   true,
-	WarnTracksRenumbered: true,
-	WarnYearDiscordant:   true,
-	WarnTagConflict:      true,
+	WarnUnassignedFile:     true,
+	WarnTracksRenumbered:   true,
+	WarnYearDiscordant:     true,
+	WarnTagConflict:        true,
+	WarnRejectedEntry:      true,
+	WarnCoverSkipped:       true,
+	WarnCoverNotEmbeddable: true,
+	WarnLyricsNotUTF8:      true,
+	WarnFLACID3:            true,
 }
 
 // maxWarningMessage bounds a warning's text, in bytes.

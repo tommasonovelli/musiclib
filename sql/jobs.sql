@@ -119,3 +119,29 @@ FROM attachments a
 JOIN blobs b ON b.hash = a.blob_hash
 WHERE a.album_id = $1
 ORDER BY a.path_key;
+
+-- §7.1: the import batch behind POST /api/imports. The id is the client's
+-- idempotency key; an existing batch is kept and compared by the caller.
+-- name: InsertImportBatch :exec
+INSERT INTO import_batches (id, root_rel, created_at) VALUES (@id, @root_rel, now())
+ON CONFLICT (id) DO NOTHING;
+
+-- name: GetImportBatch :one
+SELECT id, root_rel, created_at FROM import_batches WHERE id = $1;
+
+-- §7.1: the one scan job of a batch (jobs_scan_batch_key).
+-- name: InsertScanJob :exec
+INSERT INTO jobs (id, kind, batch_id, state, queued_at, updated_at)
+VALUES (@id, 'scan', @batch_id, 'pending', now(), now())
+ON CONFLICT (batch_id) WHERE kind = 'scan' DO NOTHING;
+
+-- name: GetScanJob :one
+SELECT id, state FROM jobs WHERE kind = 'scan' AND batch_id = $1;
+
+-- §7.2: an import job found by the scan, pending, or already failed for an
+-- ambiguous branch. (batch_id, source_rel) is unique, so a scan repeated
+-- after a crash inserts nothing twice.
+-- name: InsertImportJob :execrows
+INSERT INTO jobs (id, kind, batch_id, source_rel, state, error_code, error_message, queued_at, updated_at)
+VALUES (@id, 'import', @batch_id, @source_rel, @state, @error_code, @error_message, now(), now())
+ON CONFLICT (batch_id, source_rel) WHERE kind = 'import' DO NOTHING;

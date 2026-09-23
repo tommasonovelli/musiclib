@@ -69,10 +69,19 @@ preserved, without defining the case where the extension alone leaves no room
 for the stem. Implemented: the extension is not preserved rather than exceeding
 180 bytes. The length limit is an invariant, preserving the extension is not.
 
-### N-004 · "Lexicographic tie-break" for the album genre — OPEN
+### N-004 · "Lexicographic tie-break" for the album genre — DECIDED (round 5)
 §7.3. It does not say what the ordering is based on: raw UTF-8 bytes, NFC form,
 or casefold key. To be decided when §7.3 is implemented, and pinned in a test:
 it is an input to the determinism of the import.
+
+**Decision (round 5, `internal/importer`):** the genres are compared as the
+bytes of their normalized text (NFC, trimmed: `names.NormalizeText`), and the
+smallest wins a tie. So `Rock` beats `pop` (0x52 < 0x70), and `Zouk` beats
+`Émo` (NFD input is normalized first). Genres that differ only in case are
+different genres. It is the simplest total order, it depends on nothing but
+the values, and it needs no casefold choice between two spellings. Pinned by
+`TestInferMetadata` ("genre tie by bytes") and `TestImportMultiValuedYearGenre`;
+mutation-checked.
 
 ### N-005 · Order of the checks on path depth and length — DECIDED
 §5.2 says "at most 16 levels and 1,024 bytes **after the transformation**". The
@@ -1460,6 +1469,16 @@ non-null boolean, false is the absence of the flag. `TagBool` reads "1",
 "0", "true" and "false", case-insensitively.
 
 ### N-090 · ID3 tags inside a FLAC — DECIDED (owner, 2026-09-23): stripped by a declared rule; implementation pending
+**Round 5 (importer side, done):** the importer does not refuse such a file.
+`Inspection.Blocking()` reports the tags as `{"id3v2" or "id3v1", foreign_tag,
+removed=false}`; the importer lets exactly that reason through, with the
+warning `flac_id3_tag` on the job, and refuses every other blocking field
+(N-092). Tested with a real ID3v2.4 tag before `fLaC` (`TestImportUnrenderableTagsAndID3`):
+ffprobe, the full decode and the helper all accept it, and the Vorbis title
+wins. Mutation-checked. **Still pending:** the helper change that strips the
+tags at render; until it lands, such an album is imported but its render fails
+with `media_tags_opaque_field` (visible, nothing lost). 
+
 **Owner decision (2026-09-23):** the render strips ID3v2 and ID3v1 tags from
 a FLAC output, through a declared rule of the adapter, in the same way as
 the ID3v1 migration of MP3 is declared (§8.3): a constant of the helper's
@@ -1485,6 +1504,25 @@ happens to end with those bytes is refused, about 1 file in 16 million:
 ACCEPTED.
 
 ### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
+**Round 5 (done):** `media.MaxEmbeddedCover(audioFormat, coverFormat)` and
+`media.EmbeddedCoverFits` hold the limit: for FLAC `0xFFFFFF − 32 − len(MIME)`
+bytes (the description is always empty, N-087), that is 16,777,173 for JPEG and
+16,777,174 for PNG, exactly the helper's check in `writeFlac`
+(`TestMaxEmbeddedCoverIsTheHelpersLimit` writes a cover of exactly the limit
+through the real helper and has one more byte refused). MP3 and M4A have no
+limit yet and are refused (`media_tags_unsupported_format`): a cover is never
+accepted for a format whose writer does not exist. `importer.CoverFits` adapts
+it to `catalog.CoverFits`, and the wiring passes it to `catalog.New`.
+
+**How it interacts with §7.4:** the importer asks the same question during the
+selection, for every audio format of the album. A valid JPEG/PNG that does not
+fit is **not selected**: the job gets a `cover_not_embeddable` warning, the
+selection moves on to the next candidate of §7.4's order, and the image, if
+external, stays an attachment like every other file. An embedded picture fits
+by construction in FLAC (it came out of a block of the same limit). The
+catalog's check at the commit remains the second line. Tested with a 16.85 MB
+uncompressed PNG `cover.png` (`TestCoverSkipped`); mutation-checked.
+
 **Owner decision (2026-09-23):** a per-format limit of the embeddable cover,
 enforced when a cover is chosen (import) or uploaded or selected (the cover
 endpoints of §10.2), never discovered by a render. An image that does not
@@ -1511,6 +1549,13 @@ drop the block). The owner decides whether:
 - or the error should stay.
 
 ### N-092 · Invalid UTF-8 in unmanaged Vorbis fields — DECIDED (owner, 2026-09-23); implementation in the importer round
+**Round 5 (done):** every track is inspected on its verified copy, and any
+field of `Inspection.Blocking()` other than the N-090 ID3 tags fails the import
+with `unrenderable_tag`, whose message names the file, the field key (for
+example `vorbis:COMMENT`) and the reason (`invalid_utf8`, `nul_byte`,
+`malformed_entry`, `invalid_key`, `duplicate_block`, `foreign_metadata`).
+Tested with a Latin-1 COMMENT; mutation-checked.
+
 **Owner decision (2026-09-23):** the importer refuses such a file up front,
 with a typed error that names the file and the field, using
 `Inspection.Blocking()`. The render keeps refusing (`opaque_field`) as a
@@ -1838,3 +1883,279 @@ Proposal, all in PREPARE's transaction:
    reservations.
 
 The more conservative alternative is (2) alone, without the repair of (1).
+
+---
+
+## `internal/importer`: scan and import of one candidate (2026-09-23, round 5)
+
+### N-114 · No process-wide space budget yet: a statfs check per import — DECIDED (budget: executor/pool round)
+§11.2 asks for three things: a conservative estimate, a `statfs` check with a
+1 GiB margin, and a process budget that reserves the estimates of the jobs in
+progress. This round does the first two only.
+
+Before any copy, `Importer.checkSpace` requires `free − 1 GiB ≥ estimate`:
+- the free space is `f_bavail` of `/data/work`, which is on the filesystem of
+  `originals/` (§3.1);
+- the estimate is the sum of the candidate's file sizes (every file becomes
+  a blob, and deduplication only lowers it), plus 2 × 20 MiB for one embedded
+  picture extracted into `work/import` and pinned as the cover.
+
+A refusal is `insufficient_space`: failed, with no automatic retry (§6.4).
+
+**Risk until the budget exists:** two workers can both see the same free
+space.
+
+**The seam:** `checkSpace` is the one place to reserve and release the
+estimate. The executor/pool round adds the in-memory reservation there, and
+the render's own.
+
+A put still handles ENOSPC anyway (§11.2), and nothing published is removed
+to make room.
+
+### N-115 · What the scan probes, and why — DECIDED
+§7.2 recognizes audio by its content. But the scan only needs to know what is
+audio to *group* the candidates, and the import probes every file again on
+the verified copies.
+
+At the scan (`scanAudio`), a file counts as audio as follows:
+- **Known audio extension** (`media.HasKnownAudioExtension`): audio, whatever
+  its content. A corrupt one is found by the import, as an album error.
+- **Not probed:** an empty file, or a file whose extension (ASCII
+  case-insensitive) is one of `jpg jpeg png gif bmp tif tiff webp pdf cue log
+  lrc`. These are the kinds that §7.2 says never need an audio probe (images,
+  PDF, CUE, LOG), plus the LRC files of §7.4.
+- **Probed:** every other file, with ffprobe on the source. The source is
+  read only, through the confined root, with the Runner's 30 s limit. Audio,
+  supported or not, counts as audio.
+
+**Cost:** one probe per unusual file (NFO, TXT, M3U, a file without an
+extension). The Runner's semaphore bounds it, and nearly every file of a rip
+is decided by its name.
+
+**What this can miss:** an audio file with one of the listed extensions, such
+as `.jpg`. Nothing is imported wrongly because of it:
+- outside every candidate, it is reported as an unassigned file, not dropped
+  silently;
+- in a candidate's subdirectory, the import finds it by content and fails the
+  album as ambiguous.
+
+### N-116 · The year of a DATE tag — DECIDED
+§7.3 says "valore valido più frequente" but does not define a valid value.
+
+A track has a year when its DATE field has exactly one value, and that value,
+trimmed:
+- starts with four ASCII digits not followed by a fifth digit (`1959`,
+  `1959-08-17`, `2001/05`, `1987T...`);
+- gives a year in 1..9999 (`albums.year`, §4.2).
+
+Anything else is no year: `0000`, `19999`, `abcd`, or two values. It is
+ignored, not an error.
+
+The warning `year_discordant` is given when the valid values differ. Pinned
+by `TestInferMetadata`.
+
+### N-117 · An imported LRC file that is not UTF-8 stays an attachment — DECIDED
+§10.2 requires UTF-8 text for LRC uploads. §7.4 only says when an imported
+LRC is associated.
+
+An LRC file may match exactly one track while its content is not valid UTF-8
+(a Latin-1 export, for example). It is then not associated:
+- it stays an attachment under `Extras/`, with the warning
+  `lyrics_not_utf8`;
+- nothing is lost, and nothing is converted.
+
+The 2 MiB limit of uploads is not applied at import: §10.2 is about the
+browser. The check streams the blob, in constant memory.
+
+Ambiguity is an explicit error (§7.4), `lyrics_association`: several tracks
+with the stem, or several LRC files for one track.
+
+### N-118 · Content-derived blob formats at import — DECIDED
+`blobs.format` comes from the content only (§4.2):
+- `flac` for the tracks, from the probe;
+- `jpeg` or `png` for the chosen cover, from the Go decode of §8.5;
+- NULL for everything else, other images included.
+
+Validating every image of a rip only to label its blob is not required. It
+would mean a full decode of scans of up to 20 MiB and 40 Mpixel, most of
+which never become covers.
+
+NULL therefore means "not known to be one of the formats of the list".
+N-102 already lets a later content check fill it, and the cover endpoints of
+§10.2 validate an image when it is chosen.
+
+### N-119 · The natural order of §7.3 — DECIDED
+The rule:
+- digit runs (ASCII 0–9) compare as integers of any length, leading zeros
+  ignored;
+- every other run compares by its UTF-8 bytes;
+- a digit run against a non-digit run compares by bytes;
+- names equal by value (`01` and `1`) are then ordered by the bytes of the
+  full path, so the order is total.
+
+§7.3 is silent on case, so the bytes decide:
+- `Track 9` comes before `track 1`;
+- `Track10` comes before `Track 2`, because `Track` is a prefix of `Track `.
+
+It serves two purposes only: numbering a disc whose tags are unusable, and
+ordering the tracks given to the metadata rules. Every other list
+(directories, files, the fingerprint, the warnings) is ordered by the bytes
+of the path.
+
+Pinned by `TestNaturalOrder`; mutation-checked.
+
+### N-120 · Multi-disc layouts in Phase 2 — DECIDED (Phase 5 groups them)
+Rules 2 and 3 of §7.2 are Phase 5. Until then, `group` recognizes the shape
+of rule 2:
+- a directory without direct audio;
+- whose audio is only in direct children named `CD<N>` or `Disc <N>`, with
+  N > 0, leading zeros allowed, ASCII case-insensitive;
+- with no audio below a disc directory.
+
+That branch fails as a whole with `multidisc_not_supported_yet`, including
+rule 3's duplicate disc numbers. It is never grouped any other way, and never
+imported disc by disc.
+
+Anything without that shape follows rule 5, as §7.2 says. For example,
+`Box/CD1` next to `Box/Bonus` (both with audio) are two independent
+candidates, `CD1` and `Bonus`, in Phase 2 as in Phase 5.
+
+`CD0`, `CD 1` and `Disc1` are not disc names.
+
+A track's disc number comes from its tag, or is 1: §7.3's rule for albums
+without disc directories.
+
+### N-121 · How names are compared in §7.3 — DECIDED
+- **Exact comparison after normalization.** Album tags, album artist tags and
+  track artists are compared after the §5.2 text normalization (NFC, trim),
+  not by casefold. This is conservative: the importer never picks one of two
+  spellings.
+  - Two album artists that differ only in case are "discordanti": the import
+    is refused, and an explicit artist resolves it.
+  - A track artist that differs from the album artist only in case is kept as
+    the track's override.
+- **Genre differences are kept** (§7.3: "differenze conservate come override
+  traccia"). A track whose genre differs from the album genre keeps its own:
+  - a track with no genre then gets `""`, explicitly none (§4.1);
+  - with no album genre, every track inherits (NULL).
+- **Invalid tag text.** A tag value that is not a valid text (a control
+  character, more than 1,024 characters) is `invalid_tag`, naming the file
+  and the field. It is never truncated or cleaned silently.
+- **Missing title.** A track without a usable title gets its file name
+  without the extension, or the whole name when that leaves nothing
+  (`.flac`).
+
+### N-122 · The scan's outcome and report — DECIDED
+- **Paths:** the paths of the import jobs and of the scan's warnings are
+  relative to `/import` (the batch root joined), exactly as on disk.
+- **Unassigned files:** each file outside every branch is an
+  `unassigned_file` warning, one per file.
+- **Symlinks, special files and invalid names:** they are never followed nor
+  opened.
+  - Outside every branch, each one is a `rejected_entry` warning.
+  - Inside a candidate, they fail it with `source_rejected_entry` (§5.2).
+  - An invalid name (not UTF-8, or deeper than 16 levels under `/import`)
+    cannot be a `Warning.Path`, so it appears only quoted in the message.
+- **No valid candidate:** the scan job is **failed** with
+  `no_valid_candidate` (§7.2: "batch completato con spiegazione, non successo
+  vuoto"). The message says whether there was no audio at all or only failed
+  branches. `failed` is what makes the batch visible and retryable.
+- **Root failures** fail the scan:
+  - a missing root: `source_not_found`;
+  - a root that is a file: `source_not_directory`;
+  - a root that goes through a symlink: `source_rejected_entry`.
+- **A scan retried later** keeps every import job already there, even a
+  failed one: `(batch_id, source_rel)` is unique. A branch fixed after its
+  failure is retried through its own import job, which revalidates the disk.
+
+### N-123 · /import itself as a candidate — DECIDED
+A batch rooted at `/import`, with audio directly in it, gives a candidate
+with `source_rel = ""`. §5.2 allows it.
+
+There is no directory name to fall back on for the title: the mount's name is
+not the user's. Without an album tag, the import therefore fails with
+`album_title_missing`, and an explicit title resolves it (tested).
+
+### N-124 · Details of the cover selection (§7.4) — DECIDED
+- **External candidates:** files **at the candidate's root**, whose name
+  without its last extension has the key (`names.Key`) `cover`, `folder` or
+  `front`. A name without an extension is not one. In each group they are
+  ordered by the key of the name, then by its bytes.
+- **Embedded front covers** (type 3): by descending frequency, a tie going to
+  the smallest SHA-256.
+- **Then "la prima immagine incorporata valida":** every picture of every
+  type, tracks in their final order (disc, number), pictures in file order.
+  This fallback also applies when front covers exist but none is valid.
+- **Tried once:** each image is tried once, by hash.
+- **Warnings:** every refused candidate gives one:
+  - `cover_skipped`: not a JPEG or PNG by content, over 20 MiB, over
+    40 Mpixel, or not decoding completely;
+  - `cover_not_embeddable`: N-091.
+- **Validation** uses Go's `image/jpeg` and `image/png` (N-073), in memory. A
+  40 Mpixel 16-bit PNG decodes to about 320 MB. This is accepted: the limits
+  of §8.5 bound it, and a worker handles one album at a time.
+- **Embedded pictures** are extracted into `work/import/<random>.img`, then:
+  - checked against the hash the inspection reported;
+  - validated;
+  - pinned through the blob store only if chosen.
+
+  The temporary is removed on every path.
+
+### N-125 · Where the new pieces live — DECIDED
+- **Catalog transactions:** `catalog.CreateImportBatch`, `GetImportBatch`,
+  `CommitScan` and `FailJob` hold the batches and the job outcomes, under the
+  catalog lock (§13.2: no SQL in the workers).
+- **Queue inserts:** `jobs.EnqueueScan` and `jobs.EnqueueImport`, next to
+  `EnqueueRender` (N-098).
+- **`catalog.StemKey`** is exported, so that the importer associates the LRC
+  files with the same function the commit checks them with (one
+  implementation, §13.2).
+- **`fsops.Describe(f)`** is an fstat of an open descriptor. It compares what
+  was opened with what the walk described (§7.1).
+- **`importer.CleanWork`** runs at boot step 5 (`cmd/musiclibd.cleanWork`),
+  before any worker.
+- **The executors are not wired.** `ExecuteScan` and `ExecuteImport` wait for
+  the publish round, which starts the pool (N-107). There, one executor will
+  dispatch render, scan and import.
+- **New warning codes** in `jobs`: `rejected_entry`, `cover_skipped`,
+  `cover_not_embeddable`, `lyrics_not_utf8`, `flac_id3_tag`.
+
+### N-126 · What the stability check sees, and what it cannot — ACCEPTED
+The checks, in order:
+1. When the import walks the candidate, it records the identity (st_dev,
+   st_ino), size and mtime (ns) of every directory and every non-ignored
+   file.
+2. Every file is opened and `fstat`ed, and must match; its copied size must
+   match too.
+3. After everything is read, just before the commit, the whole candidate is
+   walked again and compared: an addition, a removal or any difference
+   refuses the import.
+
+What they cannot see:
+- a change after that last walk and before the commit: the window is one
+  catalog transaction;
+- a rewrite that keeps the size and the mtime to the nanosecond. §7.1
+  promises identity, size and mtime, nothing more; the fingerprint covers the
+  bytes actually copied;
+- a change of the ignored files (`.DS_Store`...), which are not compared.
+
+The source is never written:
+- `/import` is reachable only through the `source` type: stat, list, open for
+  reading;
+- every end-to-end test compares every source entry's bytes, inode, mode and
+  mtime before and after each job.
+
+The open-time identity check is defence in depth. Its mutation alone
+survives, because the final walk also sees a replacement; with both checks
+removed, the test fails.
+
+### N-127 · The device case of the scan is not tested without CAP_MKNOD — ACCEPTED
+`TestScanRejectsSpecialFiles` covers a symlink, a FIFO and a socket inside a
+candidate. They are rejected without being opened: a FIFO opened in blocking
+mode would hang the test.
+
+A device node needs CAP_MKNOD, which the dev and test containers do not have.
+The subtest logs it, and the fsops suite has the same gap (N-038).
+
+The walk opens nothing but regular files, by lstat, so a device is handled
+like the FIFO.

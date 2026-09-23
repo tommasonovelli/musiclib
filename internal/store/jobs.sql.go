@@ -147,6 +147,17 @@ func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (i
 	return result.RowsAffected(), nil
 }
 
+const getImportBatch = `-- name: GetImportBatch :one
+SELECT id, root_rel, created_at FROM import_batches WHERE id = $1
+`
+
+func (q *Queries) GetImportBatch(ctx context.Context, id uuid.UUID) (ImportBatch, error) {
+	row := q.db.QueryRow(ctx, getImportBatch, id)
+	var i ImportBatch
+	err := row.Scan(&i.ID, &i.RootRel, &i.CreatedAt)
+	return i, err
+}
+
 const getJob = `-- name: GetJob :one
 SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE id = $1
 `
@@ -199,6 +210,89 @@ func (q *Queries) GetJobForUpdate(ctx context.Context, id uuid.UUID) (Job, error
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getScanJob = `-- name: GetScanJob :one
+SELECT id, state FROM jobs WHERE kind = 'scan' AND batch_id = $1
+`
+
+type GetScanJobRow struct {
+	ID    uuid.UUID
+	State string
+}
+
+func (q *Queries) GetScanJob(ctx context.Context, batchID *uuid.UUID) (GetScanJobRow, error) {
+	row := q.db.QueryRow(ctx, getScanJob, batchID)
+	var i GetScanJobRow
+	err := row.Scan(&i.ID, &i.State)
+	return i, err
+}
+
+const insertImportBatch = `-- name: InsertImportBatch :exec
+INSERT INTO import_batches (id, root_rel, created_at) VALUES ($1, $2, now())
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertImportBatchParams struct {
+	ID      uuid.UUID
+	RootRel string
+}
+
+// §7.1: the import batch behind POST /api/imports. The id is the client's
+// idempotency key; an existing batch is kept and compared by the caller.
+func (q *Queries) InsertImportBatch(ctx context.Context, arg InsertImportBatchParams) error {
+	_, err := q.db.Exec(ctx, insertImportBatch, arg.ID, arg.RootRel)
+	return err
+}
+
+const insertImportJob = `-- name: InsertImportJob :execrows
+INSERT INTO jobs (id, kind, batch_id, source_rel, state, error_code, error_message, queued_at, updated_at)
+VALUES ($1, 'import', $2, $3, $4, $5, $6, now(), now())
+ON CONFLICT (batch_id, source_rel) WHERE kind = 'import' DO NOTHING
+`
+
+type InsertImportJobParams struct {
+	ID           uuid.UUID
+	BatchID      *uuid.UUID
+	SourceRel    *string
+	State        string
+	ErrorCode    *string
+	ErrorMessage *string
+}
+
+// §7.2: an import job found by the scan, pending, or already failed for an
+// ambiguous branch. (batch_id, source_rel) is unique, so a scan repeated
+// after a crash inserts nothing twice.
+func (q *Queries) InsertImportJob(ctx context.Context, arg InsertImportJobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertImportJob,
+		arg.ID,
+		arg.BatchID,
+		arg.SourceRel,
+		arg.State,
+		arg.ErrorCode,
+		arg.ErrorMessage,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertScanJob = `-- name: InsertScanJob :exec
+INSERT INTO jobs (id, kind, batch_id, state, queued_at, updated_at)
+VALUES ($1, 'scan', $2, 'pending', now(), now())
+ON CONFLICT (batch_id) WHERE kind = 'scan' DO NOTHING
+`
+
+type InsertScanJobParams struct {
+	ID      uuid.UUID
+	BatchID *uuid.UUID
+}
+
+// §7.1: the one scan job of a batch (jobs_scan_batch_key).
+func (q *Queries) InsertScanJob(ctx context.Context, arg InsertScanJobParams) error {
+	_, err := q.db.Exec(ctx, insertScanJob, arg.ID, arg.BatchID)
+	return err
 }
 
 const listStaleRenderAlbums = `-- name: ListStaleRenderAlbums :many

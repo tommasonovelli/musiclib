@@ -295,8 +295,9 @@ func bootOnce(t *testing.T, dbURL string, p paths) {
 	}
 }
 
-// §11.1 step 5 as far as it exists: leftover blob temporaries and probe
-// directories in work/ are removed; nothing else is.
+// §11.1 step 5 as far as it exists: leftover blob temporaries, probe
+// directories and the importer's work/import content are removed; nothing
+// else is.
 func TestBootCleansWork(t *testing.T) {
 	dbURL := pgtest.EmptyDB(t)
 	p := testPaths(t)
@@ -307,6 +308,7 @@ func TestBootCleansWork(t *testing.T) {
 	writeFile(t, filepath.Join(work, "blobs", "keep"), "not a temporary")
 	writeFile(t, filepath.Join(work, ".musiclib-probe-a0123", "marker"), "b")
 	writeFile(t, filepath.Join(work, "render", "build", "01.flac"), "phase 2")
+	writeFile(t, filepath.Join(work, "import", "x.img"), "an interrupted import")
 
 	d := startDaemon(t, testConfig(dbURL), p)
 	d.waitStatus(t, "/health/ready", http.StatusOK)
@@ -315,6 +317,8 @@ func TestBootCleansWork(t *testing.T) {
 		".musiclib-probe-a0123": false,
 		"blobs/keep":            true,
 		"render/build/01.flac":  true,
+		"import/x.img":          false,
+		"import":                true,
 	} {
 		if got := exists(t, filepath.Join(work, rel)); got != want {
 			t.Fatalf("work/%s exists = %v, want %v", rel, got, want)

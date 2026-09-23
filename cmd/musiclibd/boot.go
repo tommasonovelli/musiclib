@@ -13,6 +13,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
+	"musiclib/internal/importer"
 	"musiclib/internal/media"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
@@ -223,9 +224,9 @@ func checkImport(path string) error {
 }
 
 // cleanWork runs the part of §11.1 step 5 that exists today: temporaries of
-// interrupted blob puts (N-048) and directories of an interrupted boot probe
-// (N-033). It runs after the probe of step 3 and before anything can start
-// a put, so nothing it removes can be in use.
+// interrupted blob puts (N-048), directories of an interrupted boot probe
+// (N-033) and the importer's work/import. It runs after the probe of step 3
+// and before anything can start a put, so nothing it removes can be in use.
 func (d *daemon) cleanWork(ctx context.Context) error {
 	blobs, err := blobstore.New(d.vol.Originals(), d.vol.Work())
 	if err != nil {
@@ -237,6 +238,10 @@ func (d *daemon) cleanWork(ctx context.Context) error {
 	}
 	probes, err := fsops.RemoveProbeLeftovers(ctx, d.vol.Work())
 	if err != nil {
+		return err
+	}
+	// Pictures extracted by an interrupted import (work/import).
+	if err := importer.CleanWork(ctx, d.vol.Work()); err != nil {
 		return err
 	}
 	if len(temps) > 0 || len(probes) > 0 {

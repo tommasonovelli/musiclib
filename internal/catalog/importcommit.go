@@ -603,15 +603,15 @@ func checkLyrics(tracks []ImportTrack, i int) error {
 			Message: fmt.Sprintf("%q is associated with %q but is not an .lrc file", lrc, t.SourcePath),
 			Details: Details{Names: []string{lrc, t.SourcePath}}}
 	}
-	key := stemKey(base)
-	if trackDir, trackBase := path.Split(t.SourcePath); trackDir != dir || stemKey(trackBase) != key {
+	key := StemKey(base)
+	if trackDir, trackBase := path.Split(t.SourcePath); trackDir != dir || StemKey(trackBase) != key {
 		return &Error{Code: CodeLyricsAssociation,
 			Message: fmt.Sprintf("%q does not have the directory and stem of %q", lrc, t.SourcePath),
 			Details: Details{Names: []string{lrc, t.SourcePath}}}
 	}
 	var same []string
 	for _, o := range tracks {
-		if d, b := path.Split(o.SourcePath); d == dir && stemKey(b) == key {
+		if d, b := path.Split(o.SourcePath); d == dir && StemKey(b) == key {
 			same = append(same, o.SourcePath)
 		}
 	}
@@ -623,9 +623,11 @@ func checkLyrics(tracks []ImportTrack, i int) error {
 	return nil
 }
 
-// stemKey is the comparison key of a file name without its extension:
-// NFC and casefold (§7.4).
-func stemKey(base string) string {
+// StemKey is the comparison key of a file name without its extension, NFC
+// and casefold (§7.4): an LRC file belongs to the one track of its
+// directory with the same key. The importer uses it to associate, the
+// commit to check.
+func StemKey(base string) string {
 	return names.Key(strings.TrimSuffix(base, path.Ext(base)))
 }
 
