@@ -229,11 +229,11 @@ func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warni
 			Message: fmt.Sprintf("%q is %s audio, which this version does not import yet (FLAC only)", rel, p.Format)}
 	}
 	if _, err := im.tools.AudioDigest(ctx, bf); err != nil {
-		return nil, corrupt(rel, err, media.CodeDecode, media.CodeNotSupported)
+		return nil, corrupt(rel, err, decodeFailures...)
 	}
 	in, err := im.tools.Inspect(ctx, bf, p.Format)
 	if err != nil {
-		return nil, corrupt(rel, err, media.CodeTagsCorrupt, media.CodeTagsFormatMismatch)
+		return nil, corrupt(rel, err, readerFailures...)
 	}
 	f.audio, f.format, f.tags = true, p.Format, in
 	return tagWarnings(rel, in)
@@ -250,14 +250,29 @@ var corruptMessages = map[string]string{
 	media.CodeTagsFormatMismatch: "%q is not a FLAC stream the tag reader accepts",
 }
 
+// decodeFailures and readerFailures are the codes of the decode and of the
+// tag reader that are the file's fault; each one has its message in
+// corruptMessages (TestCorruptMessages).
+var (
+	decodeFailures = []string{media.CodeDecode, media.CodeNotSupported}
+	readerFailures = []string{media.CodeTagsCorrupt, media.CodeTagsFormatMismatch}
+)
+
 // corrupt types a failure of the decode or of the tag reader: the file's
 // fault (codes, each one of corruptMessages) is CodeCorruptAudio; anything
 // else (a timeout, a tool failure) keeps its own code.
 func corrupt(rel string, err error, codes ...string) error {
-	if code := media.Code(err); slices.Contains(codes, code) {
-		return &Error{Code: CodeCorruptAudio, Path: rel, Message: fmt.Sprintf(corruptMessages[code], rel), Err: err}
+	code := media.Code(err)
+	if !slices.Contains(codes, code) {
+		return err
 	}
-	return err
+	msg, ok := corruptMessages[code]
+	if !ok {
+		// A caller listed a code without a message: say which check failed
+		// rather than format a missing entry.
+		msg = "%q failed the check " + code
+	}
+	return &Error{Code: CodeCorruptAudio, Path: rel, Message: fmt.Sprintf(msg, rel), Err: err}
 }
 
 // foreignTag is the opaque reason of an ID3v2 or ID3v1 tag inside a FLAC

@@ -119,7 +119,7 @@ versions and never `latest`. When the `Dockerfile` is written, the versions of
 Go, TagLib and ffmpeg must be pinned there by the same criterion, and they
 contribute to `render_version`.
 
-### N-010 · `render_version` is not defined yet — OPEN
+### N-010 · `render_version` is not defined yet — RESOLVED (round 8, N-130)
 §2.1 describes it as a build constant covering the renderer code, the naming
 rules, the tag mapping and the tool versions. It must be introduced before the
 first render, and it must include an identifier of the version of the
@@ -131,6 +131,10 @@ Since 2026-09-23 it also returns the TagLib helper's two versions:
 `Versions.Tags` (the helper, `2` since N-090) and `Versions.TagLib` (`2.3.2-musiclib1`,
 N-083). The helper's version also covers the managed-field table and the
 bytes it writes, so it is the "mapping dei tag" input of §2.1.
+
+**Resolved in round 8:** `render.Version`, a compile-time constant derived
+from the pinned versions, the renderer's own revision and
+`names.AlgorithmVersion`; see N-130.
 
 ### N-011 · No CI check on ext4 — RESOLVED (local), OPEN (CI)
 The Docker gate (`scripts/check.sh`) refuses to run unless `TMPDIR` is on
@@ -445,6 +449,11 @@ The same holds for `testHook` in `internal/jobs/claim.go` (round 4): a
 package-level named failpoint, nil in production, that must join the §12.2
 failpoint mechanism in phase 3.
 
+And for `failpointHook` in `internal/render/build.go` (round 8): `write`
+(before each write of a copy or of the receipt), `tags-written`,
+`fsync-file` and `fsync-dir`. It injects errors and traces the fsync order
+(N-132).
+
 ### N-045 · ENOSPC is not tested on a really full filesystem — OPEN
 The `ENOSPC`/`EDQUOT` → `blob_no_space` mapping and its cleanup are tested
 by injecting `ENOSPC` at the `temp_synced` point. That point is realistic:
@@ -453,6 +462,15 @@ test needs a small dedicated ext4 volume. A loop mount needs
 `CAP_SYS_ADMIN` (N-018), so it belongs with the "Disco pieno durante build"
 row of §12.2. Pinned blobs are never opened for writing, so ENOSPC cannot
 damage them in any case.
+
+**Round 8:** that row is covered for the build by injection
+(`TestBuildNoSpace`): ENOSPC at the first write of a track, of a nested
+attachment and of the receipt, and at the fsync of a track and of the album
+directory. Each gives `insufficient_space` with the errno kept, removes the
+staging, and leaves `library/` and `originals/` byte for byte, mode for
+mode, as they were. A really full filesystem is still not tested. ENOSPC
+inside the tag helper's own write is its `media_tags_io` (N-084), which the
+build discards the same way.
 
 ### N-046 · What counts as a corrupt blob — DECIDED
 Anything at a blob's name that is not a regular file with the matching size
@@ -2031,6 +2049,11 @@ the render's own.
 A put still handles ENOSPC anyway (§11.2), and nothing published is removed
 to make room.
 
+**Round 8:** the renderer has the same check, `Builder.checkSpace`, before a
+build creates its directory (N-132). It is the second seam: the budget must
+reserve in both, and release when the job's work ends (for a build, when
+its staging is installed or discarded, not when `Build` returns).
+
 ### N-115 · What the scan probes, and why — DECIDED
 §7.2 recognizes audio by its content. But the scan only needs to know what is
 audio to *group* the candidates, and the import probes every file again on
@@ -2489,3 +2512,296 @@ too short for a frame header as a frame. This was true before N-128 too.
 - For N-128 it means that the samples alone cannot prove the extent to the
   byte. `TestAudioDigestFeedsExactlyTheAudio` checks the bytes the decoder
   receives instead.
+
+---
+
+## Round 8: `internal/render` (2026-09-23)
+
+### N-130 · `render_version`: what it is made of, and how it cannot be forgotten — DECIDED
+`render.Version` is a Go constant, derived at compile time by string
+concatenation from six tokens (resolves N-010):
+
+    musiclib-render/1 names/1 go1.25.14 ffmpeg/8.1.3-musiclib1 musiclib-tags/2 taglib/2.3.2-musiclib1
+
+| Token | Input of §2.1 | Source |
+|---|---|---|
+| `musiclib-render/<n>` | the renderer's code: plan layout, the catalog → `TagValues` mapping, the build, the receipt | `render.RendererRevision` |
+| `names/<n>` | the naming rules | `names.AlgorithmVersion` (new, `"1"`) |
+| `go1.25.14` | the toolchain: the Go code, `image/jpeg` and `image/png` (cover attributes, N-087), the Unicode tables of `internal/names` | `render.GoVersion` |
+| `ffmpeg/<v>` | ffmpeg and ffprobe (one release, one version, N-073) | `media.PinnedVersion` |
+| `musiclib-tags/<v>` | the helper, whose version also covers its field table and the bytes it writes (the tag mapping, N-088) | `media.PinnedTagsVersion` |
+| `taglib/<v>` | the TagLib linked into it | `media.PinnedTagLibVersion` |
+
+A readable string rather than a hash: it goes into
+`albums.published_renderer` and the logs, where an operator must be able to
+tell which input changed. Every token matches `[0-9A-Za-z.+-]+`, so the
+string is unambiguous.
+
+**Why a change cannot be forgotten.** A change of a pinned tool version
+changes the constant by construction. The other inputs have a test that
+fails until their revision is bumped:
+- `TestVersionInputs`: the constant is exactly its six tokens, in order.
+  Dropping an input from the concatenation fails it (mutation-checked).
+- `TestVersionGolden`: the value itself is pinned, so every change of
+  `render_version` shows up in review with its consequence: every album
+  renders again at the next boot (§11.1 step 6).
+- `names.TestAlgorithmVersionPinned`: a SHA-256 of every output of
+  `internal/names` on every code point and on a corpus (truncation, DOS
+  names, trimming, relative paths), pinned per `AlgorithmVersion`. It fails
+  on any change of the package, of `golang.org/x/text`, or of Go's Unicode
+  tables. Its message says that the algorithm is frozen (§5.2): a change
+  needs a key migration first, then a new `AlgorithmVersion`.
+- `render.TestRendererRevisionPinned`: a SHA-256 of the plans of four
+  reference snapshots (paths, keys, tags, copies) and of a reference
+  receipt, pinned per `RendererRevision`. Changing the tag mapping or the
+  layout fails it (mutation-checked with the year format).
+- `TestGoVersionPinned`: the test binary is built with `GoVersion`. A Go
+  bump fails the gate until the constant follows.
+
+**The helper's (and ffmpeg's) sha256, the reviewer's suggestion.**
+Decision: pin the bytes of the three binaries **in the gate**, not in the
+value and not at boot. `TestToolBinariesPinned` requires the sha256 of
+`/usr/local/bin/{ffmpeg,ffprobe,musiclib-tags}` recorded in N-073 and N-083
+(amd64). A rebuild that changes their bytes without a version bump (a
+changed base image or compiler, a source edit without `kHelperVersion`)
+fails the gate. The developer must then bump the tool's version, and so
+`render_version`, or show that no output changes and update only the pin.
+- **Not in the value:** the bytes differ by architecture (N-073: the builds
+  are reproducible on the same machine and architecture). A hash in
+  `render_version` would make it depend on the host's CPU and re-render
+  every album after a move from amd64 to arm64 with identical outputs. It
+  would also make the value unreadable.
+- **Not at boot:** the images come only from the Dockerfile, whose output
+  passes through the gate. A runtime hash would protect against a tampered
+  image, which is outside the threat model (§10.4), and would refuse to
+  boot on another architecture.
+- ffmpeg and ffprobe are pinned the same way, for the same reason.
+
+**Boot consistency.** `render.CheckTools(media.Versions)` compares the
+versions `media.NewTools` read with the ones the constant was derived from,
+and `runtime.Version()` with `GoVersion`. `cmd/musiclibd` calls it in
+`checkTools` (§11.1 step 3) and logs `render_version` with the tool
+versions (asserted by the boot test). `NewTools` already refuses other
+versions; the check ties the two together, so that a later relaxation of
+one cannot let the process label its output with a `render_version` it does
+not implement. A mismatch is `render_version_mismatch`, a fatal boot error
+with that code (`codeOf`).
+
+**Bump procedure:** a change to the planner, builder or receipt bumps
+`RendererRevision` and re-pins `rendererDigests`; a tool bump changes the
+tool's pinned version and the binary pins; a Go bump changes `GoVersion`.
+Each also updates `TestVersionGolden`.
+
+**What no pin catches (review finding).** `rendererDigests` pins the output
+of the plan and of the receipt only. A change in the builder's behaviour
+that leaves both unchanged (the order of the steps of §9.1, how the cover is
+passed to the writer, what is read back) moves no digest. Bumping
+`RendererRevision` for it relies on review, and its correctness on the build
+tests (`TestBuild*`), which compare the output with the plan, the originals
+and each other.
+
+### N-131 · The planner's readings of §5.1, §5.2 and §8.2 — DECIDED (the case-only directories: owner decision, 2026-09-23)
+- **Year:** DATE is the album year as four digits (`%04d`: 999 is `0999`).
+  §8.2 says only "Anno". Four digits is ISO 8601's year, what ID3v2.4's TDRC
+  (Phase 4) requires, and what the importer reads back as a year (N-116);
+  `999` would not be re-imported as a year. No year: DATE removed.
+- **Disc and track totals** are written for every album, single-disc ones
+  included (1 of 1): §8.2 manages them, and absent means removed.
+- **Compilation false** removes the field (N-089).
+- **Genre:** a track's non-NULL genre wins, and `""` writes no genre (§4.1);
+  NULL takes the album's genre, or none.
+- **Track file names** are `names.FileSegment("%02d - <title>.<ext>")`: the
+  whole name is one segment, sanitized and, if needed, truncated with its
+  hash suffix and its extension kept. `%02d` gives at least two digits and
+  no extra zero (§5.1). The outer trim applies to the whole name, so a
+  title " .x. " gives `02 -  .x. .flac`. The LRC is the track's final name
+  with its extension replaced by `.lrc`: the same basename, even when
+  truncated (`.lrc` is not longer than `.flac`, so it stays within 180
+  bytes).
+- **The disc directory** is `Disc <D>` without padding (§5.1), for every
+  track when the album is multi-disc (more than one disc value, or a value
+  other than 1).
+- **Extensions:** FLAC only (`flac`). MP3 and M4A tracks are
+  `render_format_not_supported_yet` until Phase 4, the importer's boundary;
+  the `.m4a` choice for both M4A codecs is Phase 4's.
+- **Attachments:** `Extras/` plus `names.SanitizeRelFilePath(rel_path)`, the
+  catalog's own function, so the §5.2 limits (16 levels, 1,024 bytes) apply
+  to the path below `Extras/`, exactly as the catalog checked them at the
+  import commit. An album-relative path can therefore have 17 levels and
+  1,031 bytes. Applying the limits to the album-relative path instead would
+  make an album the catalog accepted impossible to render, forever.
+- **One rule for the output path limits:** `render.checkOutputPath`
+  (paths.go) is used by the planner for every file it plans and by the
+  receipt (`Encode` and `ParseReceipt`) for every file it lists. It measures
+  §5.2's limits with `names.SplitRelPath` (16 levels, valid segments), 1,024
+  bytes and 180 bytes per segment: below `Extras/` for a path under
+  `Extras/`, on the path itself otherwise (tracks, LRC, cover: at most two
+  levels). *Fixed after the round 8 review:* the receipt first checked every
+  path with `names.SplitRelPath` alone, so an attachment of 16 levels below
+  `Extras/`, which the planner accepts, failed the build at the receipt,
+  after every track was built, and would have been refused by
+  `ParseReceipt` too. Pinned by `TestBuildDeepAttachment` (16 levels and
+  1,024 bytes below `Extras/`, built, receipt round-tripped) and
+  `TestReceiptPathLimits` (the maximum accepted, one level or byte more
+  refused, under `Extras/` and elsewhere); making the receipt use its own
+  check again is caught (mutation-checked).
+- **Collisions: one rule, `catalog.PathCollision`**, used by the catalog's
+  import commit (attachments, below `Extras/`) and by the planner (the whole
+  album: tracks, LRC files, cover, receipt, attachments), §13.2. On final
+  segments and `names.PathKey`, it refuses:
+  - two files with one key;
+  - a file whose key is the key of a directory another file needs, in both
+    orders;
+  - **two directories with one key and different spellings**, such as
+    `Scans/` and `scans/` (owner decision below).
+
+  The catalog's error is `attachment_path_collision`, the planner's
+  `render_path_collision`; both name the two entries as the user knows them
+  (an attachment's rel_path, `track <disc>.<no> "<title>"`, "the cover",
+  "the receipt"). With a valid catalog only attachments can collide (tracks
+  differ by number, attachments live under `Extras/`, and no sanitized name
+  starts with a dot); the other planner checks are a second line, tested
+  with snapshots the database would refuse.
+- **Directories that differ only in case: a collision (owner decision,
+  2026-09-23).** §5.2 read literally: "collisioni dopo la normalizzazione …
+  producono un errore esplicito con entrambi i nomi". An album whose
+  attachments need `Scans/` and `scans/` is refused at the import commit
+  (the importer fails it with `attachment_path_collision` naming both
+  files), and a snapshot holding one is refused by the planner. Nothing is
+  merged or suffixed; the user renames a directory. Tested in the catalog
+  (`TestPathCollision`, `TestCommitImportDirectoriesDifferingInCase`, a
+  validation case), the planner (`TestPlanCollisions`) and end to end
+  (`TestImportDirectoriesDifferingInCase`, two real directories on ext4);
+  mutation-checked in the shared function and at each caller. The rule
+  compares the **final** spellings: two source directories that sanitize to
+  the same name (`a:b/` and `a?b/`, both `a_b/`) are one output directory,
+  not a collision, and their files still collide if their final paths do.
+  Albums already imported before this decision with such directories would
+  now fail to render with `render_path_collision`; none exists (no release
+  yet). N-121 (names in §7.3) is unaffected.
+- **Invalid snapshots** (a hash that is not 64 lowercase hex, a disc or
+  number out of the schema, an empty title or artist override, a cover that
+  is not JPEG/PNG, an active album without tracks, revision 0) are
+  `render_invalid_snapshot`: the catalog guarantees each, so each means a
+  bug or a manual edit.
+- **Purity:** `NewPlan(snapshot, renderVersion)` requires
+  `snapshot.RenderVersion == renderVersion` (the claim's renderer). It does
+  no I/O and reads no clock; `TestPlannerIsPure` checks plan.go's imports,
+  and that it uses the blob store only for `ValidateSHA`. The plan shares no
+  memory with the snapshot (tested).
+
+### N-132 · The builder — DECIDED
+- **Layout:** `work/render/<build_id>/album`, `build_id` a UUIDv7
+  (`store.NewID`). Both directories are created with `mkdir`, never adopted.
+  The builder has roots for `work/` and, through the blob store,
+  `originals/` only: it cannot read `library/` (§9.1 step 4). The tests
+  check that `library/` and `originals/` are unchanged, bytes and modes,
+  after every build, successful or not.
+- **Attachments go through a sub-root of `Extras/`**, created when the
+  first attachment is copied. fsops validates every relative path with
+  `names.SplitRelPath` (16 levels), and an attachment may have 16 levels
+  below `Extras/` (N-131), which the album root could not reach. The
+  build's paths and the receipt's obey the same limits (`checkOutputPath`),
+  so the receipt lists every file the build copies, however deep; the
+  publisher and doctor must reach such a file through the same kind of
+  sub-root.
+- **Copies (§9.1 steps 5 and 7):** the original is streamed in 1 MiB units
+  through SHA-256; a mismatch with the blob's name is `corrupt_blob`
+  (`blobstore.CodeCorrupt`) naming the blob and the file; a size other than
+  the catalog's is `render_invalid_snapshot`. The copy is then read back and
+  must have the blob's size and hash (`render_copy_mismatch`). Every file is
+  created `O_EXCL`, mode 0644; directories 0755.
+- **Per track (§9.1 step 6):** verified copy, `AudioDigest`, `Inspect`,
+  `WriteManagedTags` (the cover is the verified staged `cover.*`, opened
+  read-only), `Inspect`, `media.VerifyTags(plan tags, cover, before,
+  after)`, `AudioDigest`. The two digests must be equal in every field
+  (`render_audio_changed`, which prints both). `AudioDigest` handles a
+  trailing ID3v1 itself (N-128). One track at a time, each track's LRC
+  right after it, then the attachments.
+- **Final hashes (§9.1 step 8):** a track is read back after its checks for
+  its size and SHA-256; a byte-for-byte copy's are the blob's, verified by
+  its read-back. The receipt follows (N-133), is read back, and its SHA-256
+  is the `receipt_hash`.
+- **fsync order:** each file is fsynced and closed when it is complete
+  (`fsops.SyncAndClose`), the receipt last. Then every directory created in
+  the album, deepest first; the album directory; `render/<build_id>`, the
+  staging's parent; `render`; the root of `work/`. Traced through the
+  `fsync-file` and `fsync-dir` failpoints: `TestBuildFsyncOrder` requires
+  every file once and before any directory, the receipt last among files,
+  every directory of the staging once and after its subdirectories, and the
+  chain ending `album, render/<id>, render, work`. The parents are fsynced
+  one by one rather than with `SyncDirAndParents`, so that the trace sees
+  each one.
+- **Failure:** any error removes `work/render/<build_id>` (`Discard`, with
+  `context.WithoutCancel` so that a cancelled build is cleaned too) before
+  `Build` returns; the removal's own error is joined, never dropped.
+  `Discard(ctx, buildID)` is exported for the publisher (a superseded build,
+  §6.3; the old staging after an exchange, §9.3) and is a no-op on a build
+  that does not exist. Its removal is not fsynced: boot step 5 cleans
+  `work/render` anyway (next round).
+- **Cancellation:** the context reaches every tool (the Runner kills and
+  reaps the process group, §8.5) and every copy and hash loop. The error is
+  `media_canceled` or `render_canceled`. `TestBuildCancel` cancels as soon
+  as a child ffmpeg or musiclib-tags of the test process appears in
+  `/proc`, then requires that process gone and the staging removed.
+- **Space (§11.2):** before creating anything, `free − 1 GiB ≥ estimate`,
+  with estimate = every file's size + for each track the cover's size and
+  2 MiB (11 managed texts and TagLib's padding, which it caps at 1 MiB,
+  N-085) + 2 KiB per file for the receipt. `insufficient_space` otherwise,
+  and also for ENOSPC/EDQUOT met while writing or fsyncing, with the errno
+  kept. The process budget is N-114's.
+- **Removal plans** build nothing: `Result{BuildID, Removal: true}`, no
+  staging and no receipt. The build id is still needed:
+  `publication.build_id` is NOT NULL and names `work/retired/<build_id>`
+  (§9.3).
+- **`Result`** is what PREPARE writes: `BuildID`, `AlbumID`, the built
+  `AlbumRevision` (never the current one, §6.3), `RenderVersion`, `Staging`
+  (relative to `work`), `ReceiptHash`, `Removal`.
+- **A plan for another renderer** is refused (`render_version_mismatch`):
+  its output would be labelled with a `render_version` this binary does not
+  implement.
+- **Not tested:** a real full disk (N-045) and a real crash during a build
+  (N-044). A crash leaves a staging directory that no journal references;
+  boot step 5 removes it (next round).
+
+### N-133 · The receipt's format — DECIDED
+`.musiclib.json` is one line of compact JSON with exactly the six fields of
+§9.2, in this order: `schema_version` (1), `album_id`, `build_id`,
+`album_revision`, `render_version`, `files` (objects with `relative_path`,
+`size`, `sha256`, in this order). No whitespace and no trailing newline;
+UUIDs lowercase and hyphenated; integers plain decimal; strings raw UTF-8
+with only the quote, the backslash and U+0000..U+001F escaped (control
+characters as a six-character `u00xx` escape with lowercase hex). The
+encoder is the package's own, about 30 lines, not `encoding/json`, so the
+format does not depend on its choices (it escapes `<`, `>`, `&`, U+2028 and
+U+2029; N-099 describes the consequence for the fingerprint).
+`TestReceiptGolden` pins the bytes, HTML characters and U+2028 included.
+- **Order:** `files` is sorted by the UTF-8 bytes of `relative_path` (Go's
+  string order, which is code-point order), strictly: no path twice. U+FF21
+  sorts before U+1F600, unlike UTF-16 order (`TestReceiptOrderIsUTF8Bytes`).
+  The receipt never lists itself.
+- **`ParseReceipt`** (for recovery, §9.4, and doctor, §11.3) accepts only
+  the canonical bytes of a valid receipt. It decodes strictly (unknown
+  fields refused, every field required), validates the content (schema 1,
+  non-nil UUIDs, revision > 0, a render_version, paths that pass the
+  planner's own limit rule (`checkOutputPath`, N-131: an attachment may
+  have 16 levels and 1,024 bytes below `Extras/`) without control
+  characters, sizes ≥ 0, lowercase SHA-256, strict order),
+  then re-encodes and compares byte for byte. That one comparison refuses
+  duplicate keys, another key order, whitespace, other escapes or number
+  forms, and a trailing newline. At most 16 MiB are read. 44 hostile inputs
+  are tested; `Encode` refuses what `ParseReceipt` would refuse, and the two
+  round-trip 200 random receipts.
+- **`receipt_hash`** is the lowercase hex SHA-256 of the file's bytes.
+
+### N-134 · Round 7 review nits — RESOLVED
+- `importer.corrupt` no longer formats a missing `corruptMessages` entry.
+  The codes it is given are the named lists `decodeFailures` and
+  `readerFailures`; `TestCorruptMessages` requires a message for each, and a
+  code without one gets `"<file>" failed the check <code>`.
+- `media.flacAudioEnd` labels its stat and tail-read failures with the op
+  `trailing ID3v1 check` instead of `ffmpeg decode`: no tool runs there
+  (`TestFlacAudioEndReadFailure`).
+- `media.CoverMIME` exports the writer's MIME table, so the render's
+  `ExpectedCover.MIME` comes from the one place that embeds it
+  (`TestCoverMIMEIsTheWritersMIME`).

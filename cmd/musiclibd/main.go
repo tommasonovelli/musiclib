@@ -27,6 +27,7 @@ import (
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
 	"musiclib/internal/media"
+	"musiclib/internal/render"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
 )
@@ -156,6 +157,7 @@ func codeOf(err error) string {
 		se *store.Error
 		bl *blobstore.Error
 		me *media.Error
+		re *render.Error
 	)
 	switch {
 	case errors.As(err, &be):
@@ -168,6 +170,8 @@ func codeOf(err error) string {
 		return bl.Code
 	case errors.As(err, &me):
 		return me.Code
+	case errors.As(err, &re):
+		return re.Code
 	case fsops.Code(err) != "":
 		return fsops.Code(err)
 	default:

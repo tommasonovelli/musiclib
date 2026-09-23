@@ -383,3 +383,23 @@ func TestFeedPrefix(t *testing.T) {
 		t.Fatalf("an unreadable input: %+v", res)
 	}
 }
+
+// The failures of flacAudioEnd are reads of the input, before any tool
+// runs: they carry their own op, not the decoder's (round 7 review).
+func TestFlacAudioEndReadFailure(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.flac")
+	if err := os.WriteFile(p, bytes.Repeat([]byte{1}, 200), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = flacAudioEnd(f)
+	if e := wantCode(t, err, CodeIO); e.Op != "trailing ID3v1 check" {
+		t.Fatalf("op %q, want the trailing ID3v1 check", e.Op)
+	}
+}

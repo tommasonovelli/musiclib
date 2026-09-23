@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"musiclib/internal/media"
+	"musiclib/internal/render"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
 	"musiclib/internal/volume"
@@ -46,7 +47,8 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	for _, ev := range d.logs.events(t) {
 		if ev["msg"] == "media tools verified" {
 			verified = ev["ffmpeg"] == media.PinnedVersion && ev["ffprobe"] == media.PinnedVersion &&
-				ev["musiclib_tags"] == media.PinnedTagsVersion && ev["taglib"] == media.PinnedTagLibVersion
+				ev["musiclib_tags"] == media.PinnedTagsVersion && ev["taglib"] == media.PinnedTagLibVersion &&
+				ev["render_version"] == render.Version
 		}
 	}
 	if !verified {

@@ -18,6 +18,14 @@ const flacPictureHeader = 32
 // (describeCover).
 var coverMIME = map[string]string{FormatJPEG: "image/jpeg", FormatPNG: "image/png"}
 
+// CoverMIME is the MIME type WriteManagedTags embeds for a cover of
+// coverFormat ("jpeg" or "png"): the ExpectedCover.MIME that VerifyTags
+// requires after the write. ok is false for any other format.
+func CoverMIME(coverFormat string) (mime string, ok bool) {
+	mime, ok = coverMIME[coverFormat]
+	return mime, ok
+}
+
 // MaxEmbeddedCover returns the largest cover of format coverFormat ("jpeg"
 // or "png") that WriteManagedTags can embed in an audio file of format
 // audioFormat, in bytes. ok is false when the pair has no known limit: the

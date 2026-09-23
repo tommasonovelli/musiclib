@@ -2,6 +2,7 @@ package importer
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"reflect"
@@ -544,5 +545,30 @@ func TestTagWarnings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Every code the importer hands to corrupt has its own message, and a code
+// without one still gives a message that names the file and the check,
+// never a malformed format (round 7 review).
+func TestCorruptMessages(t *testing.T) {
+	for _, code := range append(slices.Clone(decodeFailures), readerFailures...) {
+		if _, ok := corruptMessages[code]; !ok {
+			t.Errorf("no message for %s", code)
+		}
+		err := corrupt("a.flac", &media.Error{Code: code}, code)
+		var e *Error
+		if !errors.As(err, &e) || e.Code != CodeCorruptAudio || !strings.HasPrefix(e.Message, `"a.flac" `) || strings.Contains(e.Message, "%!") {
+			t.Errorf("%s: %v", code, err)
+		}
+	}
+	err := corrupt("b.flac", &media.Error{Code: media.CodeTagsTooLarge}, media.CodeTagsTooLarge)
+	var e *Error
+	if !errors.As(err, &e) || e.Message != `"b.flac" failed the check `+media.CodeTagsTooLarge {
+		t.Errorf("fallback: %v", err)
+	}
+	other := &media.Error{Code: media.CodeTimeout}
+	if got := corrupt("c.flac", other, decodeFailures...); got != other {
+		t.Errorf("a code outside the list is kept: %v", got)
 	}
 }

@@ -46,11 +46,11 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC complete** (table in `native/musiclib-tags/src/fields.h`, N-088); the MP3 and M4A tables are Phase 4 (N-094)
 - [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC candidate (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); MP3 and M4A fail as `audio_format_not_supported_yet` until Phase 4. The executors (`ExecuteScan`, `ExecuteImport`) have the form `jobs.Pool` expects and are **not wired** into `cmd/musiclibd`: the pool starts in the publish round with the journal recovery (N-107, N-125); only `importer.CleanWork` joined boot step 5
 - [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
-- [ ] `internal/render`: snapshot → pure plan → build in staging (§9.1)
-- [ ] `.musiclib.json` receipt (§9.2)
+- [x] `internal/render`: snapshot → pure plan → build in staging (§9.1) — `render_version` (§2.1, N-010 resolved by N-130), the pure planner, the verified build in `work/render/<build_id>/album` with its failure cleanup; not wired into a job executor yet (next round, with the publisher)
+- [x] `.musiclib.json` receipt (§9.2) — canonical encoder, strict parser for recovery and doctor, `receipt_hash` (N-133)
 - [ ] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3)
 - [ ] Journal recovery at startup (§9.4)
-- [ ] Boot steps 4 (journal recovery), 5 (running jobs back to pending, cleanup of `work/render` and `work/retired`), 6 (stale renders) and the worker pool of step 7, in the places marked in `cmd/musiclibd` `boot()` (§11.1); exit on database loss once workers exist (§6.4, N-070). The helpers of steps 5 and 6 and the pool exist and are tested (`jobs.RecoverRunning`, `jobs.EnqueueStaleRenders`, `jobs.Pool`); the wiring waits for step 4 and `render_version` (N-107)
+- [ ] Boot steps 4 (journal recovery), 5 (running jobs back to pending, cleanup of `work/render` and `work/retired`), 6 (stale renders) and the worker pool of step 7, in the places marked in `cmd/musiclibd` `boot()` (§11.1); exit on database loss once workers exist (§6.4, N-070). The helpers of steps 5 and 6 and the pool exist and are tested (`jobs.RecoverRunning`, `jobs.EnqueueStaleRenders`, `jobs.Pool`); `render_version` exists (`render.Version`, checked at boot step 3 by `render.CheckTools`); the wiring waits for step 4 (N-107)
 - [x] `internal/jobs`: claim, pool, completion (§6.2, §6.4) — the single `EnqueueRender`, the REPEATABLE READ claim with its snapshot, ticket-conditioned completions, boot helpers, the worker pool
 
 ## Phase 3 — Concurrency
@@ -67,7 +67,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] MP3 (ID3v2.4, APE, ID3v1 migration), M4A AAC/ALAC (§8.1–8.3) — in `native/musiclib-tags`: independent MP3 and M4A readers, the writers, their alias and sort tables, and the ID3v1 exclusion in `VerifyTags` (N-094); probe and `AudioDigest` already handle both
 - [~] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits are done (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`); upload and removal come with the API
 - [~] LRC files associated with tracks (§7.4) — at import, done (N-117); assignment and upload with the API
-- [~] Attachments under `Extras/` (§5.1, §7.4) — collected at import; their materialization is the renderer's
+- [~] Attachments under `Extras/` (§5.1, §7.4) — collected at import and materialized by the build (`internal/render`, sanitized per segment, collisions refused); upload and removal with the API
 - [~] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086, the ID3-in-FLAC exclusion N-090); MP3 and M4A with their readers (N-094)
 
 ## Phase 5 — Full experience
@@ -85,7 +85,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] `doctor`, normal and `--deep` (§11.3)
 - [ ] `rebuild` with maintenance marker (§11.3)
 - [ ] `backup` / `restore` (§11.4)
-- [~] Space budget and `statfs` check (§11.2) — the import's estimate and `statfs` check with the 1 GiB margin; the process-wide budget is the executor/pool round's (N-114)
+- [~] Space budget and `statfs` check (§11.2) — the estimates and `statfs` checks with the 1 GiB margin of the import and of the build; the process-wide budget is the executor/pool round's (N-114)
 - [ ] Operations guide with Compose examples (§11)
 
 ---
@@ -843,6 +843,7 @@ transaction (§3.2 guarantee 6).
 | `RenameArtist(ctx, id, ifMatch, name)` | §4.3: the artist and every album bumped, every path reserved, all or nothing; no implicit merge |
 | `ReconcileClaims(ctx, *CatalogTx, albumID)` | the one claims function (§5.3), for PREPARE, FINALIZE and rebuild too: the union of desired (if active), journal and published paths on normalized keys; `path_reserved` names the owner |
 | `AlbumPath(artist, title)` | the desired path `<artist>/<album>` (§5.1) and its key, the two `folder_key`s joined |
+| `PathCollision(paths)` | §5.2's collision rule on final paths: one file key twice, a file where another needs a directory, one directory spelled two ways (owner decision, N-131); used by the import commit and the render planner |
 | `CheckFresh(ctx, *CatalogTx, snapshot, renderer)` | the four conditions of §6.3 for PREPARE (N-097, N-112) |
 | `Error{Code, Message, Details}`, `Code`, `AsError` | stable codes for `{code, message, details}` (§10.1); `Details` carries the owning album, the path, both names, the current revision |
 
@@ -1065,6 +1066,133 @@ The open-time identity check alone survives, by design (N-126).
 ```sh
 scripts/check.sh ./internal/importer/...
 scripts/dev.sh go test -race -count=10 ./internal/importer/
+```
+
+### `internal/render` — `render_version`, pure plan, build in staging, receipt (§2.1, §5, §6.2, §8.2, §9.1, §9.2, §11.2) ✔ (FLAC)
+
+From the claim's snapshot to a complete, verified album directory in
+`work/render/<build_id>/album`, ready for the publisher (§9.3, next round).
+The planner is pure; the builder reads originals through the blob store and
+writes only under `work/` through fsops, and has no root for `library/`.
+
+| Function | Role |
+|---|---|
+| `Version`, `RendererRevision`, `GoVersion` | `render_version` (§2.1), a compile-time constant of six tokens: renderer revision, `names.AlgorithmVersion`, Go, ffmpeg/ffprobe, helper, TagLib (N-130) |
+| `CheckTools(media.Versions)` | the tools verified at boot and the toolchain are the ones `Version` names; called by `cmd/musiclibd` at step 3 |
+| `NewPlan(snapshot, renderVersion)` | the pure plan (§6.2, §9.1 steps 2–3): `Dir` (`catalog.AlbumPath`), cover, tracks with their expected `media.TagValues`, LRC and attachment copies; every collision and limit checked first; a trashed album is a removal plan |
+| `Plan.Files()` | the files the receipt lists, sorted by bytes |
+| `New(Config)` / `Builder.Build(ctx, Plan)` | the build of §9.1 steps 4–8; returns `Result{BuildID, AlbumID, AlbumRevision, RenderVersion, Removal, Staging, ReceiptHash}` |
+| `Builder.Discard(ctx, buildID)` | removes a build's directory: on every failure, and for the publisher |
+| `StagingDir(buildID)` | `render/<build_id>/album`, relative to `/data/work` |
+| `Receipt`, `Receipt.Encode`, `ParseReceipt`, `ReceiptHash` | `.musiclib.json` (§9.2): one canonical form, a strict parser for §9.4 and §11.3 (N-133) |
+| `Error` / `Code` | `render_*` codes (below); media, blob store, fsops and names codes pass through |
+
+Also: `names.AlgorithmVersion` (the frozen algorithm's identifier, pinned by
+`TestAlgorithmVersionPinned`), `media.CoverMIME`, and the boot's
+`render_version` log field and `codeOf` case.
+
+**How it maps to DESIGN.md:**
+- **§2.1 `render_version`:** derived, never written by hand; each input
+  either changes it by construction or has a pinned-digest test that fails
+  until its revision is bumped; the tool binaries' sha256 are pinned in the
+  gate (N-130).
+- **§5.1 layout:** `<NN> - <title>.flac` (`%02d`), `Disc <D>/` when more
+  than one disc or a disc other than 1, `cover.jpg`/`cover.png` from the
+  blob format, LRC with the track's basename, attachments under `Extras/`.
+- **§5.2:** every name through `names` (`Segment`, `FileSegment`,
+  `SanitizeRelFilePath`, `PathKey`); collisions after normalization (file
+  against file, file against directory, one directory spelled two ways, by
+  `catalog.PathCollision`, the rule the import commit uses too) are
+  `render_path_collision` naming both entries; no suffix, no deduplication
+  (N-131). The path limits are one rule, `checkOutputPath`, shared by the
+  planner and the receipt: below `Extras/` for an attachment.
+- **§8.2 tags:** title; the track's artist override or the album artist;
+  album artist; album; track and track total (highest on the disc); disc and
+  disc total (highest in the album); year as four digits; the track's genre,
+  `""` for none, or the album's; compilation; the album cover or none.
+- **§9.1 steps 5–8:** every copy hashed while read and compared with the
+  blob name (`corrupt_blob`), then read back; per track digest, inspect,
+  write, inspect, `VerifyTags`, digest, digests equal; final sizes and
+  hashes; the receipt; fsync of every file, then every new directory
+  bottom-up up to `work/` (N-132).
+- **§11.2:** estimate and `statfs` with 1 GiB before anything is created;
+  ENOSPC anywhere is `insufficient_space`. The process budget is N-114's.
+
+**Codes:** `render_invalid_snapshot`, `render_format_not_supported_yet`
+(MP3/M4A until Phase 4), `render_path_collision`, `render_path_invalid`,
+`render_version_mismatch`, `render_copy_mismatch`, `render_audio_changed`,
+`insufficient_space`, `render_io`, `render_canceled`,
+`render_receipt_invalid`, `render_invalid_argument`.
+
+**Tests** (real pinned ffmpeg, ffprobe and helper; real ext4; real
+PostgreSQL 17 for the catalog test; FLAC fixtures generated at test time by
+ffmpeg with metadata written by the tests' own codec):
+- **Planner (pure, table-driven):** the §1.1 example; single disc, multi-disc,
+  a single disc numbered 2, disc 10; every number 1..999 (`09`, `100`); JPEG
+  and PNG cover; LRC next to its track and in its disc; sanitized and NFC
+  titles; unordered snapshots; nested, Unicode, NFD, hidden, DOS-named
+  attachments and attachments named like tracks, the cover or the receipt;
+  nine collisions (case, sanitization, casefold, file/directory both ways,
+  directories differing in case at two depths, track/track after
+  sanitization and by case); components over 180 bytes
+  truncated with the LRC following; paths over 1,024 bytes or 16 levels,
+  absolute and `..` refused, exactly at the limits accepted; inherited and
+  overridden artist and genre, the empty genre, totals with gaps, years 1,
+  999, 1959, 9999, compilation; the removal plan; 15 invalid snapshots;
+  purity (same input, same plan; no aliasing; plan.go's imports).
+- **Receipt:** golden bytes (HTML characters and U+2028 raw), escaping, 200
+  random round trips, 44 hostile inputs, `Encode` refusing 12 invalid
+  receipts, the UTF-8 byte order against UTF-16 order, and the path limits
+  at the boundary (the maximum accepted, one level or byte more refused,
+  under `Extras/` and elsewhere).
+- **`render_version`:** its tokens and the source expression, the golden
+  value, the Go toolchain, `CheckTools` with each version changed, the three
+  binaries' sha256, the renderer's pinned output digest.
+- **Builder:**
+  - a normal album with cover, LRC, nested Unicode attachments, old tags,
+    aliases, sort keys, unmanaged fields and pictures: exactly the planned
+    files, modes, the receipt against the files, copies byte for byte,
+    `VerifyTags` of every output against its original, equal audio digests,
+    kept COMMENT values and COMPOSERSORT, overrides;
+  - no cover and multi-disc: no picture left, the disc directories;
+  - trailing ID3v1, leading ID3v2, both: no ID3 left, same audio;
+  - determinism: two builds, every music file byte-identical, receipts equal
+    but for `build_id`;
+  - a corrupt track, cover, LRC or attachment original, and a missing one;
+  - a tag writer that changes the samples (another sine's frames behind the
+    written metadata): only the digest comparison catches it;
+  - a tag writer that loses COMMENT: `media_tags_verification`;
+  - a faulty copy (a stray byte) caught by the read-back, for the cover, a
+    track and an attachment;
+  - attachments of 16 levels and of 1,024 bytes below `Extras/`: built, and
+    the receipt round-trips through `ParseReceipt`;
+  - ENOSPC at five points; the space check; the fsync order; cancellation
+    while a tool runs (the process gone, the staging removed); the removal
+    build; refusals;
+  - after every build: `library/` and `originals/` unchanged, and after a
+    failure nothing left in `work/render`.
+- **From the catalog:** an album imported by the real importer, its render
+  claimed with its snapshot, planned and built twice: the same bytes, the
+  expected tags and audio.
+
+**Mutation-checked**, each makes a test fail: the digest comparison off;
+`VerifyTags` off; the blob hash check off, with and without the read-back;
+the read-back off; the cover not embedded; the file and the file/directory
+collision checks off; the receipt not sorted; the receipt's order check off;
+its canonical comparison off; an input of `render_version` dropped or
+written as a literal; `CheckTools` skipping TagLib; the year unpadded; the
+genre inheritance changed; track totals from the album; multi-disc only for
+several discs; no discard on failure; the discard with the cancelled
+context; the staging's parent not fsynced; directories fsynced top-down;
+ENOSPC untyped; the names truncation suffix one digit shorter; the receipt
+checking paths with its own rule (the planner and the receipt disagreeing
+again); the `Extras/` exception removed, or its byte limit loosened; the
+directory-spelling comparison off; the planner or the catalog not calling
+`catalog.PathCollision`.
+
+```sh
+scripts/check.sh ./internal/render/...
+scripts/dev.sh go test -race -count=10 ./internal/render/
 ```
 
 ---

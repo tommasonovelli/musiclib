@@ -22,6 +22,17 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// AlgorithmVersion identifies the frozen v1 algorithm of this package: every
+// output of NormalizeText, Segment, FileSegment, Key, PathKey and
+// SanitizeRelFilePath. It is an input of render_version (§2.1, internal/
+// render): the output's names are derived from here.
+//
+// It is not a switch: a change of any output requires a migration of the
+// keys already stored and a check for conflicts beforehand (§5.2), and then
+// a new AlgorithmVersion. TestAlgorithmVersionPinned fails on any change of
+// the outputs until both are done.
+const AlgorithmVersion = "1"
+
 const (
 	// MaxTextRunes is the limit for metadata texts, in characters.
 	MaxTextRunes = 1024

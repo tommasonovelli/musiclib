@@ -140,7 +140,9 @@ const id3v1Size = 128
 // with the helper file by file, so the bytes left out are exactly the bytes
 // a render removes.
 func flacAudioEnd(f *os.File) (int64, error) {
-	const op = "ffmpeg decode"
+	// No tool runs here: the failures are reads of the input itself, before
+	// the decode.
+	const op = "trailing ID3v1 check"
 	st, err := f.Stat()
 	if err != nil {
 		return 0, newErr(CodeIO, op, "cannot stat the input", err)

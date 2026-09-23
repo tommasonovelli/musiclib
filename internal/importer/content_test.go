@@ -269,3 +269,18 @@ func TestScanRootFailures(t *testing.T) {
 		}
 	}
 }
+
+// Owner decision (2026-09-23, N-131): two directories of a candidate that
+// differ only in case are a collision after normalization (§5.2), refused
+// with both names, never merged. On ext4 they are two real directories.
+func TestImportDirectoriesDifferingInCase(t *testing.T) {
+	e := newEnv(t)
+	e.flac("A/1.flac", track{tags: []string{"ALBUM=A", "TITLE=a"}})
+	e.put("A/Scans/front.jpg", []byte("front"))
+	e.put("A/scans/back.jpg", []byte("back"))
+	b := e.importDir("")
+	j := e.failed(b, "A", catalog.CodeAttachmentCollision)
+	if !strings.Contains(j.Message, `"Scans/front.jpg"`) || !strings.Contains(j.Message, `"scans/back.jpg"`) {
+		t.Errorf("message %q does not name both", j.Message)
+	}
+}

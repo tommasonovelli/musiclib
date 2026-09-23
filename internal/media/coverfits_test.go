@@ -72,3 +72,27 @@ func TestEmbeddedCoverFitsUnknownFormats(t *testing.T) {
 	}
 	wantCode(t, EmbeddedCoverFits(FormatFLAC, FormatPNG, -1), CodeTagsTooLarge)
 }
+
+// CoverMIME is the MIME type the writer embeds: the one describeCover
+// reads from the image, for each cover format, and nothing for others.
+func TestCoverMIMEIsTheWritersMIME(t *testing.T) {
+	var jpg bytes.Buffer
+	if err := jpeg.Encode(&jpg, image.NewGray(image.Rect(0, 0, 2, 2)), nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for format, img := range map[string][]byte{FormatJPEG: jpg.Bytes(), FormatPNG: pngImage(t, 2, 2, 1)} {
+		c, err := describeCover(&Cover{File: open(t, writeFile(t, filepath.Join(dir, format), img)), Format: format})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mime, ok := CoverMIME(format); !ok || mime != c.MIME {
+			t.Errorf("CoverMIME(%s) = %q, %v; the writer embeds %q", format, mime, ok, c.MIME)
+		}
+	}
+	for _, format := range []string{"", "gif", "flac", "JPEG"} {
+		if mime, ok := CoverMIME(format); ok {
+			t.Errorf("CoverMIME(%q) = %q", format, mime)
+		}
+	}
+}

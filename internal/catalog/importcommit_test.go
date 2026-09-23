@@ -504,6 +504,9 @@ func TestCommitImportValidation(t *testing.T) {
 		{"file and directory", func(c *catalog.ImportCandidate) {
 			c.Attachments = append(c.Attachments, catalog.ImportAttachment{RelPath: "SCANS", BlobHash: c.Blobs[4].Hash})
 		}, catalog.CodeAttachmentCollision},
+		{"directories differing in case", func(c *catalog.ImportCandidate) {
+			c.Attachments = append(c.Attachments, catalog.ImportAttachment{RelPath: "scans/b.jpg", BlobHash: c.Blobs[4].Hash})
+		}, catalog.CodeAttachmentCollision},
 		{"warning", func(c *catalog.ImportCandidate) { c.Warnings = []jobs.Warning{{Code: "made_up", Message: "m"}} },
 			catalog.CodeInvalidImportWarnings},
 	} {

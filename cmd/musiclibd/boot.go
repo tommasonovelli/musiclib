@@ -15,6 +15,7 @@ import (
 	"musiclib/internal/fsops"
 	"musiclib/internal/importer"
 	"musiclib/internal/media"
+	"musiclib/internal/render"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
 )
@@ -202,8 +203,13 @@ func (d *daemon) checkTools(ctx context.Context) error {
 	}
 	d.tools = tools
 	v := tools.Versions()
+	// render_version names these versions and the Go toolchain: the process
+	// must be the renderer it claims to be (§2.1, N-130).
+	if err := render.CheckTools(v); err != nil {
+		return err
+	}
 	d.log.Info("media tools verified", "ffmpeg", v.FFmpeg, "ffprobe", v.FFprobe,
-		"musiclib_tags", v.Tags, "taglib", v.TagLib)
+		"musiclib_tags", v.Tags, "taglib", v.TagLib, "render_version", render.Version)
 	return nil
 }
 

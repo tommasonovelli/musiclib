@@ -632,43 +632,38 @@ func StemKey(base string) string {
 }
 
 // attachmentPaths sanitizes the attachments' paths (§5.2) and refuses two
-// that collide after normalization, including a file whose path is the
-// directory of another, naming both: the user corrects them, no file is
-// lost to a deduplication of names (§5.2). The check is over the whole
+// that collide after normalization (PathCollision: the same file, a file
+// where another needs a directory, or one directory spelled two ways),
+// naming both: the user corrects them, no file is lost to a deduplication
+// of names and no directory is merged (§5.2). The check is over the whole
 // namespace under Extras/.
 func attachmentPaths(atts []ImportAttachment) ([]names.SanitizedPath, error) {
 	out := make([]names.SanitizedPath, len(atts))
-	files := make(map[string]string, len(atts))
-	dirs := map[string]string{}
+	paths := make([]string, len(atts))
 	for i, a := range atts {
 		sp, err := names.SanitizeRelFilePath(a.RelPath)
 		if err != nil {
 			return nil, textError("attachment "+a.RelPath, err)
 		}
-		out[i] = sp
-		if other, ok := files[sp.Key]; ok {
-			return nil, collision(other, a.RelPath)
-		}
-		files[sp.Key] = a.RelPath
-		for d := 1; d < len(sp.Segments); d++ {
-			k := names.PathKey(sp.Segments[:d])
-			if _, ok := dirs[k]; !ok {
-				dirs[k] = a.RelPath
-			}
-		}
+		out[i], paths[i] = sp, sp.Path
 	}
-	for i, a := range atts {
-		if dirOwner, ok := dirs[out[i].Key]; ok {
-			return nil, collision(a.RelPath, dirOwner)
-		}
+	if i, j, kind := PathCollision(paths); kind != NoCollision {
+		return nil, collision(atts[i].RelPath, atts[j].RelPath, kind)
 	}
 	return out, nil
 }
 
-func collision(a, b string) *Error {
+func collision(a, b string, kind CollisionKind) *Error {
+	what := "have the same name after normalization"
+	switch kind {
+	case FileIsDirectory:
+		what = "collide after normalization: the first is a file where the second needs a directory"
+	case DirectorySpelling:
+		what = "need the same directory after normalization, spelled two ways"
+	}
 	return &Error{
 		Code:    CodeAttachmentCollision,
-		Message: fmt.Sprintf("the attachments %q and %q have the same name after normalization", a, b),
+		Message: fmt.Sprintf("the attachments %q and %q %s: rename one of them", a, b, what),
 		Details: Details{Names: []string{a, b}},
 	}
 }
