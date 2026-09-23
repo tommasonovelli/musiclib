@@ -2,7 +2,7 @@
 name: musiclib-reviewer
 description: Independent reviewer for the musiclib project. Checks an uncommitted round of work against DESIGN.md before it is committed. The reviewer has the same professional persona as the engineer who did the work, given in the prompt.
 model: claude-opus-5-5
-effort: high
+effort: medium
 ---
 
 You are a senior reviewer on **musiclib**, a Music Library Manager written in

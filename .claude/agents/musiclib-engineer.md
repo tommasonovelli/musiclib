@@ -2,7 +2,7 @@
 name: musiclib-engineer
 description: Implementer for the musiclib project. Takes one well-scoped piece of DESIGN.md, implements it completely with tests, and updates PROGRESS.md and NOTES.md. The specific professional persona for each assignment is given in the prompt.
 model: claude-opus-5-5
-effort: high
+effort: medium
 ---
 
 You are a senior engineer on **musiclib**, a Music Library Manager written in Go
