@@ -45,21 +45,21 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`; MP3 and M4A answer a typed `unsupported_format` until Phase 4 (N-094)
 - [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC complete** (table in `native/musiclib-tags/src/fields.h`, N-088); the MP3 and M4A tables are Phase 4 (N-094)
 - [ ] `internal/importer`: import of a single album candidate
-- [ ] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3)
+- [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
 - [ ] `internal/render`: snapshot → pure plan → build in staging (§9.1)
 - [ ] `.musiclib.json` receipt (§9.2)
 - [ ] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3)
 - [ ] Journal recovery at startup (§9.4)
-- [ ] Boot steps 4 (journal recovery), 5 (running jobs back to pending, cleanup of `work/render` and `work/retired`), 6 (stale renders) and the worker pool of step 7, in the places marked in `cmd/musiclibd` `boot()` (§11.1); exit on database loss once workers exist (§6.4, N-070)
-- [ ] `internal/jobs`: claim, pool, completion (§6.2, §6.4)
+- [ ] Boot steps 4 (journal recovery), 5 (running jobs back to pending, cleanup of `work/render` and `work/retired`), 6 (stale renders) and the worker pool of step 7, in the places marked in `cmd/musiclibd` `boot()` (§11.1); exit on database loss once workers exist (§6.4, N-070). The helpers of steps 5 and 6 and the pool exist and are tested (`jobs.RecoverRunning`, `jobs.EnqueueStaleRenders`, `jobs.Pool`); the wiring waits for step 4 and `render_version` (N-107)
+- [x] `internal/jobs`: claim, pool, completion (§6.2, §6.4) — the single `EnqueueRender`, the REPEATABLE READ claim with its snapshot, ticket-conditioned completions, boot helpers, the worker pool
 
 ## Phase 3 — Concurrency
 
-- [ ] Render coalescing on a single row per album (§6.3)
-- [ ] `REPEATABLE READ` snapshots (§6.2)
-- [ ] `path_claims` and global `pg_advisory_xact_lock` (§5.3)
-- [ ] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1)
-- [ ] Artist rename and album reassignment (§4.3)
+- [x] Render coalescing on a single row per album (§6.3) — `jobs.EnqueueRender`, ticket-conditioned completions
+- [x] `REPEATABLE READ` snapshots (§6.2) — `jobs.ClaimNext`, `jobs.RenderSnapshot`
+- [x] `path_claims` and global `pg_advisory_xact_lock` (§5.3) — `store.InCatalogTx`, `catalog.ReconcileClaims`
+- [~] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1) — the revision check in the transaction of the change, with typed `precondition_required` / `precondition_failed` (catalog); the HTTP ETag and headers come with the API
+- [~] Artist rename and album reassignment (§4.3) — both done and tested in the catalog (`RenameArtist`; `UpdateAlbum` with another `artist_id`); the HTTP endpoints come with the API
 - [ ] Named failpoints and failure matrix (§12.2)
 
 ## Phase 4 — Formats and content
@@ -78,7 +78,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] Complete HTTP APIs (§10.2)
 - [ ] UI: Library, Album, Import, Activity (§10.3)
 - [ ] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4)
-- [ ] Trash, restore, retry (§4.3, §6.4)
+- [~] Trash, restore, retry (§4.3, §6.4) — trash and restore in the catalog; retry with the HTTP API
 
 ## Phase 6 — Operations
 
@@ -437,8 +437,8 @@ How it maps to DESIGN.md:
   - An M4A counts whatever its brand. Extra non-audio streams are refused.
   - Encryption is detected from packet side data (N-077).
 - **§8.4, §7.6: `AudioDigest`.**
-  - The command is §8.4's with `-err_detect crccheck+explode` (TO CONFIRM)
-    and `-reinit_filter 0` (N-074).
+  - The command is §8.4's with `-err_detect crccheck+explode` (confirmed by
+    the owner) and `-reinit_filter 0` (N-074).
   - A decoded length that differs from the one FLAC STREAMINFO or an MP3
     Xing/Info/VBRI header declares is refused (N-078).
   - The digest is comparable only on the same binary and machine, which §8.4
@@ -680,8 +680,170 @@ scripts/dev.sh go test -race -count=20 -run 'TestTags|TestVerify|TestDescribe|Te
 docker build --target build-tags .           # the helper and its unit tests alone
 ```
 
-**Open for the owner:** N-090 (ID3 in FLAC), N-091 (covers between 16 and
-20 MiB in FLAC), N-092 (invalid UTF-8 in unmanaged fields).
+**Owner decisions of 2026-09-23, to implement:** N-090 (ID3 in FLAC: stripped
+by a declared rule, a helper change), N-091 (a per-format embeddable cover
+limit, checked when a cover is chosen: the catalog's `CoverFits` hook exists,
+the adapter's function comes with the importer), N-092 (the importer refuses
+invalid UTF-8 in unmanaged fields).
+
+### `internal/store` — transaction runner and catalog lock (§5.3, §6.2, §6.4) ✔
+
+The only way the queue and the catalog open a transaction (N-095).
+
+| Function | Role |
+|---|---|
+| `InCatalogTx(ctx, pool, fn(*CatalogTx) error)` | READ COMMITTED; first statement `pg_advisory_xact_lock` with the constant key `mlcatalg` (§5.3), distinct from `mlmigrat` |
+| `CatalogTx` | the query methods of a `*Queries` held in an unexported field, so only `InCatalogTx` can build a usable one: every catalog or queue write takes one, so the single lock is enforced by the compiler (N-095) |
+| `InSnapshotTx(ctx, pool, fn(*Queries) error)` | REPEATABLE READ without the lock: the claim and its snapshot (§6.2, N-096) |
+| `IsFatal(err)` | `store_commit_uncertain` or `store_connection_lost`: the process must stop and restart (§6.4) |
+| `CodeCommitUncertain`, `CodeConnectionLost`, `CodeRetriesExhausted`, `CodeCanceled` | the runner's stable codes |
+| `pgtest.NewProxy` | a TCP proxy that loses a COMMIT's answer, cuts before a COMMIT, or cuts every connection, against the real server (N-108) |
+
+- 40001 and 40P01 rerun the whole short transaction, at most three more times,
+  with jitter; then `store_retries_exhausted` (not fatal).
+- No answer to a COMMIT is always `store_commit_uncertain`, never retried:
+  pgx's `SafeToRetry` is wrong there (N-109). The COMMIT runs to its end even
+  if the caller is cancelled. An answer that ends the session (severity
+  FATAL or PANIC, such as 57P01) is uncertain too (N-113).
+- A lost connection before the COMMIT is `store_connection_lost`; the
+  connection state is read before the rollback releases it (N-111).
+- sqlc: `sql/catalog.sql` and `sql/jobs.sql`; `COPY` for tracks and
+  attachments. No schema change: `00001` is untouched.
+
+Tests on real PostgreSQL 17, the wire failures through the proxy:
+- the key is held from the first statement, another session cannot take it,
+  a second catalog transaction waits for the first (seen in `pg_locks`), and
+  the migration lock is independent;
+- a real 40001 (a commit after the snapshot, then `FOR UPDATE`) runs the
+  transaction twice, and the second run sees the commit;
+- a real deadlock between two transactions runs the victim again (3 runs);
+- four runs, then `store_retries_exhausted` keeping the 40001;
+- other errors (a Go error, 23505) are returned after one run;
+- a deferred 23505 at COMMIT is an ordinary error, not fatal;
+- a COMMIT blocked on a deferred unique check whose backend is terminated
+  (`pg_terminate_backend`, FATAL 57P01): uncertain, fatal, run once
+  (mutation-checked);
+- a lost COMMIT answer: uncertain, the row durable; a cut before the COMMIT:
+  uncertain, nothing durable; a cut in the middle: connection lost, nothing
+  durable; all fatal and run once;
+- an unreachable database: connection lost, `fn` never called;
+- cancellation before the begin and while waiting for the lock:
+  `store_canceled`, not fatal; a cancellation after `fn` returned: committed;
+- pgx's wrong `SafeToRetry` after a sent COMMIT, pinned.
+
+```sh
+scripts/check.sh ./internal/store/...
+scripts/dev.sh go test -race -count=20 ./internal/store/...
+```
+
+### `internal/jobs` — the durable queue (§6, §11.1 steps 5–6) ✔
+
+No job framework (§2.3): a job is a row, an attempt is `{JobID, Ticket}`, and
+the work is a function supplied by the caller.
+
+| Function | Role |
+|---|---|
+| `EnqueueRender(ctx, *CatalogTx, albumID)` | the single §6.3 upsert: `requested = nextval`, running stays running with its claim, anything else pending, error cleared, `queued_at = now` (N-098) |
+| `ClaimNext(ctx, pool, renderVersion)` | one REPEATABLE READ transaction: render, then scan, then import (§6.1), each by `queued_at, id`, `FOR UPDATE SKIP LOCKED`, `claimed = requested`; a render also loads its `RenderSnapshot` in the same transaction (§6.2) |
+| `RenderSnapshot` | the immutable value the planner will consume: artist, album (published state included), cover, tracks, attachments; no absolute path |
+| `FinishRender` / `RequeueRender` / `FailRender` | §6.4 completions of a render, conditioned on id, `running` and the claimed ticket; leaving running clears `claimed` |
+| `Finish(ctx, tx, kind, attempt, Result)` | the outcome of a scan or an import (`done`, `skipped`, `failed`), validated for the kind |
+| `LockStatus` / `Status.Runs` | the row locked for the import commit and for PREPARE |
+| `RecoverRunning`, `EnqueueStaleRenders(renderVersion)` | §11.1 steps 5 and 6 (not wired yet, N-107) |
+| `NewPool(pool, workers, renderVersion, Executor, log)`, `Pool.Run`, `Pool.Wake` | `WORKERS` goroutines (1..16), a 2 s poll plus the wake-up signal, claims one at a time (N-110), context shutdown, the first fatal error stops every worker and is returned |
+| `Warning`, `Overrides`, `EncodeWarnings`, `DecodeWarnings`, `DecodeOverrides` | closed types of `warnings` and `overrides` (§4.2, N-105) |
+| `Error` / `Code` | `job_attempt_stale`, `job_not_found`, `job_invalid_result`, `job_invalid_overrides`, `job_invalid_argument`, `job_db`; a fatal store code wins |
+
+Tests on real PostgreSQL 17 (albums as SQL fixtures):
+- 8 concurrent claimers on one job, 25 rounds: exactly one claim each round;
+  60 jobs and 8 claimers: each claimed exactly once;
+- the priority render, scan, import, then `queued_at`, then id;
+- coalescing: running keeps its claim while `requested` moves; the old
+  attempt requeues and can complete nothing more; the new one deletes;
+- every render completion with the current ticket and with a newer request,
+  and every completion with a wrong ticket or after the attempt ended
+  (`job_attempt_stale`, row unchanged); a failed render reactivated by an
+  enqueue; the error message clipped on a rune boundary;
+- `Finish` for 17 results, valid and invalid, with a wrong ticket and twice;
+- the snapshot of a full album equals the expected value although a change
+  of album, tracks and attachments was committed in the middle of the claim;
+- a real 40001 inside the claim reruns only the claim transaction;
+- the boot helpers: running to pending, the others untouched; stale and
+  never-published albums enqueued; current, failed, queued and trashed left
+  alone;
+- the pool: Wake with an hour's poll, the 2 s poll, 120 jobs on 16 workers
+  each run once with no 40001 between the workers (pgx tracer), shutdown
+  reaching the running job and no goroutine left, a fatal executor error and
+  a lost database stopping every worker;
+- the closed types, strict both ways.
+
+```sh
+scripts/check.sh ./internal/jobs/...
+scripts/dev.sh go test -race -count=20 ./internal/jobs/
+```
+
+### `internal/catalog` — domain transactions (§4, §5, §7.6, §10.1) ✔
+
+Every mutation runs in `store.InCatalogTx`; every output change bumps the
+revision, re-derives the claims and enqueues the render in the same
+transaction (§3.2 guarantee 6).
+
+| Function | Role |
+|---|---|
+| `New(pool, wake, CoverFits)` | the service; `wake` is `Pool.Wake`; `CoverFits` is the N-091 question, required |
+| `CommitImport(ctx, ImportCandidate)` | §7.6: the job not already completed (else its outcome, `AlreadyCompleted`); a known fingerprint makes it `skipped`, trashed or not; blobs, artist, album at revision 1, tracks, attachments, claims, render, job `done`; a domain rejection makes it `failed` and writes nothing else (N-102, N-103, N-106) |
+| `UpdateAlbum(ctx, id, ifMatch, AlbumUpdate)` | `PUT /api/albums/{id}`: exactly the current tracks, numbers permuted freely (deferred unique), no bump on a no-op, folder and reservation checks, another artist allowed |
+| `TrashAlbum` / `RestoreAlbum` | §4.3; the restore checks the folder and the reservations |
+| `RenameArtist(ctx, id, ifMatch, name)` | §4.3: the artist and every album bumped, every path reserved, all or nothing; no implicit merge |
+| `ReconcileClaims(ctx, *CatalogTx, albumID)` | the one claims function (§5.3), for PREPARE, FINALIZE and rebuild too: the union of desired (if active), journal and published paths on normalized keys; `path_reserved` names the owner |
+| `AlbumPath(artist, title)` | the desired path `<artist>/<album>` (§5.1) and its key, the two `folder_key`s joined |
+| `CheckFresh(ctx, *CatalogTx, snapshot, renderer)` | the four conditions of §6.3 for PREPARE (N-097, N-112) |
+| `Error{Code, Message, Details}`, `Code`, `AsError` | stable codes for `{code, message, details}` (§10.1); `Details` carries the owning album, the path, both names, the current revision |
+
+Tests on real PostgreSQL 17:
+- **import commit:** every row written, as expected; the same commit twice
+  and 8 times concurrently (one album); two jobs with one fingerprint
+  concurrently (one done, one skipped); a lost COMMIT answer through the
+  proxy, then the retry (`AlreadyCompleted`, one album, one render); a cut
+  before the COMMIT, then the boot's recovery and a new attempt; duplicates
+  in and out of the trash; the same bytes under another fingerprint
+  (blobs deduplicated); a folder conflict, casefold included, then a retry
+  with another title; the artist casefold and NFC rule; a sanitization-only
+  collision naming both artists; 42 validation cases and the exact limits;
+  recorded blobs (size, format, role, a format learned); stale attempts;
+  the cover asked for each audio format;
+- **8 concurrent imports of one new artist and title:** one done, seven
+  `album_folder_conflict`, never a database error (the lock's mutation test);
+- **revisions:** 428 and 412 with the current revision; a normalized no-op
+  without bump, render or wake-up; a change bumping and enqueueing; the old
+  unpublished path released; a refused change leaving no bump, render or
+  claim;
+- a swap and a three-way rotation of track numbers, one moved to disc 2;
+- the album moved to another artist, with a folder conflict first;
+- trash and restore, a conflict on restore, a rename in the trash;
+- the claims union through nine states (published, case-only rename, rename,
+  journal, trashed during the publication, FINALIZE, removal, restore); the
+  §5.3 rename example (B gets `path_reserved` naming A until A's old path is
+  retired); stray claims released, another album's claims never touched;
+- the artist rename, all or nothing, trashed albums included; conflicts by
+  casefold and by sanitization;
+- `CheckFresh`, each condition alone; fatal codes winning over domain codes.
+
+Mutation-checked, across the three packages: without the catalog lock, the
+ticket or `requested` conditions of each completion, the running case of the
+enqueue, the published path in the union or its preference order, the
+release rule (never, or also inside the union), the no-op detection,
+REPEATABLE READ, the pool's claim mutex, the uncertain commit, the retry
+count, the shape-only overrides decode, the fatal-code precedence, the cover
+check, the restore's folder check, the fingerprint lookup, the terminal-job
+check, the sanitization conflict, the claim order, two `CheckFresh`
+conditions, the claimed ticket, and the connection read before the rollback
+(race detector): each makes a test fail.
+
+```sh
+scripts/check.sh ./internal/catalog/...
+scripts/dev.sh go test -race -count=20 ./internal/store/... ./internal/jobs/ ./internal/catalog/
+```
 
 ---
 

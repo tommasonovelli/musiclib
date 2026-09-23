@@ -136,6 +136,10 @@ knows where PostgreSQL comes from:
   skip with a message.
 - `MUSICLIB_REQUIRE_DB=1`, set only in `test`, turns that skip into a failure:
   the gate can never pass without running them.
+- `pgtest.NewProxy` puts a TCP proxy between a test and that server, which
+  loses a COMMIT's answer, cuts the connection before a COMMIT, or cuts every
+  connection (§6.4, §12.2; NOTES.md N-108). It speaks the protocol without
+  TLS, so the URL must keep `sslmode=disable`, as both services set it.
 
 **app** (profile `app`): the server, `musiclibd`. The profile keeps plain
 `docker compose up` / `build` (the database during development) and the

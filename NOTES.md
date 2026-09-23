@@ -432,6 +432,10 @@ and to check the disk state at each point. §12.2 asks for real process
 crashes at named failpoints. That needs a child-process harness, which is
 phase 3. These names are the ones to use there.
 
+The same holds for `testHook` in `internal/jobs/claim.go` (round 4): a
+package-level named failpoint, nil in production, that must join the §12.2
+failpoint mechanism in phase 3.
+
 ### N-045 · ENOSPC is not tested on a really full filesystem — OPEN
 The `ENOSPC`/`EDQUOT` → `blob_no_space` mapping and its cleanup are tested
 by injecting `ENOSPC` at the `temp_synced` point. That point is realistic:
@@ -948,10 +952,10 @@ Consequences of the minimal configuration:
 - **Cost:** the build stage takes about 2.5 minutes on 12 CPUs, once per cache
   invalidation. The runtime image grows by 58 MB.
 
-### N-074 · Decoder options beyond the letter of §8.4 — TO CONFIRM (`crccheck`), DECIDED (the rest)
+### N-074 · Decoder options beyond the letter of §8.4 — DECIDED (`crccheck` confirmed by the owner, 2026-09-23)
 `decodeArgs` is §8.4's command plus three things.
 
-**1. `-err_detect crccheck+explode` instead of `explode` — TO CONFIRM.**
+**1. `-err_detect crccheck+explode` instead of `explode` — DECIDED (owner, 2026-09-23).**
 - In FFmpeg's flag syntax a bare `explode` *replaces* the defaults, and the
   FLAC decoder checks the frame CRC-16 only with `crccheck` (or `compliant`).
 - Measured on the pinned build: single-bit flips at 61 positions of a 3 s FLAC
@@ -964,8 +968,8 @@ Consequences of the minimal configuration:
   carry. What it can additionally refuse: an MP3 written with CRC protection
   whose CRCs are wrong (some old encoders). An MP3 with correct CRCs
   (`lame -p`) passes, as tested.
-- The owner confirms or reverts. Reverting is one word, and the tests "flac
-  with one flipped bit" would then fail.
+- The owner confirmed it on 2026-09-23. Reverting would be one word, and the
+  tests "flac with one flipped bit" would then fail.
 
 **2. `-reinit_filter 0` — DECIDED.**
 - Without it, when the decoded parameters change mid-stream, ffmpeg rebuilds
@@ -1036,7 +1040,7 @@ the server's environment) and `/` as working directory.
   - Stderr keeps the *first* 64 KiB (§8.5) and drains the rest; the last lines
     of a very verbose tool are lost.
 
-### N-077 · Probe classification: the readings of §7.2/§8.1 — DECIDED, one TO CONFIRM
+### N-077 · Probe classification: the readings of §7.2/§8.1 — DECIDED (the `other_stream` refusal confirmed by the owner, 2026-09-23)
 - **Classes:**
   - `audio`: supported;
   - `unsupported_audio`: it has audio, but is not supported;
@@ -1057,7 +1061,7 @@ the server's environment) and `/` as working directory.
   real `.m4a` files are not branded `M4A `, and §8.1 speaks of the container,
   not the brand.
 - **Streams other than audio and attached pictures (subtitle, data,
-  QuickTime chapter text tracks) — TO CONFIRM.** They make the file
+  QuickTime chapter text tracks) — DECIDED (owner, 2026-09-23).** They make the file
   `unsupported_audio` (`other_stream`). §8.1 lists only "no real video, no
   multistream audio". Refusing is the conservative reading: the file is
   visibly refused, rather than accepted with content that the tag writer and
@@ -1083,7 +1087,7 @@ the server's environment) and `/` as working directory.
   (ffprobe omits the field or prints `unknown`). The description depends on
   the FFmpeg version, which is part of `render_version`.
 
-### N-078 · Declared lengths: truncation that the decoder does not see — DECIDED, one TO CONFIRM, one ACCEPTED
+### N-078 · Declared lengths: truncation that the decoder does not see — DECIDED (the stale-header refusal confirmed by the owner, 2026-09-23), two ACCEPTED
 - **The finding:** an MP3 cut in the middle decodes with exit status 0. The
   demuxer drops the incomplete last frame silently, and nothing in ffmpeg
   turns that into an error.
@@ -1114,8 +1118,8 @@ the server's environment) and `/` as working directory.
 - **ACCEPTED:** an MP3 without a Xing/Info/VBRI header that is cut in the
   middle cannot be detected (no declared length). LAME writes the header by
   default, for CBR too.
-- **TO CONFIRM:** an MP3 whose Xing header is stale is refused as
-  "truncated". This happens with a file cut or joined by a tool that did not
+- **DECIDED (owner, 2026-09-23):** an MP3 whose Xing header is stale is
+  refused as "truncated". This happens with a file cut or joined by a tool that did not
   update the header. It is the conservative outcome, and the file is not
   lost: it stays in `/import`.
 - **ACCEPTED:** FFmpeg's gapless trimming drops everything past the declared
@@ -1455,7 +1459,17 @@ says only "valore assente significa rimozione". Since the DB column is a
 non-null boolean, false is the absence of the flag. `TagBool` reads "1",
 "0", "true" and "false", case-insensitively.
 
-### N-090 · ID3 tags inside a FLAC are refused as opaque — TO CONFIRM
+### N-090 · ID3 tags inside a FLAC — DECIDED (owner, 2026-09-23): stripped by a declared rule; implementation pending
+**Owner decision (2026-09-23):** the render strips ID3v2 and ID3v1 tags from
+a FLAC output, through a declared rule of the adapter, in the same way as
+the ID3v1 migration of MP3 is declared (§8.3): a constant of the helper's
+table, covered by fixtures, and excluded explicitly from the unmanaged
+comparison of `VerifyTags`. It is a change of `native/musiclib-tags` and of
+`media.VerifyTags` for a later round, and it changes the helper's version,
+so `render_version` (N-010). Until it is implemented the helper keeps
+refusing such a file (`foreign_tag`, `opaque_field`), as described below:
+nothing is lost meanwhile.
+
 §8.2 and §8.3 say nothing about ID3v2 or ID3v1 tags in a FLAC file. TagLib
 reads them and would rewrite them on save. The helper reports them as
 `foreign_tag`, not removed, so a render of such a file fails
@@ -1470,7 +1484,21 @@ end, unless that is the end of an APEv2 footer. A FLAC whose last frame
 happens to end with those bytes is refused, about 1 file in 16 million:
 ACCEPTED.
 
-### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — TO CONFIRM
+### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
+**Owner decision (2026-09-23):** a per-format limit of the embeddable cover,
+enforced when a cover is chosen (import) or uploaded or selected (the cover
+endpoints of §10.2), never discovered by a render. An image that does not
+fit stays an attachment (§7.4); it is only not selectable as the cover.
+
+**Done in round 4:** the catalog asks the question through `catalog.CoverFits`,
+a function given to `catalog.New`, once per audio format of the album
+(`CommitImport` today, the cover endpoints later). It invents no limit
+beyond "embeddable in every format of the album" (N-106). **Pending:** the
+function itself belongs to the tag adapter, which knows the limits (FLAC:
+the metadata block below, 16 MiB − 1 minus the picture header; MP3 and M4A
+in Phase 4); it is written and wired with the importer round. The helper's
+refusals below stay as the last line of defence.
+
 §8.5 accepts covers up to 20 MiB, but a FLAC metadata block holds at most
 16 MiB - 1: the picture structure and a MIME type of about 40 bytes, plus
 the image. Between the two, the render of a FLAC album fails with
@@ -1482,7 +1510,13 @@ drop the block). The owner decides whether:
 - such a cover should stay external only;
 - or the error should stay.
 
-### N-092 · Invalid UTF-8 in unmanaged Vorbis fields — TO CONFIRM
+### N-092 · Invalid UTF-8 in unmanaged Vorbis fields — DECIDED (owner, 2026-09-23); implementation in the importer round
+**Owner decision (2026-09-23):** the importer refuses such a file up front,
+with a typed error that names the file and the field, using
+`Inspection.Blocking()`. The render keeps refusing (`opaque_field`) as a
+second line; nothing is dropped silently. The import commit is compatible:
+it receives only files the importer accepted (N-106).
+
 A FLAC whose unmanaged field is not valid UTF-8 (Latin-1 tags from old
 tools) imports: the file and its audio are fine. It cannot be rendered,
 though: the field is opaque (N-085), and TagLib would empty it. The same
@@ -1531,3 +1565,276 @@ This round implements FLAC completely. For the other formats:
   `aART`, `©alb`, `trkn`, `disk`, `©day`, `©gen`, `cpil` and `covr` atoms,
   the sort atoms `sonm`, `soar`, `soaa` and `soal`, and the numeric `gnre`
   removed when the textual `©gen` is written (§8.2).
+
+---
+
+## `internal/store` transactions, `internal/jobs`, `internal/catalog` (2026-09-23, round 4)
+
+### N-095 · The transaction runner and the catalog lock live in `internal/store` — DECIDED
+`store.InCatalogTx` and `store.InSnapshotTx` are the only ways the queue and
+the catalog open a transaction (§5.3, §6.2, §6.4).
+- **The lock.** `InCatalogTx` is READ COMMITTED, and its first statement is
+  `pg_advisory_xact_lock(7884786317834415207)`, the ASCII `mlcatalg`. It is
+  distinct from the migration lock `mlmigrat` (N-053) and released by the
+  commit or the rollback. Every later statement of the transaction takes a
+  new snapshot, so it sees every commit made before the lock was granted.
+- **`store.CatalogTx`** embeds `*Queries` through an unexported alias
+  (`type queries = Queries`), so the query methods are promoted but no other
+  package can set or read the field: only `InCatalogTx` builds a usable one
+  (checked: `&store.CatalogTx{Queries: ...}` does not compile outside
+  `store`). The zero value is the only one another package can make, and it
+  has no connection: a query on it panics before any SQL. Every function that
+  writes the catalog or the queue takes a `*store.CatalogTx`, so the
+  compiler, not a convention, enforces "all mutations under the same lock"
+  (§5.3). The external tests reach the `*Queries` inside through
+  `store.CatalogQueries`, defined in `export_test.go` only. *Fixed after the
+  round 4 review: the first version embedded the exported `*Queries`, which
+  any package could fill with a bare pool.*
+- **`InSnapshotTx`** is REPEATABLE READ without the lock: the claim and its
+  snapshot (§6.2, N-096).
+- **Retries.** 40001 and 40P01 run the whole short transaction again, at most
+  3 more times ("fino a tre volte" read as three retries: four runs), with a
+  jitter in `[0, 5 ms << retry)`. Then `store_retries_exhausted`, which is not
+  fatal. `fn` must have no effect outside the transaction and must reset
+  what it reports; every caller does.
+- **Classification (§6.4):**
+
+  | Where | Failure | Result |
+  |---|---|---|
+  | begin | context ended | `store_canceled` |
+  | begin | anything else | `store_connection_lost` (fatal) |
+  | fn | context ended | `store_canceled` |
+  | fn | the connection closed, or the rollback failed | `store_connection_lost` (fatal) |
+  | fn | anything else | returned unchanged (retried if 40001/40P01) |
+  | commit | a `*pgconn.PgError` with severity FATAL or PANIC (the server ended the session) | `store_commit_uncertain` (fatal, N-113) |
+  | commit | any other `*pgconn.PgError` (the server answered and rolled back) | returned (retried if 40001) |
+  | commit | `pgx.ErrTxCommitRollback` | returned |
+  | commit | anything else | `store_commit_uncertain` (fatal, N-109) |
+
+  The COMMIT runs with `context.WithoutCancel`: a cancellation after `fn`
+  returned does not interrupt it (tested). A cancellation while waiting for
+  the lock is `store_canceled`; pgx then sends a CancelRequest and closes the
+  session, so the server does not keep waiting (tested).
+- **`store.IsFatal`** is true for the two fatal codes. A fatal error wraps
+  `fn`'s error, which may be a domain error, so `catalog.Code` and
+  `jobs.Code` return the fatal code first (mutation-checked).
+- **Not wired yet:** the §6.4 reaction (stop the mutations and the workers,
+  exit, Docker restarts). `jobs.Pool.Run` returns the first fatal error;
+  `cmd/musiclibd` must exit on it when the pool is started (N-070, N-107).
+
+### N-096 · The claim does not take the catalog lock; every other queue write does — DECIDED
+A REPEATABLE READ snapshot taken before waiting for a lock would already be
+stale when the lock is granted, and SKIP LOCKED would be pointless under a
+global lock. The claim is still correct without it, because every catalog
+change of an album touches its render row in the same transaction
+(`EnqueueRender`):
+- a change in progress holds the row, so the claim skips it (SKIP LOCKED);
+- a change committed after the claim's snapshot makes `FOR UPDATE` fail with
+  40001, and the claim runs again (tested with a real concurrent commit);
+- a change that reaches the row after the claim waits for the claim's commit,
+  then keeps the job running with a newer `requested` (§6.3).
+
+The completions and the boot helpers take the catalog lock, which is
+conservative: FINALIZE and PREPARE hold it anyway.
+
+### N-097 · `CheckFresh` lives in `internal/catalog`, not in `internal/jobs` — DECIDED
+The four-condition recheck of §6.3 needs the claims union, which is the
+catalog's (`ReconcileClaims`), and the catalog already depends on the queue,
+not the reverse. It checks, in this order: the job running with the
+snapshot's ticket and `requested == claimed` (a missing job counts as a
+stale ticket), the album's revision, the renderer, and that the album owns
+every key of its union (`StaleClaims`; extra rows are tolerated here, since
+`ReconcileClaims` removes them at the next change). The reviewer may prefer
+it elsewhere; moving it is mechanical. The behaviour on `StaleClaims` is
+N-112.
+
+### N-098 · `EnqueueRender` lives in `internal/jobs` — DECIDED
+§2.3 lists "enqueue" under `catalog`, the assignment under `jobs`. It is
+still the single implementation (§13.2): `jobs.EnqueueRender(ctx,
+*store.CatalogTx, albumID)`, called by the catalog inside its transactions
+and by the boot helper of step 6. Flagged for the reviewer.
+
+### N-099 · `tracks.source_path` and `attachments.rel_path` are relative to the candidate's root — DECIDED
+Not to `/import`: `jobs.source_rel` locates the candidate. This is also the
+"percorso relativo originale" of the fingerprint (§7.6), and it keeps the
+paths stable if the same candidate is imported from another place.
+
+### N-100 · An empty album genre is stored as NULL — DECIDED
+§4.1 distinguishes NULL and `""` for a *track* genre (inherit or explicitly
+none). An album inherits from nothing, so both mean "no genre" and are
+stored as NULL; saving `""` over NULL is a no-op (tested).
+
+### N-101 · Artists are looked up by `folder_key` — DECIDED, one ACCEPTED
+- `artists.folder_key` is unique, so the folder is the identity. An existing
+  artist is reused only if `names.Key(name)` equals `names.Key` of its name
+  (§7.6 "solo se"), keeping the existing spelling. A different name with the
+  same folder is `artist_folder_conflict` with both names; nothing is merged.
+- **ACCEPTED:** two names equal after casefold whose folders differ only
+  through the §5.2 truncation hash (the hash covers the case-sensitive
+  segment; names of about 180 bytes and more) become two artists with two
+  folders. Nothing is merged and no path collides.
+
+### N-102 · Blob rows at import — DECIDED
+- An existing row with a NULL format takes the format the importer read
+  from the content; a known format is never changed.
+- Two different known formats are `invalid_blob_format`; the same hash with
+  another size is `blob_mismatch` (corruption or a bug; §7.5 already
+  verifies the bytes).
+- The roles (track: audio; cover: JPEG/PNG; LRC: no format) are checked
+  against the merged format.
+- The candidate lists every blob exactly once, and every listed blob is used.
+
+### N-103 · A skipped duplicate import — DECIDED
+`state = skipped`, `result_album_id` = the existing album, `error_code =
+duplicate_import`, and a message that says "in the trash: restore it
+instead" when the album is trashed (§7.6: "se nel cestino, proporre il
+ripristino"). `skipped` needs a code and a message like `failed`: §4.2 has
+no other column for the reason.
+
+### N-104 · Every effective change bumps and enqueues, trashed albums included — DECIDED
+Renaming a trashed album (§4.3 allows it) or renaming its artist bumps its
+revision and enqueues its render: the ETag must move (§10.1), and the render
+of a trashed album is its removal, which is idempotent. A save with no
+effective change (texts compared after normalization) does neither (§4.3).
+
+### N-105 · Closed warning codes and overrides — DECIDED
+- `jobs.Warning{Code, Message, Path}` with four codes for now
+  (`unassigned_file`, `tracks_renumbered`, `year_discordant`,
+  `tag_conflict`); the importer adds its own as constants, never as free
+  strings. Encode and decode are strict (unknown fields, codes, trailing
+  data).
+- `jobs.Overrides{Artist, Title}`: `Encode`, the only writer, requires
+  normalized texts. `DecodeOverrides` checks the closed shape only. The
+  first version also rejected non-normalized values; since the claim decodes
+  the overrides inside its transaction, one bad row would have aborted every
+  claim and starved every import queued after it. The import commit
+  normalizes the album's artist and title anyway (tested,
+  mutation-checked).
+- **Remaining risk:** a row whose `overrides` has a malformed *shape* still
+  aborts every import claim, because it stays at the head of the queue. Only
+  a bug or a manual edit of the database can write one (`Encode` is the only
+  writer).
+
+### N-106 · What the import commit validates, and what the importer round must do — DECIDED
+- The commit validates the whole closed input (§7.6): the fingerprint, the
+  texts (§5.2), years, discs and numbers, duplicate numbers, the blob list,
+  the roles, the cover (JPEG/PNG, at most 20 MiB, §8.5), the LRC association
+  (§7.4: same directory, `.lrc`, same stem by NFC and casefold, exactly one
+  track), unique source paths, attachment collisions after normalization
+  (file/directory included, §5.2), and the limits of §7.2 (1,000 tracks,
+  10,000 files).
+- **N-091:** the cover must fit every audio format of the album, asked
+  through `catalog.CoverFits`, once per format, in a fixed order. The
+  catalog knows no per-format limit.
+- It never inspects media. **Requirements for the importer round:** decode
+  and verify everything before calling it (§7.6 `AudioDigest`), refuse the
+  N-092 files, set `Blob.Format` from the content, check the 40 Mpixel limit
+  and the full decode of the cover (§8.5, N-087), and supply `CoverFits`.
+- A domain rejection makes the job `failed` with its code in the same
+  transaction, and writes nothing else; any other error aborts the
+  transaction.
+
+### N-107 · Nothing is wired into `cmd/musiclibd` yet — DECIDED
+- §11.1 step 5 (`jobs.RecoverRunning`) must follow the journal recovery of
+  step 4, which does not exist yet: FINALIZE of a recovered publication
+  completes its job by ticket, which needs the job still running.
+- Step 6 (`jobs.EnqueueStaleRenders`) needs `render_version` (N-010).
+- The pool (`jobs.NewPool`) has no executors yet. **Requirement for the
+  executor round:** every non-fatal path of an executor must end in a
+  completion (`Finish`, `Fail` or `Requeue`). Otherwise the job stays
+  `running` until the next boot (§11.1 step 5), and since an enqueue keeps a
+  running job running (§6.3), later edits to that album would not render.
+- FINALIZE of a recovered publication will find its job through the
+  album's single render row: the journal holds `album_id` and `ticket`, not
+  the job id.
+- `POST /api/albums/{id}/render` (a forced enqueue that checks the revision
+  seen without bumping it, §10.2) is a small catalog function for the HTTP
+  round.
+
+### N-108 · `pgtest.Proxy` loses the database on the wire, against the real server — DECIDED
+There is no mock of the commit. The proxy understands the v3 protocol without
+TLS and can let the server commit and drop the answer
+(`LoseNextCommitAck`), drop the COMMIT itself (`CutBeforeNextCommit`), or cut
+every connection (`CutAll`). It is used by the runner's tests and by the
+import commit's lost-acknowledgement test (§7.6, §12.2).
+
+### N-109 · pgx calls a failure after a sent COMMIT "safe to retry" — RESOLVED
+*Found by `TestLostConnection` on 2026-09-23.* In pgx v5.11.0, when the answer
+to a COMMIT is lost, `MultiResultReader.NextResult` ignores the read error of
+`peekMessage` (which has already closed the connection), and the next
+`receiveMessage` returns `connLockError{"conn closed"}`, whose
+`SafeToRetry()` is always true ("a lock failure by definition happens before
+the connection is used"). So a COMMIT that the server did commit was
+classified as "nothing sent, nothing committed". Both codes are fatal, so the
+process would have restarted anyway, but the code claimed a certainty it did
+not have. The runner no longer consults `SafeToRetry` at commit: any failure
+without an answer from the server is `store_commit_uncertain`.
+`TestPgxSafeToRetryIsWrongAfterASentCommit` pins the pgx behaviour and logs
+when a pgx upgrade changes it; mutation-checked.
+
+### N-113 · A COMMIT answered with FATAL or PANIC is uncertain, not a rollback — RESOLVED
+*Found by the round 4 review.* The runner treated every `*pgconn.PgError` at
+COMMIT as "the server answered and rolled back". A PgError with severity
+FATAL or PANIC means that the server ended the session: 57P01 from
+`pg_terminate_backend` or a fast shutdown, 57P02, 57P03. pgconn closes the
+connection when it reads one. For example, a COMMIT blocked on the deferred
+unique check of tracks `(album_id, disc, no)` whose backend is terminated
+became an ordinary error of `CommitImport` or `UpdateAlbum`; the pool
+reconnected and the process never restarted, against §6.4 (the loss of the
+connection is never a normal error, no partial reconnection). With
+synchronous replication, a termination while COMMIT waits for the standby
+follows the local commit, so the outcome is not even certain.
+
+Such an error is now `store_commit_uncertain`, fatal and never retried. It
+is decided by the severity (`SeverityUnlocalized`, else `Severity`), never by
+`tx.Conn().IsClosed()`: the connection is already back in the pool when
+`Commit` returns (N-111). `TestSessionEndedAtCommitIsUncertain` blocks a real
+COMMIT on a deferred unique check that waits for another session's
+uncommitted row, terminates its backend, and wants the fatal code wrapping
+57P01 and one run. Mutation-checked: with the severity test disabled, the
+test fails with the raw 57P01 (code "", not fatal).
+
+### N-110 · REPEATABLE READ claims conflict with each other; the pool claims one at a time — DECIDED
+`FOR UPDATE SKIP LOCKED` skips only rows locked *now*. In REPEATABLE READ, a
+job that another claimer claimed and committed after this snapshot is a
+serialization failure (40001), not a skipped row. Concurrent claimers all
+race for the head of the queue: with 8 raw claimers, some exhausted their
+three retries; with 16 workers, 35 serialization failures in one run of
+`TestPoolExecutesEachJobOnce`.
+
+§6.2 requires the claim and the snapshot in one REPEATABLE READ transaction,
+so that stays. Inside the process (one instance per database, §2.2) the pool
+serializes its workers' claims with a mutex: a claim takes milliseconds, the
+work stays parallel, and the §6.4 retries are left for the rare conflict with
+a catalog change. The database guarantee of one claim per job does not rely
+on the mutex (tested with raw concurrent claimers). A test counts the 40001s
+of the pool's statements with a pgx tracer and wants none (mutation-checked).
+
+### N-111 · The runner read a connection it had already released — RESOLVED
+*Found by the race detector on 2026-09-23.* `abort` called
+`tx.Conn().IsClosed()` after `tx.Rollback`, but a pgxpool transaction
+releases its connection inside `Rollback`, and another goroutine may have
+acquired it at once. It now reads the state before the rollback
+(mutation-checked with `-race`).
+
+### N-112 · When PREPARE finds `StaleClaims`: fail the render, never requeue — TO CONFIRM (proposal for the publish round)
+§6.3 says that superseded work goes back to pending. For a stale ticket,
+revision or renderer that is right: a newer request or renderer exists, and
+the next build answers it. `StaleClaims` is different: nothing in the queue
+changes the claims, so a requeued job would be claimed, rebuilt in full and
+refused again, forever. Every catalog change re-derives the claims in its
+own transaction, so `StaleClaims` means that something outside the rules
+happened (a manual edit, a bug, an interrupted rebuild).
+
+Proposal, all in PREPARE's transaction:
+1. Try `catalog.ReconcileClaims` for the album. If it succeeds, the missing
+   claims were free and are now held: PREPARE continues (the build does not
+   depend on the claims).
+2. If it fails with `path_reserved`, call `jobs.FailRender` with that code
+   and a message naming the owning album, and discard the build. The job is
+   `failed` and visible (§6.4); a later change of either album, or a retry,
+   enqueues it again. No journal is written.
+3. Doctor (§11.3) reports such a conflict as structural damage of the
+   reservations.
+
+The more conservative alternative is (2) alone, without the repair of (1).
