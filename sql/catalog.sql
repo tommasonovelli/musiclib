@@ -119,3 +119,50 @@ WHERE path_claims.album_id = EXCLUDED.album_id;
 
 -- name: DeleteClaim :execrows
 DELETE FROM path_claims WHERE path_key = @path_key AND album_id = @album_id;
+
+-- The API's reads (§10.1, §10.2). They run in one REPEATABLE READ snapshot
+-- (store.InSnapshotTx), so that a representation and its revision agree.
+-- Orders are deterministic and byte-wise (COLLATE "C"), independent of the
+-- database's locale.
+
+-- Every artist of the catalog, those without albums included (owner
+-- decision N-146: the list feeds the album editor's artist selector).
+-- name: ListArtists :many
+SELECT id, name, folder_key, revision FROM artists
+ORDER BY folder_key COLLATE "C", id;
+
+-- The desired album (§10.2 GET /api/albums/{id}): no published column.
+-- name: GetAlbumView :one
+SELECT al.id, al.artist_id, ar.name AS artist_name, al.title, al.year, al.genre, al.compilation,
+       (al.deleted_at IS NOT NULL)::boolean AS trashed, al.revision,
+       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+LEFT JOIN blobs cb ON cb.hash = al.cover_hash
+WHERE al.id = $1;
+
+-- name: ListAlbumTrackViews :many
+SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
+       t.blob_hash, b.size AS blob_size, b.format AS blob_format, t.lyrics_hash
+FROM tracks t
+JOIN blobs b ON b.hash = t.blob_hash
+WHERE t.album_id = $1
+ORDER BY t.disc, t.no, t.id;
+
+-- name: ListAlbumAttachmentViews :many
+SELECT a.id, a.rel_path, a.blob_hash, b.size AS blob_size, b.format AS blob_format
+FROM attachments a
+JOIN blobs b ON b.hash = a.blob_hash
+WHERE a.album_id = $1
+ORDER BY a.path_key COLLATE "C", a.id;
+
+-- The processing state (§10.2 GET /api/albums/{id}/status): revisions,
+-- published renderer and path (relative to library/), the render job.
+-- name: GetAlbumStatus :one
+SELECT al.id, al.revision, (al.deleted_at IS NOT NULL)::boolean AS trashed,
+       al.published_path, al.published_revision, al.published_renderer,
+       j.id AS job_id, j.state AS job_state, j.error_code AS job_error_code,
+       j.error_message AS job_error_message, j.queued_at AS job_queued_at, j.updated_at AS job_updated_at
+FROM albums al
+LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
+WHERE al.id = $1;

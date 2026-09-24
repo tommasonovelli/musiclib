@@ -3217,3 +3217,318 @@ N-045 ask for a really full filesystem. The gate container has no
   directory. The helper now waits for `work/render` and `work/retired` to
   empty before it cancels. This is not a product bug: boot step 5 resumes
   the cleanup (§9.3).
+
+---
+
+## Round 11: `internal/http`, the conditional API, the security boundary (2026-09-24)
+
+### N-145 · The security boundary of §10.4 — DECIDED
+`API.checkBoundary` runs on every `/api` request, before routing and
+before the 503 availability check, so that a misdirected request learns
+nothing about the server's state:
+- **Host** must equal the host of `PUBLIC_ORIGIN`, including its port,
+  compared ASCII case-insensitively (`music.lan:8080`). Anything else is
+  `421 host_not_allowed`: another name, another port, the port omitted,
+  or the bare IP when the origin names a host. This is the defense
+  against DNS rebinding. 421 (RFC 9110 §15.5.20, "not authoritative for
+  this target") was chosen over 403 because it says what is wrong.
+- **Origin**, when present, must equal `PUBLIC_ORIGIN` byte for byte. The
+  following are all `403 origin_not_allowed`:
+  - `null`;
+  - another origin;
+  - another scheme;
+  - a trailing slash;
+  - an empty value;
+  - two Origin fields.
+
+  Non-browser clients may omit it.
+- **`X-Musiclib-Request: 1`**, exactly one field with exactly that value,
+  on every method other than GET and HEAD (OPTIONS included); otherwise
+  `403 request_header_required`. A page of another origin cannot add the
+  header without a CORS preflight. The preflight itself fails at this
+  check (it carries no such header), and no CORS header is ever sent.
+- **Headers**: `X-Content-Type-Options: nosniff` on every response of
+  the server (`apihttp.SecurityHeaders` wraps the whole mux, health
+  included); `Cache-Control: no-store` on every `/api` response. The
+  catalog representations are revalidated by If-Match, not by caching,
+  and no `If-None-Match` / 304 support is needed in v1.
+- **The health endpoints are exempt from the Host and Origin checks.**
+  They are GET-only and carry no catalog data. They must answer the Compose
+  healthcheck (`musiclibd healthcheck` connects to the loopback address
+  with that Host) and any probe that addresses the container by IP. The
+  healthcheck subcommand is unchanged. The one piece of state they expose
+  beyond up/down is the album and build ids of a suspended publication
+  (N-135), which an attacker page could read through rebinding: judged
+  harmless.
+- `PUBLIC_ORIGIN` is still validated at startup by `cmd/musiclibd`
+  (canonical form); `apihttp.New` re-checks the canonical form.
+- Mutation-checked, each making a test fail: the Host check removed; the
+  Origin check removed; `Origin: null` accepted; the header check removed;
+  any header value accepted.
+
+### N-146 · `GET /api/artists` lists every artist — DECIDED (owner decision, 2026-09-24)
+**Owner decision (2026-09-24):** `GET /api/artists` lists **all** the
+artists of the catalog, including those just created with
+`POST /api/artists` and still without an album. It is the list the Phase 5
+artist selector of the album editor uses (§10.3: "scegliere una riga
+esistente o crearne una"). §4.3's "Gli artisti senza album non vengono
+mostrati nell'elenco principale" concerns the library view, where the
+artists appear through their albums. It does not concern this list.
+- **The query** is `ListArtists`: `SELECT ... FROM artists ORDER BY
+  folder_key COLLATE "C", id`. The order is byte-wise on the folder key,
+  so case-insensitive in effect, and deterministic whatever the database
+  locale.
+- **The first version**, reviewed in round 11 and marked TO CONFIRM,
+  listed only artists with at least one album (a trashed one counting).
+  It is superseded.
+- **Tests:** `catalog.TestListArtists` (one without albums, a trash-only
+  one, the byte order) and `http.TestArtists` (the artist just created is
+  listed).
+
+### N-147 · If-Match: the parsing rules — DECIDED
+`ifMatch(header, kind, id)` in `internal/http/etag.go`. The ETags are
+`"album:<uuid>:<revision>"` and `"artist:<uuid>:<revision>"` (strong,
+§10.1). The resource whose ETag is required is passed by the caller: the
+cover, attachment, track and lyrics endpoints of later rounds will pass the
+album's (§10.2).
+
+| If-Match | Result |
+|---|---|
+| absent, empty, only commas | 428 `precondition_required` |
+| `*` | 428: it would make the change unconditional, a blind last write (§10.1) |
+| not a list of entity tags (RFC 9110 §8.8.3: unquoted, `w/`, a quote, space or control inside, `*` mixed with tags) | 400 `invalid_if_match` |
+| exactly one strong tag of this resource, among any others | its revision, compared by the catalog in the transaction of the change |
+| no strong tag of this resource (weak tags, which never match under If-Match's strong comparison; tags of other resources or kinds; a revision that is 0, negative, has a leading zero or overflows) | 412 `precondition_failed` |
+| two or more strong tags of this resource | 400 `invalid_if_match`: the catalog compares one revision |
+
+- **The 412 of a non-matching tag** goes through the catalog: the
+  handler passes the revision `-1`, which no album or artist has, and
+  the catalog compares it in the transaction after reading the resource.
+  So a missing resource is still 404 (RFC 9110 §13.2.1: a precondition
+  is not evaluated when the answer would not be 2xx or 412), and the 412
+  carries the current revision in `details.revision` like any stale
+  revision.
+- **ETag header:** it is sent on GET and HEAD of a catalog resource. It
+  is **not** sent on the answers to PUT, DELETE and POST. RFC 9110
+  §9.3.4 forbids a validator in a PUT answer when the saved
+  representation differs from the one sent, and the catalog normalizes
+  texts (NFC, trim). Those answers carry the resource as it is after the
+  change, with its `revision` and `etag` in the body.
+- **The status resource** (`/status`) has no ETag (§10.1).
+- **The 412 message** for a tag that names no revision of the resource
+  says "has changed or does not match the ETag sent: reload it". The
+  sentinel `-1` never appears in a message (review nit, round 11). A
+  stale revision still says "is at revision N, not M: reload it".
+- **Order of the checks: validation before the precondition (DECIDED,
+  review nit, round 11).** The order is:
+  1. If-Match is checked for presence and syntax (428, 400);
+  2. the body is checked, by the HTTP layer (400, 413, 415, 422) and by
+     the catalog's normalization before its transaction (422:
+     `UpdateAlbum`, `RenameArtist`, `CreateArtist`);
+  3. the transaction reads the resource (404) and compares the revision
+     (412).
+
+  So a stale If-Match with an invalid body is 422, not 412, and a
+  missing resource with an invalid body is 422, not 404. RFC 9110 leaves
+  the order of the precondition and the checks on the content to the
+  server. The rationale:
+  - the content checks need no database and take no catalog lock, so an
+    invalid request is refused without queuing behind the lock (§5.3:
+    the lock serializes decisions, not validation);
+  - the answer to fix first is the same either way: after the 422 the
+    client corrects the body, and the retry meets the 412 or the 404;
+  - no change is ever applied on a stale revision, which is what §10.1
+    requires: the revision check stays in the transaction of the change.
+
+  `http.TestUpdateAlbum` sends valid bodies for its 412 and 404 cases.
+  Restructuring would mean moving the normalization inside the
+  transaction, which is not trivial, and nothing gains from it.
+- Mutation-checked: an absent If-Match accepted; `*` accepted.
+
+### N-148 · Strict JSON bodies — DECIDED
+`readObject` in `internal/http/body.go`:
+- **Content-Type** must be `application/json`, with no parameter other
+  than `charset=utf-8` (any case). Empty parameters (`application/json;`)
+  are valid per RFC 9110 §8.3.1. Anything else is 415. This also refuses
+  the form encodings a cross-site form could send.
+- **Size:** 16 MiB (`MaxBodyBytes`) is read; one byte more is
+  `413 body_too_large` with `details.limit`, whether or not a
+  Content-Length announced it (`http.MaxBytesReader`).
+- **400: the body is not exactly one well-formed UTF-8 JSON value:**
+  - `invalid_utf8`: invalid bytes (`utf8.Valid`), or a `\u` escape that
+    is a lone UTF-16 surrogate, which `encoding/json` would silently turn
+    into U+FFFD;
+  - `invalid_json`: syntax, an empty body, a second value or anything
+    after the first;
+  - `duplicate_key`: the same key twice in one object at any depth,
+    compared after unescaping, with the JSON path in `details.field`.
+    `encoding/json` keeps the last silently, so this check is a walk of
+    the tokens of `json.Decoder.Token`, one small function
+    (`scanTokens`). The standard library's tokenizer does the syntax.
+- **422: the value does not fit the endpoint's schema:**
+  - `unknown_field`;
+  - `missing_field`;
+  - `invalid_field` (wrong type, null where not allowed, a fraction or
+    exponent for an integer, an id not in canonical form);
+  - `duplicate_id` (a track listed twice, §10.1).
+
+  In each case the path is in `details.field`, for example
+  `tracks[1].genre`.
+- **Exact keys.** The fields are read from `map[string]json.RawMessage`
+  by exact key. `encoding/json`'s case-insensitive matching of struct
+  fields (`Title`, `TITLE` and even `ſ`-folded keys would land on `title`)
+  is never used.
+- **Every key is required.** A nullable field is sent as `null`, never
+  omitted, so a full-replacement PUT cannot clear a value by accident.
+- **Ids** are accepted only in the canonical form the API writes (36
+  lowercase characters, 8-4-4-4-12). Braces, `urn:uuid:`, uppercase and
+  the hyphenless form are refused, in bodies (422) and in paths (404).
+- **Bodiless endpoints** refuse a body: DELETE, `/restore` and `/render`
+  answer `400 body_not_allowed`.
+- **Tests:**
+  - table tests for every rule;
+  - the 16 MiB boundary both ways;
+  - `FuzzCheckJSON`: whatever is accepted is one valid JSON value in
+    valid UTF-8 whose decoding adds no replacement character. It ran
+    about 3.4M executions clean. It found a bug in the harness only (a
+    number beyond float64), which is kept as a seed.
+- Mutation-checked: the duplicate-key check removed; trailing values
+  accepted; the surrogate check removed; a duplicate track id accepted.
+
+### N-149 · Error codes and statuses — DECIDED
+- **The body** is always `{code, message, details}`: `details` is an
+  object, `{}` when empty.
+- **Codes** are the stable codes of the typed errors (catalog, names,
+  store), or the HTTP layer's own.
+- **Messages** come from the typed errors' own messages, never from
+  `err.Error()`: the wrapped causes (pgx, names) are logged, not sent.
+- **Status table** (`statusOf`, pinned by `TestStatusTable`):
+
+| Status | Codes |
+|---|---|
+| 400 | `invalid_json`, `invalid_utf8`, `duplicate_key`, `invalid_if_match`, `body_not_allowed` |
+| 403 | `origin_not_allowed`, `request_header_required` |
+| 404 | `not_found` (route), `album_not_found`, `artist_not_found` (a malformed id too) |
+| 405 | `method_not_allowed`, with `Allow` |
+| 409 | `path_reserved`, `album_folder_conflict`, `artist_folder_conflict`, `artist_exists` |
+| 412 | `precondition_failed` (`details.revision`: the current one) |
+| 413 | `body_too_large` |
+| 415 | `unsupported_media_type` |
+| 421 | `host_not_allowed` |
+| 422 | the names text codes (`text_empty`, `text_too_long`, `text_control_char`, `invalid_utf8` from the catalog), `invalid_year`, `invalid_disc`, `invalid_track_number`, `duplicate_track_number`, `track_list_mismatch`, `no_tracks`, `invalid_cover`, `attachment_path_collision`, `lyrics_association`, `invalid_blob_format`, `unknown_field`, `missing_field`, `invalid_field`, `duplicate_id` |
+| 428 | `precondition_required` |
+| 500 | `internal` for `catalog_db`, `job_db` and any code not in the table; the message says nothing more, the log has the cause |
+| 503 | `not_ready`, `shutting_down`, `publish_illegal_state` (API unavailable); `store_connection_lost`, `store_commit_uncertain`, `store_retries_exhausted`, `store_canceled` with fixed messages |
+
+- **One exception:** `artist_not_found` caused by the `artist_id` of a
+  `PUT /api/albums/{id}` body is 422. The album exists; its content names
+  a missing artist.
+- **§6.4 at the API.** A fatal store error in any request (a lost
+  connection, an uncertain commit, read or write):
+  - the request is answered 503 with the store code;
+  - the API disables itself (every later request gets the same 503);
+  - `Config.Fatal` is called once. `cmd/musiclibd` ends the run with
+    that error, so the process exits 1 and Docker restarts it. This is
+    the same path as a fatal error in a worker, so a lost commit answer
+    at the API cannot be followed by more mutations of the same process.
+  - Tested in process (`TestDatabaseLossIsFatal`: the database refusing
+    connections, and a COMMIT answer lost through `pgtest.Proxy`) and on
+    the real server (`TestAPIFatalErrorStopsTheProcess`,
+    `TestDatabaseLossStopsTheProcess`).
+  - Mutation-checked: `Fatal` not called; the run ignoring it.
+
+### N-150 · Representations, and no database text in a job's error — DECIDED
+**Representations** (deterministic: structs in declared order, maps
+with sorted keys; the same state is the same bytes, tested):
+- **Artist:** `{id, name, revision, etag}`. No derived counter (§10.2).
+- **Album:**
+  - `{id, revision, etag, artist_id, artist_name, title, year, genre,
+    compilation, trashed, cover, tracks, attachments}`;
+  - `cover` is `{hash, size, format}` or null;
+  - a track is `{id, disc, no, title, artist, genre, source_path, blob,
+    lyrics_hash}`, ordered by disc, number, id;
+  - an attachment is `{id, rel_path, blob}`, ordered by path key.
+  - `artist_name` is part of the album's desired output, and an artist
+    rename bumps every album (§4.3), so the album's ETag covers it.
+  - There are no published columns: they belong to the status.
+  - It is read in one REPEATABLE READ snapshot (`store.InSnapshotTx`),
+    so the aggregate and its revision always agree.
+- **Status:**
+  - `{album_id, revision, trashed, published_revision,
+    published_renderer, published_path, renderer, job}`;
+  - `published_path` is relative to `library/`;
+  - `renderer` is this binary's `render_version`;
+  - `job` is `{id, state, error_code, error_message, queued_at,
+    updated_at}` (UTC) or null;
+  - it is always sent with `Cache-Control: no-store` and no ETag.
+- **Mutation answers:**
+  - PUT, DELETE and `/restore` answer 200 with the album re-read after
+    the commit;
+  - `/render` answers 202 with the status;
+  - `POST /api/artists` answers 201 with `Location`.
+
+**A job's stored error message** (coordinator's request, round 11; this
+replaces the "accepted risk" noted while paused). §10.1 forbids showing SQL
+or full stderr, and PostgreSQL and pgx messages can quote constraint names,
+values, database names and hosts.
+
+The fix is at the source: `catalog.JobMessage(err, message)` returns the
+fixed `catalog.DatabaseJobMessage` ("a database error interrupted the
+job; the server log has the details") whenever err's tree holds a
+database error. That is a `*pgconn.PgError`, a `catalog_db` or `job_db`
+error, or any store error, anywhere in the tree: both Unwrap forms,
+under other typed errors. Otherwise it returns the message unchanged.
+- **Where it is used:** at the two places that store an error message
+  from an arbitrary error: `importer.failure` (scan and import jobs) and
+  `publish.failBeforeJournal` (renders). The error code is kept, and the
+  full error still goes to the log.
+- **The other writers** store messages built by the code itself (the
+  scan's ambiguous branches, the import commit's domain refusals, the
+  `path_reserved` of PREPARE), which carry no database text.
+- **The status endpoint** also shows `DatabaseJobMessage` for any row
+  whose code is a database code (`catalog_db`, `job_db`, `store_*`),
+  whatever it holds. This covers rows written before this change.
+- **Stderr** is already never in a message (N-082: `media.Error` keeps
+  stderr apart from `Error()`).
+- **Tests:** `catalog.TestJobMessage` (a real PgError, wrapped, nested,
+  joined), `importer.TestFailureHidesDatabaseText`,
+  `publish.TestFailBeforeJournalMessages` (a real failed render row), and
+  the status test in `internal/http`. All three sources are
+  mutation-checked.
+
+### N-151 · Where the round-11 pieces live — DECIDED
+- **The package.** `internal/http` (§2.3) is package `http`. It imports
+  the standard library as `nethttp`, and `cmd/musiclibd` imports it as
+  `apihttp`. It uses only the standard library's `ServeMux` (Go 1.22
+  method and wildcard patterns). Each path also has a pattern without a
+  method, so a wrong method is a JSON 405 with `Allow`; `/api/` is a JSON
+  404. An unclean path (`//`, `..`, a trailing slash) is 404 instead of
+  the router's redirect. No new module.
+- **Availability.** `API.Enable(catalog)` builds the router over the
+  catalog, and `API.Disable(code, message)` makes every request 503.
+  `cmd/musiclibd`:
+  - mounts the API from step 1, answering `not_ready`;
+  - enables it at the end of step 7;
+  - disables it with `publish_illegal_state` when publishing is
+    suspended (N-135);
+  - disables it with `shutting_down` first thing at shutdown, before
+    the HTTP server drains the running requests (§11.1: no mutation
+    accepted any more);
+  - ends the run on `Config.Fatal` (N-149).
+- **The reads** are catalog methods (`ListArtists`, `GetArtist`,
+  `GetAlbum`, `GetAlbumStatus`), each one snapshot, over new sqlc queries
+  in `sql/catalog.sql`. The handlers hold no SQL.
+- **The new catalog transactions** are:
+  - `CreateArtist`: under the catalog lock, the §7.6 identity by folder
+    key. On `artist_exists` and `artist_folder_conflict` it returns the
+    existing artist, read in the same transaction, together with the
+    error. Eight concurrent creations give one artist.
+  - `RequestRender`: the If-Match revision compared in the transaction,
+    then `jobs.EnqueueRender`, with no bump. A trashed album is
+    enqueued too (its render is the removal).
+- **Not registered, by scope:**
+  - `GET /api/albums` (search);
+  - imports, jobs and retries;
+  - cover, attachments, lyrics and track deletion;
+  - downloads;
+  - `render-all`.

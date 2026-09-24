@@ -88,6 +88,11 @@ const (
 	// folder, through path sanitization only (§7.6: 409). Details.Names
 	// has both names, Details.ArtistID the existing artist.
 	CodeArtistFolderConflict = "artist_folder_conflict"
+	// CodeArtistExists: an artist with the same name after NFC, trim and
+	// casefold already exists (§7.6's identity; §10.2 POST /api/artists:
+	// 409 with the existing artist). Details.ArtistID is that artist,
+	// Details.Names the name asked for and the existing spelling.
+	CodeArtistExists = "artist_exists"
 
 	// The content errors (§10.1: 422).
 	CodeInvalidFingerprint    = "invalid_fingerprint"
@@ -185,6 +190,15 @@ func AsError(err error) (*Error, bool) {
 func checkRevision(kind string, id uuid.UUID, ifMatch, current int64) error {
 	if ifMatch == 0 {
 		return errorf(CodePreconditionRequired, "a change of %s %s requires the revision seen", kind, id)
+	}
+	if ifMatch < 0 {
+		// The If-Match named no revision of this resource (the API's
+		// noMatch, N-147): no number to quote.
+		return &Error{
+			Code:    CodePreconditionFailed,
+			Message: fmt.Sprintf("%s %s has changed or does not match the ETag sent: reload it", kind, id),
+			Details: Details{Revision: current},
+		}
 	}
 	if ifMatch != current {
 		return &Error{

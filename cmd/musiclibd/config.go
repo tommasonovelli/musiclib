@@ -33,8 +33,8 @@ type Config struct {
 	// DatabaseURL may contain the database password: it is never logged,
 	// and LogValue leaves it out.
 	DatabaseURL string
-	// PublicOrigin is enforced on requests from Phase 5 (§10.4); it is
-	// already required and validated at startup.
+	// PublicOrigin is the origin the API accepts in Host and Origin
+	// (§10.4, internal/http).
 	PublicOrigin string
 	HTTPAddr     string
 	Workers      int
@@ -132,7 +132,7 @@ func checkHTTPAddr(addr string) error {
 // browsers send in the Origin header (§10.4): scheme "http" or "https",
 // lowercase ASCII host, optional non-default port, and nothing else, not
 // even a trailing slash. A non-canonical spelling is refused rather than
-// normalized, so that the value compared in Phase 5 is the one configured.
+// normalized, so that the value the API compares is the one configured.
 func parseOrigin(s string) (string, error) {
 	if s == "" {
 		return "", errors.New("required, for example http://127.0.0.1:8080")

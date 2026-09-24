@@ -65,9 +65,9 @@ func writeAlbum(t *testing.T, imports, dir, artist, album string, n int, seconds
 	}
 }
 
-// dbPool is a pool on the test database, for the test's own catalog calls:
-// the API does not exist yet (Phase 5), so the test creates batches and
-// edits albums through the catalog service, as the API will.
+// dbPool is a pool on the test database, for the test's own catalog calls
+// and checks: import batches are created through the catalog service
+// until POST /api/imports exists (a later round).
 func dbPool(t *testing.T, dbURL string) *pgxpool.Pool {
 	t.Helper()
 	return pgtest.Pool(t, dbURL)
@@ -256,14 +256,13 @@ func TestEndToEndTwoWorkers(t *testing.T) {
 	checkOutput(t, p.data, a, "Miles Davis", "Kind of Blue", 3)
 	originals := hashTree(t, filepath.Join(p.data, "originals"))
 
+	// From here the album is changed through the server's own API (§10),
+	// each change with the ETag last read (§10.1).
 	// The artist rename moves the album; the old path is retired.
-	ar, err := store.New(db).GetArtist(ctx, a.ArtistID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := cat.RenameArtist(ctx, ar.ID, ar.Revision, "Miles Dewey Davis"); err != nil {
-		t.Fatal(err)
-	}
+	artistPath := "/api/artists/" + a.ArtistID.String()
+	ar := d.mustAPI(t, http.MethodGet, artistPath, "", nil, http.StatusOK)
+	d.mustAPI(t, http.MethodPut, artistPath, "", map[string]string{"name": "Miles Dewey Davis"}, http.StatusPreconditionRequired)
+	d.mustAPI(t, http.MethodPut, artistPath, ar.header.Get("ETag"), map[string]string{"name": "Miles Dewey Davis"}, http.StatusOK)
 	waitFor(t, "the rename to be published", func() bool {
 		return idle(t, db) && published(t, db, id).PublishedRevision == published(t, db, id).Revision
 	})
@@ -278,23 +277,40 @@ func TestEndToEndTwoWorkers(t *testing.T) {
 	}
 
 	// Trash: removed from library/. Restore: back.
-	if _, _, err := cat.TrashAlbum(ctx, id, a.Revision); err != nil {
-		t.Fatal(err)
+	albumPath := "/api/albums/" + id.String()
+	st := d.mustAPI(t, http.MethodGet, albumPath+"/status", "", nil, http.StatusOK)
+	if st.body["published_path"] != "Miles Dewey Davis/Kind of Blue" || st.body["published_revision"] != st.body["revision"] ||
+		st.body["published_renderer"] != render.Version || st.body["renderer"] != render.Version || st.body["job"] != nil {
+		t.Fatalf("status after the rename: %v", st.body)
 	}
+	cur := d.mustAPI(t, http.MethodGet, albumPath, "", nil, http.StatusOK)
+	d.mustAPI(t, http.MethodDelete, albumPath, cur.header.Get("ETag"), nil, http.StatusOK)
 	waitFor(t, "the removal", func() bool {
 		return idle(t, db) && published(t, db, id).PublishedRevision == published(t, db, id).Revision
 	})
 	if a = published(t, db, id); a.PublishedPath != nil || exists(t, filepath.Join(p.data, "library", "Miles Dewey Davis")) {
 		t.Fatalf("the trashed album is still published: %v", a.PublishedPath)
 	}
-	if _, _, err := cat.RestoreAlbum(ctx, id, a.Revision); err != nil {
-		t.Fatal(err)
-	}
+	cur = d.mustAPI(t, http.MethodGet, albumPath, "", nil, http.StatusOK)
+	d.mustAPI(t, http.MethodPost, albumPath+"/restore", cur.header.Get("ETag"), nil, http.StatusOK)
 	waitFor(t, "the restore", func() bool {
 		a := published(t, db, id)
 		return idle(t, db) && a.PublishedRevision == a.Revision && a.PublishedPath != nil
 	})
 	checkOutput(t, p.data, published(t, db, id), "Miles Dewey Davis", "Kind of Blue", 3)
+
+	// A forced render (§10.2): the seen revision, no new one; the album
+	// is built and published again with the same revision.
+	cur = d.mustAPI(t, http.MethodGet, albumPath, "", nil, http.StatusOK)
+	build := *published(t, db, id).PublishedBuild
+	d.mustAPI(t, http.MethodPost, albumPath+"/render", cur.header.Get("ETag"), nil, http.StatusAccepted)
+	waitFor(t, "the forced render", func() bool {
+		return idle(t, db) && *published(t, db, id).PublishedBuild != build
+	})
+	if a = published(t, db, id); a.Revision != int64(cur.body["revision"].(float64)) || a.PublishedRevision != a.Revision {
+		t.Fatalf("after the forced render: revision %d, published %d", a.Revision, a.PublishedRevision)
+	}
+	checkOutput(t, p.data, a, "Miles Dewey Davis", "Kind of Blue", 3)
 
 	if !sameTree(originals, hashTree(t, filepath.Join(p.data, "originals"))) {
 		t.Fatal("originals/ changed after the import")
@@ -486,6 +502,14 @@ func TestBootSuspendsOnAnIllegalJournal(t *testing.T) {
 		t.Fatalf("message %q", body.Message)
 	}
 	d.waitStatus(t, "/health/live", http.StatusOK)
+	// §10.1, N-135: the API is unavailable while publishing is suspended;
+	// nothing can be changed through it.
+	for _, m := range []string{http.MethodGet, http.MethodPost} {
+		if r := d.api(t, m, "/api/albums/"+album.String()+"/render", "", nil); r.status != http.StatusServiceUnavailable ||
+			r.code() != publish.CodeIllegalState {
+			t.Fatalf("%s /api during the suspension: %d %v", m, r.status, r.body)
+		}
+	}
 	assertLockHeld(t, p.data)
 	if d.logs.has(t, "ready") || d.logs.has(t, "workers started") || d.logs.has(t, "work cleaned") {
 		t.Fatal("the boot went on past an illegal journal")

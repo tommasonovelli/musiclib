@@ -300,3 +300,68 @@ func exists(t *testing.T, p string) bool {
 	}
 	return err == nil
 }
+
+// apiResponse is an answer of the API, its body decoded.
+type apiResponse struct {
+	status int
+	header http.Header
+	body   map[string]any
+}
+
+func (r apiResponse) code() string {
+	s, _ := r.body["code"].(string)
+	return s
+}
+
+// api sends one request to the server's API as a well-behaved client of
+// §10.4: the Host of PUBLIC_ORIGIN (testConfig's), X-Musiclib-Request on a
+// mutation, If-Match when given. status is 0 if the server does not answer.
+func (d *testDaemon) api(t *testing.T, method, path, ifMatch string, body any) apiResponse {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, d.base+path, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "127.0.0.1:8080"
+	if method != http.MethodGet {
+		req.Header.Set("X-Musiclib-Request", "1")
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return apiResponse{}
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	out := apiResponse{status: resp.StatusCode, header: resp.Header}
+	if err := json.NewDecoder(resp.Body).Decode(&out.body); err != nil {
+		t.Fatalf("%s %s: the body is not JSON: %v", method, path, err)
+	}
+	return out
+}
+
+// mustAPI is api with an expected status.
+func (d *testDaemon) mustAPI(t *testing.T, method, path, ifMatch string, body any, status int) apiResponse {
+	t.Helper()
+	r := d.api(t, method, path, ifMatch, body)
+	if r.status != status {
+		t.Fatalf("%s %s = %d %v, want %d; logs:\n%s", method, path, r.status, r.body, status, d.logs)
+	}
+	return r
+}

@@ -14,6 +14,7 @@ import (
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
 	"musiclib/internal/fsops"
+	apihttp "musiclib/internal/http"
 	"musiclib/internal/importer"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
@@ -44,6 +45,12 @@ type daemon struct {
 
 	srv    *http.Server
 	srvErr chan error // the error of srv.Serve, if it stops by itself
+
+	// api serves /api from step 1: 503 until the end of the boot, then
+	// the catalog (§10). apiFatal receives the first fatal database error
+	// an API request met (§6.4), which ends the run like the pool's.
+	api      *apihttp.API
+	apiFatal chan error
 
 	vol  *volume.Volume
 	pool *pgxpool.Pool
@@ -85,8 +92,10 @@ type daemon struct {
 func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Logger) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	d := &daemon{cfg: cfg, paths: p, log: log, srvErr: make(chan error, 1)}
-	d.startHTTP(ln, cancel)
+	d := &daemon{cfg: cfg, paths: p, log: log, srvErr: make(chan error, 1), apiFatal: make(chan error, 1)}
+	if err := d.startHTTP(ln, cancel); err != nil {
+		return err
+	}
 	defer func() { err = errors.Join(err, d.shutdown()) }()
 
 	if err := d.boot(ctx); err != nil {
@@ -105,6 +114,12 @@ func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Lo
 	select {
 	case <-ctx.Done():
 		return d.serveErr()
+	case err := <-d.apiFatal:
+		// §6.4: an API request lost the database or could not learn the
+		// outcome of its commit. The process exits non-zero so that
+		// Docker restarts it.
+		log.Error("fatal failure in an API request, stopping", "code", codeOf(err))
+		return err
 	case err := <-d.poolDone:
 		// §6.4: an uncertain commit, a lost database or a publication left
 		// pending stopped the workers. The process exits non-zero so that
@@ -186,6 +201,7 @@ func (d *daemon) boot(ctx context.Context) error {
 		return err
 	}
 	d.ready.Store(d.pool)
+	d.api.Enable(d.catalog)
 	return nil
 }
 
@@ -312,9 +328,20 @@ func (d *daemon) cleanWork(ctx context.Context) error {
 	return nil
 }
 
-// startHTTP serves the health endpoints on ln from the first moment of the
-// boot (§11.1 step 1). If the server stops by itself, the run is cancelled.
-func (d *daemon) startHTTP(ln net.Listener, cancel context.CancelFunc) {
+// startHTTP serves the health endpoints and /api on ln from the first
+// moment of the boot (§11.1 step 1); /api answers 503 not_ready until the
+// end of the boot. If the server stops by itself, the run is cancelled.
+func (d *daemon) startHTTP(ln net.Listener, cancel context.CancelFunc) error {
+	api, err := apihttp.New(apihttp.Config{
+		PublicOrigin:  d.cfg.PublicOrigin,
+		RenderVersion: render.Version,
+		Fatal:         d.reportAPIFatal,
+		Log:           d.log,
+	})
+	if err != nil {
+		return errors.Join(&bootError{code: codeConfig, msg: "cannot build the API", err: err}, ln.Close())
+	}
+	d.api = api
 	d.srv = &http.Server{
 		Handler:           d.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -328,6 +355,16 @@ func (d *daemon) startHTTP(ln net.Listener, cancel context.CancelFunc) {
 			cancel()
 		}
 	}()
+	return nil
+}
+
+// reportAPIFatal hands the first fatal database error of an API request to
+// run (§6.4); later ones add nothing.
+func (d *daemon) reportAPIFatal(err error) {
+	select {
+	case d.apiFatal <- err:
+	default:
+	}
 }
 
 // serveErr is the error of an HTTP server that stopped by itself, if any.
@@ -342,7 +379,8 @@ func (d *daemon) serveErr() error {
 
 // shutdown releases what the boot acquired, in this order (§11.1):
 //
-//  1. readiness turns negative;
+//  1. readiness turns negative and /api answers 503 shutting_down: no
+//     mutation is accepted any more (§11.1);
 //  2. the HTTP server stops accepting and finishes its requests (the
 //     mutations of later phases come through it);
 //  3. the workers stop claiming and their builds are cancelled, which kills
@@ -356,6 +394,11 @@ func (d *daemon) serveErr() error {
 func (d *daemon) shutdown() error {
 	d.ready.Store(nil)
 	var errs []error
+	if d.api != nil {
+		// §11.1: no mutation is accepted from now on; requests already
+		// running finish within the HTTP shutdown.
+		d.api.Disable(apihttp.CodeShuttingDown, "the server is shutting down")
+	}
 	if d.stopWorkers != nil {
 		d.stopWorkers() // no claim from now on; builds cancelled
 	}
@@ -453,6 +496,8 @@ func (d *daemon) suspendPublishing(j *publish.Journal, err error) error {
 		attrs = append(attrs, "album_id", j.AlbumID, "build_id", j.BuildID, "old_path", j.OldPath, "new_path", j.NewPath)
 	}
 	d.suspended.Store(body)
+	d.api.Disable(publish.CodeIllegalState, "publishing is suspended: the pending publication is in an illegal state "+
+		"(see /health/ready and the server log)")
 	d.log.Error("publishing suspended: the pending publication is in an illegal state", attrs...)
 	return errPublishingSuspended
 }

@@ -31,6 +31,13 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	if st, code := d.get(t, "/health/ready"); st != http.StatusServiceUnavailable || code != "not_ready" {
 		t.Fatalf("ready during boot: %d %s", st, code)
 	}
+	// §10.1, §11.1: the API is mounted from step 1 and answers 503 until
+	// the end of the boot, behind the boundary of §10.4.
+	for _, m := range []string{http.MethodGet, http.MethodPost} {
+		if r := d.api(t, m, "/api/artists", "", nil); r.status != http.StatusServiceUnavailable || r.code() != "not_ready" {
+			t.Fatalf("%s /api/artists during boot: %d %v", m, r.status, r.body)
+		}
+	}
 	assertLockHeld(t, p.data)
 	if exists(t, filepath.Join(p.data, volume.StoreMarker)) {
 		t.Fatal("the volume was initialized before the database answered")
@@ -60,10 +67,22 @@ func TestBootReadinessLifecycle(t *testing.T) {
 		}
 	}
 
-	// Only the health endpoints exist, and only for GET.
-	if st, _ := d.get(t, "/api/albums"); st != http.StatusNotFound {
-		t.Fatalf("GET /api/albums: %d", st)
+	// The API serves now. The health endpoints are outside its Host check
+	// (N-145): d.get addresses the server by its loopback port, not by
+	// PUBLIC_ORIGIN, and the API refuses exactly that.
+	if r := d.mustAPI(t, http.MethodGet, "/api/artists", "", nil, http.StatusOK); r.body["artists"] == nil {
+		t.Fatalf("GET /api/artists: %v", r.body)
 	}
+	if st, code := d.get(t, "/api/artists"); st != http.StatusMisdirectedRequest || code != "host_not_allowed" {
+		t.Fatalf("GET /api/artists with the loopback Host: %d %s", st, code)
+	}
+	if st, code := d.get(t, "/api/albums"); st != http.StatusMisdirectedRequest || code != "host_not_allowed" {
+		t.Fatalf("GET /api/albums with the loopback Host: %d %s", st, code)
+	}
+	if r := d.api(t, http.MethodGet, "/api/albums", "", nil); r.status != http.StatusNotFound || r.code() != "not_found" {
+		t.Fatalf("GET /api/albums (a later round): %d %v", r.status, r.body)
+	}
+	// The health endpoints: GET only, nosniff, no CORS.
 	resp, err := http.Post(d.base+"/health/live", "text/plain", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -71,8 +90,18 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	if err := resp.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("POST /health/live: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("POST /health/live: %d %v", resp.StatusCode, resp.Header)
+	}
+	resp, err = http.Get(d.base + "/health/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" || resp.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("GET /health/ready headers %v", resp.Header)
 	}
 
 	// Shutdown.
@@ -100,11 +129,24 @@ func TestDatabaseLossStopsTheProcess(t *testing.T) {
 	d.waitStatus(t, "/health/ready", http.StatusOK)
 
 	allowConnections(t, dbURL, false)
+	// The API answers 503 with a message of its own, whichever of the API
+	// and the pool meets the loss first; or nothing once the run ended.
+	r := d.api(t, http.MethodGet, "/api/artists", "", nil)
+	switch {
+	case r.status == 0:
+	case r.status == http.StatusServiceUnavailable && (r.code() == store.CodeConnectionLost || r.code() == "shutting_down"):
+		if msg, _ := r.body["message"].(string); strings.Contains(msg, "SQLSTATE") || strings.Contains(msg, "musiclib_test") {
+			t.Fatalf("database text in the answer: %q", msg)
+		}
+	default:
+		t.Fatalf("GET /api/artists after the loss: %d %v", r.status, r.body)
+	}
 	err := d.wait(t)
 	if !store.IsFatal(err) || codeOf(err) != store.CodeConnectionLost {
 		t.Fatalf("run: %v (code %q), want %s", err, codeOf(err), store.CodeConnectionLost)
 	}
-	if !d.logs.has(t, "fatal failure, stopping the workers") {
+	// Whichever met the loss first stopped the run.
+	if !d.logs.has(t, "fatal failure, stopping the workers") && !d.logs.has(t, "fatal failure in an API request, stopping") {
 		t.Fatalf("no fatal event; logs:\n%s", d.logs)
 	}
 	assertShutdownOrder(t, d.logs, true)
@@ -356,5 +398,42 @@ func TestBootCleansWork(t *testing.T) {
 	}
 	if !d.logs.has(t, "work cleaned") {
 		t.Fatal("no work cleaned event")
+	}
+}
+
+// §6.4 through the API: a change whose COMMIT answer is lost has an
+// unknown outcome. The API answers 503 store_commit_uncertain, refuses
+// everything after it, and the run ends with that fatal error, so that the
+// process exits 1 and Docker restarts it; the change is durable. The
+// workers' idle polls commit through the same proxy, so the lost answer
+// may reach one of them first: then the pool stops the run with the same
+// code, and the API's change went through.
+func TestAPIFatalErrorStopsTheProcess(t *testing.T) {
+	dbURL := pgtest.EmptyDB(t)
+	proxy := pgtest.NewProxy(t, dbURL)
+	p := testPaths(t)
+	d := startDaemon(t, testConfig(proxy.URL), p)
+	d.waitStatus(t, "/health/ready", http.StatusOK)
+
+	proxy.LoseNextCommitAck()
+	r := d.api(t, http.MethodPost, "/api/artists", "", map[string]string{"name": "Lost Answer"})
+	err := d.wait(t)
+	if codeOf(err) != store.CodeCommitUncertain {
+		t.Fatalf("run: %v (code %q), want %s", err, codeOf(err), store.CodeCommitUncertain)
+	}
+	switch r.status {
+	case http.StatusServiceUnavailable:
+		if r.code() != store.CodeCommitUncertain || !d.logs.has(t, "fatal failure in an API request, stopping") {
+			t.Fatalf("API answer %v; logs:\n%s", r.body, d.logs)
+		}
+	case http.StatusCreated:
+		t.Log("the lost answer reached a worker's poll first")
+	default:
+		t.Fatalf("API answer %d %v", r.status, r.body)
+	}
+	assertShutdownOrder(t, d.logs, true)
+	assertLockFree(t, p.data)
+	if n := queryInt(t, dbPool(t, dbURL), `SELECT count(*) FROM artists WHERE name = 'Lost Answer'`); n != 1 {
+		t.Fatalf("%d artists: the change must be durable", n)
 	}
 }

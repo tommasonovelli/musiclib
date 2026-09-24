@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"musiclib/internal/catalog"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
@@ -570,5 +572,30 @@ func TestCorruptMessages(t *testing.T) {
 	other := &media.Error{Code: media.CodeTimeout}
 	if got := corrupt("c.flac", other, decodeFailures...); got != other {
 		t.Errorf("a code outside the list is kept: %v", got)
+	}
+}
+
+// N-150 (§10.1): the message stored with a failed job never carries a
+// database error's text, wherever it sits in the error; the code stays.
+func TestFailureHidesDatabaseText(t *testing.T) {
+	pgErr := &pgconn.PgError{Severity: "ERROR", Code: "23505", Message: `duplicate key value violates unique constraint "albums_pkey"`}
+	for _, tc := range []struct {
+		name     string
+		err      error
+		code     string
+		database bool
+	}{
+		{"catalog_db", &catalog.Error{Code: catalog.CodeDB, Message: "reading", Err: pgErr}, catalog.CodeDB, true},
+		{"a PgError under an importer error", &Error{Code: CodeInvalidTag, Message: "tag", Err: pgErr}, CodeInvalidTag, true},
+		{"a PgError alone", fmt.Errorf("commit: %w", pgErr), "import_failed", true},
+		{"a content error", &Error{Code: CodeMixedAlbum, Message: "two album tags", Err: errors.New("A and B")}, CodeMixedAlbum, false},
+	} {
+		code, msg := failure(tc.err)
+		if code != tc.code {
+			t.Errorf("%s: code %q, want %q", tc.name, code, tc.code)
+		}
+		if tc.database != (msg == catalog.DatabaseJobMessage) || strings.Contains(msg, "albums_pkey") {
+			t.Errorf("%s: message %q", tc.name, msg)
+		}
 	}
 }

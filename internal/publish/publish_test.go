@@ -704,3 +704,30 @@ func TestPublishArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// N-150 (§10.1): a render that fails before the journal because of the
+// database stores its code, and a message that carries no database text;
+// a content failure keeps its own message.
+func TestFailBeforeJournalMessages(t *testing.T) {
+	e := newEnv(t)
+	id := e.importAlbum("Artist", "Album")
+	_, pgErr := e.db.Exec(context.Background(), `SELECT * FROM no_such_table`)
+	dbFailure := &catalog.Error{Code: catalog.CodeDB, Message: "reading the album", Err: pgErr}
+	c := e.claim()
+	if err := e.p.failBeforeJournal(context.Background(), c.Attempt, dbFailure); err != nil {
+		t.Fatal(err)
+	}
+	j, _ := e.renderJob(id)
+	if j.State != "failed" || deref(j.ErrorCode) != catalog.CodeDB || deref(j.ErrorMessage) != catalog.DatabaseJobMessage {
+		t.Fatalf("job %s %q %q", j.State, deref(j.ErrorCode), deref(j.ErrorMessage))
+	}
+	e.bump(id)
+	c = e.claim()
+	content := &Error{Code: CodeDestinationOccupied, Message: "Artist/Album is occupied"}
+	if err := e.p.failBeforeJournal(context.Background(), c.Attempt, content); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ = e.renderJob(id); deref(j.ErrorMessage) != content.Error() {
+		t.Fatalf("a content failure's message %q", deref(j.ErrorMessage))
+	}
+}

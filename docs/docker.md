@@ -190,7 +190,8 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
   capabilities, a read-only root filesystem and tmpfs `/tmp`. `musiclibd`
   refuses to run as root and sets umask 022 itself.
 - Published on `127.0.0.1:8080`. For LAN access, set `MUSICLIB_BIND` and a
-  matching `PUBLIC_ORIGIN`.
+  matching `PUBLIC_ORIGIN`: the API answers only requests whose `Host`
+  is the host and port of `PUBLIC_ORIGIN` (see "The API" below).
 - Healthcheck: `musiclibd healthcheck` (the image has no curl). It queries
   `/health/ready` on `HTTP_ADDR` and exits 0 or 1; it takes no lock.
   `start_period` is 120 s, polled every second.
@@ -255,9 +256,60 @@ closes the database pool and releases the volume lock last
 (`http server stopped`, `workers stopped`, `database pool closed`,
 `volume lock released`, `stopped`; exit 0). The 45 s stop grace covers it.
 
-### Importing an album before the HTTP API exists (Phase 2 check)
+### The API
 
-There is no HTTP API until Phase 5 (`POST /api/imports`). To check the
+`/api` follows DESIGN.md §10 (`internal/http`; NOTES.md N-145 to N-151).
+From the first moment of the boot it answers 503 `not_ready` until
+`ready`. It also answers 503 while publishing is suspended
+(`publish_illegal_state`) and during shutdown (`shutting_down`). The
+§10.4 boundary, for any client:
+- `Host` must be the host and port of `PUBLIC_ORIGIN` (421
+  `host_not_allowed` otherwise). With the default
+  `PUBLIC_ORIGIN=http://127.0.0.1:8080`, `curl http://127.0.0.1:8080/...`
+  sends the right Host. `http://localhost:8080` does not. Neither does a
+  LAN address the origin does not name.
+- `Origin`, if sent, must be exactly `PUBLIC_ORIGIN` (403).
+- Every request other than GET and HEAD needs `X-Musiclib-Request: 1`
+  (403 `request_header_required`).
+- A change of an existing album or artist needs `If-Match` with the
+  `ETag` just read: 428 without it, 412 if someone changed it in
+  between (reload and redo).
+- JSON bodies: `Content-Type: application/json`, 16 MiB at most, no
+  unknown or duplicate keys, every field present (`null` where allowed).
+- No CORS header is ever sent. Every response has
+  `X-Content-Type-Options: nosniff`.
+
+`/health/live` and `/health/ready` are outside the Host check, so the
+Compose healthcheck and probes by IP keep working.
+
+```sh
+curl -s http://127.0.0.1:8080/api/artists
+curl -si http://127.0.0.1:8080/api/albums/<id> | grep -i '^etag'     # "album:<id>:<revision>"
+curl -s -X PUT http://127.0.0.1:8080/api/artists/<id>   -H 'X-Musiclib-Request: 1' -H 'Content-Type: application/json'   -H 'If-Match: "artist:<id>:<revision>"' -d '{"name":"Miles Dewey Davis"}'
+curl -s -X POST http://127.0.0.1:8080/api/albums/<id>/render   -H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"'
+curl -s http://127.0.0.1:8080/api/albums/<id>/status
+```
+
+A database lost or a commit left without an answer during an API request
+stops the process like one in a worker (exit 1, then Docker restarts it,
+§6.4). The request got 503 `store_connection_lost` or
+`store_commit_uncertain`: reload before retrying.
+
+Verified on Docker Desktop with a separate project (`-p musiclib-e2e`,
+`MUSICLIB_PORT=18080`, `PUBLIC_ORIGIN` defaulting to
+`http://127.0.0.1:18080`), each answer as described above:
+- `/health/ready` and `musiclibd healthcheck` answered as before (exit 0);
+- `GET /api/artists` answered 200 with `nosniff` and `no-store`;
+- `localhost:18080` was refused with 421;
+- a POST without the header was refused with 403, and with it created
+  the artist (201 and `Location`);
+- `Origin: null` was refused with 403;
+- a rename answered 428 without `If-Match`, 200 with it, and 412 on the
+  now stale ETag.
+
+### Importing an album before the imports API exists (Phase 2 check)
+
+There is no import endpoint yet (`POST /api/imports`, a later round). To check the
 whole slice on a running Compose app, put an album directory under the
 import mount, then create an import batch and its scan job by hand: these
 are exactly the rows `catalog.CreateImportBatch` writes, and the 2 s poll
@@ -308,7 +360,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
 | `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or `docker compose stop app` and run `rebuild` (Phase 6), which regenerates the whole library from the catalog |
 | `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the process exits 1, since it may be transient, and the next start retries |
-| `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown (§6.4) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
+| `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown (§6.4), in a worker (`fatal failure, stopping the workers`) or in an API request (`fatal failure in an API request, stopping`) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
 
 The files at the top of `/data`:
 
@@ -329,7 +381,7 @@ Set them in `.env` next to `compose.yaml`.
 | `MUSICLIB_DATA` | `musiclib-data` | named volume or absolute ext4 path for `/data` |
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |
 | `MUSICLIB_BIND` / `MUSICLIB_PORT` | `127.0.0.1` / `8080` | published address |
-| `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | §10.4 |
+| `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | §10.4: the only `Host` (and `Origin`) the API accepts |
 | `WORKERS` | empty: `max(1, min(4, CPUs))` (§6.1) | worker pool size, 1..16 |
 | `MUSICLIB_DEV_UID` / `MUSICLIB_DEV_GID` | your `id -u` / `id -g` | uid of `test`/`dev` (set by the scripts) |
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"musiclib/internal/catalog"
 	"musiclib/internal/jobs"
 	"musiclib/internal/render"
 	"musiclib/internal/store"
@@ -72,7 +73,8 @@ func (p *Publisher) failBeforeJournal(ctx context.Context, a jobs.Attempt, err e
 	var out jobs.RenderOutcome
 	ferr := store.InCatalogTx(ctx, p.db, func(tx *store.CatalogTx) error {
 		var err2 error
-		out, err2 = jobs.FailRender(ctx, tx, a, code, err.Error())
+		// No database text in a message the user sees (§10.1, N-150).
+		out, err2 = jobs.FailRender(ctx, tx, a, code, catalog.JobMessage(err, err.Error()))
 		return err2
 	})
 	if ferr != nil {

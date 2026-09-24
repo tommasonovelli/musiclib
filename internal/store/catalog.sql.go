@@ -137,6 +137,99 @@ func (q *Queries) GetAlbumPathState(ctx context.Context, id uuid.UUID) (GetAlbum
 	return i, err
 }
 
+const getAlbumStatus = `-- name: GetAlbumStatus :one
+SELECT al.id, al.revision, (al.deleted_at IS NOT NULL)::boolean AS trashed,
+       al.published_path, al.published_revision, al.published_renderer,
+       j.id AS job_id, j.state AS job_state, j.error_code AS job_error_code,
+       j.error_message AS job_error_message, j.queued_at AS job_queued_at, j.updated_at AS job_updated_at
+FROM albums al
+LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
+WHERE al.id = $1
+`
+
+type GetAlbumStatusRow struct {
+	ID                uuid.UUID
+	Revision          int64
+	Trashed           bool
+	PublishedPath     *string
+	PublishedRevision int64
+	PublishedRenderer *string
+	JobID             *uuid.UUID
+	JobState          *string
+	JobErrorCode      *string
+	JobErrorMessage   *string
+	JobQueuedAt       *time.Time
+	JobUpdatedAt      *time.Time
+}
+
+// The processing state (§10.2 GET /api/albums/{id}/status): revisions,
+// published renderer and path (relative to library/), the render job.
+func (q *Queries) GetAlbumStatus(ctx context.Context, id uuid.UUID) (GetAlbumStatusRow, error) {
+	row := q.db.QueryRow(ctx, getAlbumStatus, id)
+	var i GetAlbumStatusRow
+	err := row.Scan(
+		&i.ID,
+		&i.Revision,
+		&i.Trashed,
+		&i.PublishedPath,
+		&i.PublishedRevision,
+		&i.PublishedRenderer,
+		&i.JobID,
+		&i.JobState,
+		&i.JobErrorCode,
+		&i.JobErrorMessage,
+		&i.JobQueuedAt,
+		&i.JobUpdatedAt,
+	)
+	return i, err
+}
+
+const getAlbumView = `-- name: GetAlbumView :one
+SELECT al.id, al.artist_id, ar.name AS artist_name, al.title, al.year, al.genre, al.compilation,
+       (al.deleted_at IS NOT NULL)::boolean AS trashed, al.revision,
+       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+LEFT JOIN blobs cb ON cb.hash = al.cover_hash
+WHERE al.id = $1
+`
+
+type GetAlbumViewRow struct {
+	ID          uuid.UUID
+	ArtistID    uuid.UUID
+	ArtistName  string
+	Title       string
+	Year        *int32
+	Genre       *string
+	Compilation bool
+	Trashed     bool
+	Revision    int64
+	CoverHash   *string
+	CoverSize   *int64
+	CoverFormat *string
+}
+
+// The desired album (§10.2 GET /api/albums/{id}): no published column.
+func (q *Queries) GetAlbumView(ctx context.Context, id uuid.UUID) (GetAlbumViewRow, error) {
+	row := q.db.QueryRow(ctx, getAlbumView, id)
+	var i GetAlbumViewRow
+	err := row.Scan(
+		&i.ID,
+		&i.ArtistID,
+		&i.ArtistName,
+		&i.Title,
+		&i.Year,
+		&i.Genre,
+		&i.Compilation,
+		&i.Trashed,
+		&i.Revision,
+		&i.CoverHash,
+		&i.CoverSize,
+		&i.CoverFormat,
+	)
+	return i, err
+}
+
 const getArtist = `-- name: GetArtist :one
 SELECT id, name, folder_key, revision FROM artists WHERE id = $1
 `
@@ -331,6 +424,48 @@ type InsertTracksParams struct {
 	LyricsHash *string
 }
 
+const listAlbumAttachmentViews = `-- name: ListAlbumAttachmentViews :many
+SELECT a.id, a.rel_path, a.blob_hash, b.size AS blob_size, b.format AS blob_format
+FROM attachments a
+JOIN blobs b ON b.hash = a.blob_hash
+WHERE a.album_id = $1
+ORDER BY a.path_key COLLATE "C", a.id
+`
+
+type ListAlbumAttachmentViewsRow struct {
+	ID         uuid.UUID
+	RelPath    string
+	BlobHash   string
+	BlobSize   int64
+	BlobFormat *string
+}
+
+func (q *Queries) ListAlbumAttachmentViews(ctx context.Context, albumID uuid.UUID) ([]ListAlbumAttachmentViewsRow, error) {
+	rows, err := q.db.Query(ctx, listAlbumAttachmentViews, albumID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAlbumAttachmentViewsRow
+	for rows.Next() {
+		var i ListAlbumAttachmentViewsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RelPath,
+			&i.BlobHash,
+			&i.BlobSize,
+			&i.BlobFormat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAlbumClaims = `-- name: ListAlbumClaims :many
 SELECT path_key, path FROM path_claims WHERE album_id = $1 ORDER BY path_key
 `
@@ -351,6 +486,61 @@ func (q *Queries) ListAlbumClaims(ctx context.Context, albumID uuid.UUID) ([]Lis
 	for rows.Next() {
 		var i ListAlbumClaimsRow
 		if err := rows.Scan(&i.PathKey, &i.Path); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAlbumTrackViews = `-- name: ListAlbumTrackViews :many
+SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
+       t.blob_hash, b.size AS blob_size, b.format AS blob_format, t.lyrics_hash
+FROM tracks t
+JOIN blobs b ON b.hash = t.blob_hash
+WHERE t.album_id = $1
+ORDER BY t.disc, t.no, t.id
+`
+
+type ListAlbumTrackViewsRow struct {
+	ID         uuid.UUID
+	Disc       int32
+	No         int32
+	Title      string
+	Artist     *string
+	Genre      *string
+	SourcePath string
+	BlobHash   string
+	BlobSize   int64
+	BlobFormat *string
+	LyricsHash *string
+}
+
+func (q *Queries) ListAlbumTrackViews(ctx context.Context, albumID uuid.UUID) ([]ListAlbumTrackViewsRow, error) {
+	rows, err := q.db.Query(ctx, listAlbumTrackViews, albumID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAlbumTrackViewsRow
+	for rows.Next() {
+		var i ListAlbumTrackViewsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Disc,
+			&i.No,
+			&i.Title,
+			&i.Artist,
+			&i.Genre,
+			&i.SourcePath,
+			&i.BlobHash,
+			&i.BlobSize,
+			&i.BlobFormat,
+			&i.LyricsHash,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -420,6 +610,43 @@ func (q *Queries) ListArtistAlbumIDs(ctx context.Context, artistID uuid.UUID) ([
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listArtists = `-- name: ListArtists :many
+
+SELECT id, name, folder_key, revision FROM artists
+ORDER BY folder_key COLLATE "C", id
+`
+
+// The API's reads (§10.1, §10.2). They run in one REPEATABLE READ snapshot
+// (store.InSnapshotTx), so that a representation and its revision agree.
+// Orders are deterministic and byte-wise (COLLATE "C"), independent of the
+// database's locale.
+// Every artist of the catalog, those without albums included (owner
+// decision N-146: the list feeds the album editor's artist selector).
+func (q *Queries) ListArtists(ctx context.Context) ([]Artist, error) {
+	rows, err := q.db.Query(ctx, listArtists)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Artist
+	for rows.Next() {
+		var i Artist
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.FolderKey,
+			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

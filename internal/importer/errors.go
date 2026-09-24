@@ -124,19 +124,20 @@ func Code(err error) string {
 // failure turns an error of a job's work into the code and message stored
 // with the failed job. The message never holds an absolute path: every
 // package below speaks in root labels and relative paths (§10.1). A tool's
-// stderr is never included (N-082).
+// stderr is never included (N-082), nor a database error's text (N-150).
 func failure(err error) (code, message string) {
 	code = Code(err)
 	if code == "" {
 		code = "import_failed"
 	}
+	message = err.Error()
 	var e *Error
 	if errors.As(err, &e) {
 		message = e.Message
 		if e.Err != nil {
 			message += ": " + e.Err.Error()
 		}
-		return code, message
 	}
-	return code, err.Error()
+	// No database text in a message the user sees (§10.1, N-150).
+	return code, catalog.JobMessage(err, message)
 }

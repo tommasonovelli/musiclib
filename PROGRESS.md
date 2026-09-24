@@ -27,7 +27,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
-- [ ] Full repository layout (§2.3): every package of §2.3 up to Phase 2 exists (`internal/publish` since round 9); `internal/http`, `internal/maintenance` and `web/` arrive with their phases
+- [ ] Full repository layout (§2.3): every package of §2.3 up to Phase 3 exists (`internal/publish` since round 9, `internal/http` since round 11); `internal/maintenance` and `web/` arrive with their phases
 - [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). ffmpeg/ffprobe (N-073) and the static TagLib helper `musiclib-tags` (N-083) are in the runtime image since Phase 2
 - [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
 - [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
@@ -58,8 +58,8 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Render coalescing on a single row per album (§6.3) — `jobs.EnqueueRender`, ticket-conditioned completions
 - [x] `REPEATABLE READ` snapshots (§6.2) — `jobs.ClaimNext`, `jobs.RenderSnapshot`
 - [x] `path_claims` and global `pg_advisory_xact_lock` (§5.3) — `store.InCatalogTx`, `catalog.ReconcileClaims`
-- [~] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1) — the revision check in the transaction of the change, with typed `precondition_required` / `precondition_failed` (catalog); the HTTP ETag and headers come with the API
-- [~] Artist rename and album reassignment (§4.3) — both done and tested in the catalog (`RenameArtist`; `UpdateAlbum` with another `artist_id`); the HTTP endpoints come with the API
+- [x] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1) — `internal/http` (round 11): ETags `"album:<uuid>:<rev>"` / `"artist:<uuid>:<rev>"`, the If-Match rules of N-147, the revision compared by the catalog in the transaction of the change; two concurrent saves of one revision give exactly one 412 and lose nothing
+- [x] Artist rename and album reassignment (§4.3) — `PUT /api/artists/{id}` (`RenameArtist`) and `PUT /api/albums/{id}` with another `artist_id` (`UpdateAlbum`), tested over HTTP on real PostgreSQL and end to end through the server
 - [x] Named failpoints and failure matrix (§12.2) — one mechanism (`internal/failpoint`, `internal/faulttest`, N-142); real SIGKILL crashes for every row about durability or idempotency; a really full filesystem (N-143); the matrix is below. Rows that need doctor, rebuild, restore, backup (Phase 6) or the UI (Phase 5) are marked for their phase
 
 ## Phase 4 — Formats and content
@@ -75,10 +75,10 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [~] Recursive scan and multi-disc grouping (§7.2) — the recursive scan with rules 1, 4 and 5 and the unassigned-file report are done; rules 2 and 3 (multi-disc) fail explicitly until this phase (N-120)
 - [~] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer (tested through a retry done by SQL); disc directories come with rules 2 and 3, the retry endpoint with the API
 - [x] Fingerprinting and duplicate detection (§7.6) — the fingerprint in `internal/importer` (golden test), duplicates `skipped` by the import commit
-- [ ] Complete HTTP APIs (§10.2)
+- [~] Complete HTTP APIs (§10.2) — round 11: `GET`/`POST /api/artists`, `GET`/`PUT /api/artists/{id}`, `GET`/`PUT`/`DELETE /api/albums/{id}`, `GET .../status`, `POST .../restore`, `POST .../render`. Still to come: `GET /api/albums` (search), imports, jobs and retries, cover, attachments, lyrics, track deletion, downloads, `render-all`
 - [ ] UI: Library, Album, Import, Activity (§10.3)
-- [ ] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4)
-- [~] Trash, restore, retry (§4.3, §6.4) — trash and restore in the catalog; retry with the HTTP API
+- [x] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4) — `internal/http` (round 11, N-145): Host and Origin against `PUBLIC_ORIGIN`, `X-Musiclib-Request: 1` on every mutation, no CORS ever, `nosniff` everywhere; the health endpoints exempt from the Host check. The UI side (fetch setting the header, template escaping) comes with the UI
+- [~] Trash, restore, retry (§4.3, §6.4) — trash and restore in the catalog and over HTTP (`DELETE /api/albums/{id}`, `POST .../restore`, round 11); retry with the jobs endpoints
 
 ## Phase 6 — Operations
 
@@ -116,7 +116,7 @@ named points; **later** = the phase that brings the feature.
 | Tag writer altera i campioni o perde un tag non gestito | Album non pubblicato | in-process | `render.TestBuildTagWriterAltersSamples`, `TestBuildTagWriterLosesUnmanagedField`; `media.TestVerifyTags` |
 | Modifica dell'output con size/mtime invariati | Doctor deep la rileva e render/rebuild la ripara | **later: Phase 6** (doctor, rebuild) | render repairing damaged own output: `publish.TestPublishReplacesDamagedOwnOutput` |
 | Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
-| Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | **later: Phase 5** (HTTP API and UI); the catalog half is done | `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
+| Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | in-process at the API (round 11); **the UI part: Phase 5** | `http.TestTwoClientsSaveDifferentRevisions` (20 rounds of two concurrent PUTs of one revision through a real server: exactly one 412 naming the winner's revision, the loser reloads and re-applies, both changes kept); `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
 | SIGTERM/SIGKILL con più worker e helper attivi | Nessun helper del vecchio tentativo resta in attività | crash | `cmd/musiclibd.TestProcessSignalsWithHelpersActive`, `TestProcessDatabaseLossMidWork`; `media.TestRunToolDiesWithParent` (Pdeathsig), `TestRunCancelKillsAndReapsWholeGroup` |
 | Crash durante rebuild o restore | Marker impedisce il boot su una manutenzione incompleta | **later: Phase 6** (rebuild, restore); the marker's boot refusal is done | `volume.TestMaintenanceMarkerBlocksBoot`; the `cmd/musiclibd` maintenance refusals |
 | Backup, perdita DB/volume, restore su volumi nuovi | Catalogo e originali recuperati, output rigenerato verificabile | **later: Phase 6** | — |
@@ -456,7 +456,7 @@ logs JSON on stderr.
 | 4 | the blob store, the process space budget, the builder and the publisher; `Publisher.Recover` (§9.4): the pending journal completed forward; `publish_illegal_state` suspends publishing and keeps the process up without steps 5 to 7, `publish_io` fails the boot (N-135) |
 | 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)`, `importer.CleanWork`, `Publisher.CleanWork` (`work/render`, `work/retired` not referenced by a journal); `jobs.RecoverRunning` |
 | 6 | `jobs.EnqueueStaleRenders(render.Version)` |
-| 7 | the catalog (whose commits wake the pool), the importer on `/import`, `jobs.NewPool` with `WORKERS` workers dispatching scan, import and render; readiness positive |
+| 7 | the catalog (whose commits wake the pool), the importer on `/import`, `jobs.NewPool` with `WORKERS` workers dispatching scan, import and render; readiness positive; the API enabled over the catalog (round 11) |
 
 While the server runs, an error that stops the pool (`store.IsFatal`: a
 lost connection or an uncertain commit; or `jobs.Stop`: a publication left
@@ -470,7 +470,17 @@ restarts it (§6.4, N-070, N-135).
   an illegal state it is 503 `publish_illegal_state` with
   `details: {album_id, build_id}`, and the process stays up (N-135).
 - Both endpoints are GET only, answer JSON with `Cache-Control: no-store`,
-  and every other route is 404.
+  and are outside the API's Host and Origin checks (N-145), so the
+  healthcheck subcommand is unchanged.
+- **The API (round 11, `internal/http`)** is mounted on `/api` and `/api/`
+  from step 1. It answers 503 `not_ready` until step 7, then serves the
+  catalog. It is disabled with `publish_illegal_state` while publishing
+  is suspended (N-135), and with `shutting_down` first thing at
+  shutdown, before the HTTP server drains the running requests (§11.1).
+  A fatal database error met by an API request ends the run like one met
+  by the pool: exit 1, and Docker restarts (§6.4, N-149).
+- `nosniff` on every response; no CORS header ever; any other route is
+  404.
 - A refused boot logs its stable `code` and exits 1 (N-068).
 - On SIGTERM or SIGINT the server cancels the workers (no claim, builds
   and their tools killed), stops accepting HTTP (graceful, 10 s), waits for
@@ -524,6 +534,20 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
   non-zero exit; SIGTERM gives exit 0 with the shutdown order; SIGKILL is
   covered by `Pdeathsig`. In every case none of the observed tools
   survives, and a restart finishes the albums with no failed job.
+- **The API on the real server (round 11):**
+  - `/api` is 503 `not_ready` during the boot, then serves;
+  - the loopback Host that the health endpoints accept is 421 at `/api`;
+  - while publishing is suspended, every `/api` request is 503
+    `publish_illegal_state`;
+  - on a database loss the API answers 503 with no database text, and
+    whichever of the API and the pool meets the loss first ends the run;
+  - a COMMIT answer lost under an API request
+    (`TestAPIFatalErrorStopsTheProcess`) ends the run with
+    `store_commit_uncertain`, the change durable;
+  - `TestEndToEndTwoWorkers` makes its changes through the API: the
+    artist rename (428 first), trash, restore and a forced render, each
+    with the ETag just read. It checks the status after the rename, and
+    a republication with a new build and the same revision.
 - **Configuration.** 40 table cases, all problems reported at once, the
   password absent from errors and logs, and the `WORKERS` default.
 - **Healthcheck.** Exit codes for 200, 503, 500, a redirect (not followed),
@@ -537,7 +561,8 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
 Mutation-checked: the maintenance check moved after the database wait, the
 pool closed after the lock, no umask, readiness positive without the
 database, readiness never positive, redirects followed, root allowed, a
-`WORKERS` default of 2, and (round 9) `run` ignoring the pool's fatal
+`WORKERS` default of 2, (round 9) `run` ignoring the pool's fatal error,
+and (round 11) the API never enabled and `run` ignoring the API's fatal
 error. Each makes a test fail.
 
 ```sh
@@ -1000,6 +1025,10 @@ transaction (§3.2 guarantee 6).
 | `AlbumPath(artist, title)` | the desired path `<artist>/<album>` (§5.1) and its key, the two `folder_key`s joined |
 | `PathCollision(paths)` | §5.2's collision rule on final paths: one file key twice, a file where another needs a directory, one directory spelled two ways (owner decision, N-131); used by the import commit and the render planner |
 | `CheckFresh(ctx, *CatalogTx, snapshot, renderer)` | the four conditions of §6.3 for PREPARE (N-097, N-112) |
+| `CreateArtist(ctx, name)` | round 11, `POST /api/artists`: revision 1, or `artist_exists` / `artist_folder_conflict` returned **with** the existing artist, read in the same transaction |
+| `RequestRender(ctx, id, ifMatch)` | round 11, the forced render of §10.2: If-Match compared in the transaction, `jobs.EnqueueRender`, no bump |
+| `ListArtists`, `GetArtist`, `GetAlbum`, `GetAlbumStatus` | round 11: the API's reads, each in one REPEATABLE READ snapshot (`store.InSnapshotTx`); every artist, those without albums included (owner decision N-146) |
+| `JobMessage(err, message)` | round 11: the message stored with a failed job, `DatabaseJobMessage` when err holds a database error anywhere (§10.1, N-150); used by the importer and the render executor |
 | `Error{Code, Message, Details}`, `Code`, `AsError` | stable codes for `{code, message, details}` (§10.1); `Details` carries the owning album, the path, both names, the current revision |
 
 Tests on real PostgreSQL 17:
@@ -1029,7 +1058,14 @@ Tests on real PostgreSQL 17:
   retired); stray claims released, another album's claims never touched;
 - the artist rename, all or nothing, trashed albums included; conflicts by
   casefold and by sanitization;
-- `CheckFresh`, each condition alone; fatal codes winning over domain codes.
+- `CheckFresh`, each condition alone; fatal codes winning over domain codes;
+- (round 11) `CreateArtist`: NFC and trim, casefold identity (`STRÁUSS`
+  against `Stráuß`), a sanitization conflict, invalid names, nothing
+  enqueued; eight concurrent creations give one artist; `ListArtists`
+  (all artists, the one without albums and the trash-only one included, byte order; N-146); `GetAlbum` and `GetAlbumStatus` field
+  by field; `RequestRender` (428, 412, 404, no bump, coalescing with a
+  running attempt, a trashed album); `JobMessage` on a real PgError,
+  wrapped, nested and joined.
 
 Mutation-checked, across the three packages: without the catalog lock, the
 ticket or `requested` conditions of each completion, the running case of the
@@ -1471,6 +1507,114 @@ scripts/dev.sh go test -race -count=10 -timeout 60m ./internal/publish/
 ```
 
 ---
+
+### `internal/http` — the API's conventions, security boundary and first endpoints (§2.3, §10.1, §10.2, §10.4) ✔ (round 11)
+
+The API is plain `net/http` (Go 1.22 method and wildcard patterns). There
+is no framework and no new module. Handlers validate and translate; every
+catalog write goes through `internal/catalog` (§13.2), and every read is
+one catalog snapshot. The package holds no SQL and no absolute path
+(N-151).
+
+| Piece | Role |
+|---|---|
+| `New(Config{PublicOrigin, RenderVersion, Fatal, Log})` | the API, answering 503 `not_ready` until `Enable` |
+| `Enable(*catalog.Service)` / `Disable(code, message)` | serve the catalog; or answer 503 with that code (shutdown, suspended publishing, a fatal database error) |
+| `ServeHTTP` | `nosniff`, `Cache-Control: no-store`, the §10.4 boundary, clean `/api/` paths only, availability, then the router |
+| `SecurityHeaders(next)` | `nosniff` on everything else the server answers (health) |
+| `ETag(kind, id, revision)` | `"album:<uuid>:<rev>"`, `"artist:<uuid>:<rev>"` (§10.1) |
+| `ifMatch` | the rules of N-147: 428 without or with `*`, 400 malformed, 412 for tags that name no revision of this resource, the revision otherwise; the resource is the caller's choice (the album's for its sub-resources, §10.2) |
+| `readObject` / `object` | the strict JSON of N-148: media type, 16 MiB (413), UTF-8 and lone surrogates, one value, duplicate keys at any depth; then exact keys, every key required, typed decoders, canonical ids |
+| `translate`, `statusOf` | typed errors to `{code, message, details}` and the status of N-149; messages from the typed errors, never `err.Error()`; a fatal store error disables the API and calls `Fatal` once (§6.4) |
+| `RequestHeader` | `X-Musiclib-Request`, required with value `1` on every mutation |
+
+Endpoints (§10.2); representations in N-150:
+
+| Endpoint | Answer |
+|---|---|
+| `GET /api/artists` | every artist of the catalog, those without albums included (owner decision N-146: the artist selector of the album editor) |
+| `POST /api/artists` `{name}` | 201 + `Location`; 409 `artist_exists` / `artist_folder_conflict` with `details.artist` (§10.2) |
+| `GET /api/artists/{id}` | `{id, name, revision, etag}` + `ETag` |
+| `PUT /api/artists/{id}` `{name}` + If-Match | the atomic rename (§4.3), every album bumped and enqueued; 200 with the artist |
+| `GET /api/albums/{id}` | the desired aggregate + `ETag` |
+| `GET /api/albums/{id}/status` | revisions, renderer, published path (relative), render job; `no-store`, no ETag |
+| `PUT /api/albums/{id}` + If-Match | `{artist_id, title, year, genre, compilation, tracks: [{id, disc, no, title, artist, genre}]}`, one transaction; exactly the current tracks; another `artist_id` is the reassignment of §4.3; 200 with the album |
+| `DELETE /api/albums/{id}` + If-Match | trash; 200 with the album |
+| `POST /api/albums/{id}/restore` + If-Match | restore; 200 with the album |
+| `POST /api/albums/{id}/render` + If-Match | forced enqueue with no new revision (`catalog.RequestRender`, `jobs.EnqueueRender`); 202 with the status |
+
+Tests: a real `httptest` server over the real handler, over the real
+catalog on real PostgreSQL 17. No mock.
+- **Artists:**
+  - creation, normalization, `Location`;
+  - the list: every artist, the no-album and the trash-only ones included, the
+    order;
+  - 409 with the existing artist, by casefold and by sanitization
+    (`AC/DC` against `AC_DC`); 422 texts; nothing written on a refusal;
+  - eight concurrent creations: one 201, seven 409 naming it;
+  - the rename: 428, 412 with the current revision, then the albums
+    bumped and enqueued and the album's old ETag stale; a rename
+    conflict.
+- **The album:**
+  - every field of the aggregate; the declared field order;
+    byte-identical bodies across GETs; HEAD;
+  - the status: `no-store` and no ETag; a failed job whose stored
+    message holds database text is shown with the safe message (N-150).
+- **PUT:**
+  - a no-op without bump or render; a change with a swap of track
+    numbers; the answer equal to the next GET;
+  - 428 (absent, `*`), 412 (stale, another album's ETag, the artist's,
+    weak, foreign), 400 (two tags of the album, garbage), 404 before
+    412;
+  - 17 content refusals, each leaving the album unchanged: track list,
+    duplicate id, numbers, ranges, texts, an unknown artist (422), blob
+    and id not being fields, missing, null and mistyped fields,
+    non-canonical ids.
+- **Reassignment:** to another artist, with the `album_folder_conflict`
+  first.
+- **§12.2, "Due finestre UI" at the API:** 20 rounds of two concurrent
+  PUTs of one revision. Exactly one 412, naming the winner's revision;
+  the loser reloads and re-applies; both changes kept, and the revision
+  arithmetic exact.
+- **Trash, restore and the forced render:** 428, `body_not_allowed`,
+  no-ops, a restore conflict, 412; the render with no bump, coalescing
+  on the same row with a newer ticket, and 404.
+- **The boundary** (24 cases): Host (case, port, rebinding IP), Origin
+  (another, `null`, a trailing slash, https, two fields), the header
+  (missing, `0`, `true`, twice) on POST, PUT and DELETE, CORS preflights,
+  a non-browser POST. No CORS header and always `nosniff`; a refused
+  request changes nothing.
+- **Routing:** JSON 404 and 405 with `Allow`; no redirect for unclean
+  paths.
+- **Bodies over HTTP:** exactly 16 MiB accepted, one byte more is 413;
+  duplicate keys; trailing values; unknown and case-variant keys; invalid
+  UTF-8 and surrogates; 415.
+- **Availability:** 503 `not_ready` before `Enable`, behind the
+  boundary; 503 `shutting_down` after `Disable`.
+- **§6.4:** the database refusing connections gives 503
+  `store_connection_lost` with no database text, the API stays disabled,
+  and `Fatal` is called once. A COMMIT answer lost through `pgtest.Proxy`
+  gives 503 `store_commit_uncertain`, the row is durable, and `Fatal` is
+  called once.
+- **Unit tests:** 37 If-Match cases; 38 JSON cases; 26 schema cases; the
+  media types and the limit; `FuzzCheckJSON` (about 3.4M executions).
+
+Mutation-checked (each makes a test fail):
+- an absent If-Match accepted; `If-Match: *` accepted;
+- the Host check removed; the Origin check removed; `Origin: null`
+  accepted;
+- the header check removed; any header value accepted;
+- the duplicate-key check removed; trailing values accepted; the
+  surrogate check removed; a duplicate track id accepted;
+- `Disable` ignored; `Fatal` not called;
+- the job-message sanitization removed, at the catalog source and at the
+  API.
+
+```sh
+scripts/check.sh ./internal/http/...
+scripts/dev.sh go test -race -count=3 ./internal/http/ ./internal/catalog/ ./cmd/musiclibd/
+scripts/fuzz.sh FuzzCheckJSON 90s ./internal/http
+```
 
 ## Decisions made during implementation
 

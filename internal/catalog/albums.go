@@ -328,6 +328,48 @@ func (s *Service) RestoreAlbum(ctx context.Context, albumID uuid.UUID, ifMatch i
 	})
 }
 
+// RequestRender is the forced render of §10.2 (POST
+// /api/albums/{id}/render): the album's render is enqueued through the
+// single jobs.EnqueueRender (§6.3, §13.2) without changing any metadata,
+// so the revision is not incremented. ifMatch is still the revision seen
+// by the client, compared in the same transaction (§10.2: "I render
+// manuali richiedono anch'essi la revisione vista"): 0 is
+// CodePreconditionRequired, another revision CodePreconditionFailed. An
+// album in the trash is enqueued too: its render is the removal of its
+// output (§4.3). It returns the album's revision and the render row.
+func (s *Service) RequestRender(ctx context.Context, albumID uuid.UUID, ifMatch int64) (int64, jobs.Enqueued, error) {
+	if ifMatch == 0 {
+		return 0, jobs.Enqueued{}, checkRevision("album", albumID, 0, 0)
+	}
+	var (
+		revision int64
+		enqueued jobs.Enqueued
+	)
+	err := store.InCatalogTx(ctx, s.db, func(tx *store.CatalogTx) error {
+		revision, enqueued = 0, jobs.Enqueued{}
+		al, err := tx.GetAlbum(ctx, albumID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errorf(CodeAlbumNotFound, "album %s does not exist", albumID)
+		}
+		if err != nil {
+			return dbErr("reading album "+albumID.String(), err)
+		}
+		if err := checkRevision("album", albumID, ifMatch, al.Revision); err != nil {
+			return err
+		}
+		if enqueued, err = jobs.EnqueueRender(ctx, tx, albumID); err != nil {
+			return err
+		}
+		revision = al.Revision
+		return nil
+	})
+	if err != nil {
+		return 0, jobs.Enqueued{}, err
+	}
+	s.notify()
+	return revision, enqueued, nil
+}
+
 // changeAlbum is the frame of every change of an existing album: the
 // catalog transaction, the album read, the If-Match comparison in the same
 // transaction (§10.1), the change itself, and, if it changed anything,

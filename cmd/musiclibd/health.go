@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	apihttp "musiclib/internal/http"
 )
 
 const (
@@ -19,12 +21,18 @@ const (
 	healthcheckTimeout = 3 * time.Second
 )
 
-// routes are the only endpoints of Phase 1 (§11.1). Anything else is 404.
+// routes are the health endpoints (§11.1) and the API (§10). Anything else
+// is 404. Every response has the security headers of §10.4. The health
+// endpoints are outside the API's Host and Origin checks: they carry no
+// catalog data and answer probes that address the container by IP, such
+// as the healthcheck subcommand (NOTES.md N-145).
 func (d *daemon) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", d.handleLive)
 	mux.HandleFunc("GET /health/ready", d.handleReady)
-	return mux
+	mux.Handle("/api", d.api)
+	mux.Handle("/api/", d.api)
+	return apihttp.SecurityHeaders(mux)
 }
 
 // handleLive says that the process answers (§11.1).

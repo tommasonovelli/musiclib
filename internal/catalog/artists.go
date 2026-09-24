@@ -64,6 +64,56 @@ func folderConflict(name string, existing store.Artist) *Error {
 	}
 }
 
+// CreateArtist creates an artist at revision 1 (§10.2 POST /api/artists),
+// in a catalog transaction. The name is a required metadata text (§5.2).
+// Artists are identified as at import (§7.6): if an artist with the same
+// name after NFC, trim and casefold exists, the result is
+// CodeArtistExists; if a different name would share its folder through the
+// path sanitization only, CodeArtistFolderConflict. Nothing is merged or
+// renamed. In both conflicts the existing artist is returned together with
+// the error, read in the same transaction, so that the caller can offer it
+// (§10.2: "conflitto restituisce anche l'artista esistente"). A new artist
+// has no album and changes no output: nothing is enqueued.
+func (s *Service) CreateArtist(ctx context.Context, name string) (Artist, error) {
+	name, err := names.NormalizeRequiredText(name)
+	if err != nil {
+		return Artist{}, textError("artist name", err)
+	}
+	key := names.FolderKey(name)
+	var out Artist
+	err = store.InCatalogTx(ctx, s.db, func(tx *store.CatalogTx) error {
+		out = Artist{}
+		existing, err := tx.GetArtistByFolderKey(ctx, key)
+		if err == nil {
+			out = Artist{ID: existing.ID, Name: existing.Name, Revision: existing.Revision}
+			if !SameArtistName(name, existing.Name) {
+				return folderConflict(name, existing)
+			}
+			return &Error{
+				Code:    CodeArtistExists,
+				Message: fmt.Sprintf("the artist %q already exists as %q", name, existing.Name),
+				Details: Details{ArtistID: existing.ID, Names: []string{name, existing.Name}},
+			}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return dbErr("looking up the artist folder "+key, err)
+		}
+		id := store.NewID()
+		if err := tx.InsertArtist(ctx, store.InsertArtistParams{ID: id, Name: name, FolderKey: key}); err != nil {
+			return dbErr("creating artist "+id.String(), err)
+		}
+		out = Artist{ID: id, Name: name, Revision: 1}
+		return nil
+	})
+	if err != nil {
+		if c := Code(err); c == CodeArtistExists || c == CodeArtistFolderConflict {
+			return out, err
+		}
+		return Artist{}, err
+	}
+	return out, nil
+}
+
 // RenameArtist renames an artist (§4.3, §10.2 PUT /api/artists/{id}):
 // ifMatch is the artist revision seen by the client (0: none, §10.1).
 // Saving the current name is a no-op without a new revision. Otherwise the
