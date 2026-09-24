@@ -438,7 +438,7 @@ The upload size limits (§10.2) are the caller's job. `io.LimitReader`
 truncates silently, so the caller must read `limit+1` bytes and reject the
 upload, not pin a truncated prefix.
 
-### N-044 · Failpoints are in-process only — OPEN (phase 3)
+### N-044 · Failpoints are in-process only — OPEN (phase 3; the publication's are real crashes since round 9, N-136)
 `Store.failpoint` (unexported, nil in production) runs at `temp_synced`,
 `temp_verified`, `shards_synced` and `pinned`. Tests use it to inject errors
 and to check the disk state at each point. §12.2 asks for real process
@@ -858,7 +858,7 @@ dell'applicazione per volume e database"). The flock enforces it per volume
 only; nothing enforces one server per database. This is a narrow race at
 first installation, not the mount mistake above.
 
-### N-070 · Readiness follows the database, and the process does not exit when it goes away — DECIDED
+### N-070 · Readiness follows the database, and the process does not exit when it goes away — RESOLVED (round 9: the process exits, N-135)
 `/health/ready` is 200 only after step 7, and only if a `Ping` through the
 pool succeeds within 2 s. Otherwise it answers 503 with `{code, message}`:
 `not_ready` or `db_unavailable` (§10.1).
@@ -1916,7 +1916,7 @@ effective change (texts compared after normalization) does neither (§4.3).
   transaction, and writes nothing else; any other error aborts the
   transaction.
 
-### N-107 · Nothing is wired into `cmd/musiclibd` yet — DECIDED
+### N-107 · Nothing is wired into `cmd/musiclibd` yet — RESOLVED (round 9)
 - §11.1 step 5 (`jobs.RecoverRunning`) must follow the journal recovery of
   step 4, which does not exist yet: FINALIZE of a recovered publication
   completes its job by ticket, which needs the job still running.
@@ -1999,7 +1999,7 @@ releases its connection inside `Rollback`, and another goroutine may have
 acquired it at once. It now reads the state before the rollback
 (mutation-checked with `-race`).
 
-### N-112 · When PREPARE finds `StaleClaims`: fail the render, never requeue — TO CONFIRM (proposal for the publish round)
+### N-112 · When PREPARE finds `StaleClaims`: fail the render, never requeue — RESOLVED (endorsed by the reviewer; implemented in round 9)
 §6.3 says that superseded work goes back to pending. For a stale ticket,
 revision or renderer that is right: a newer request or renderer exists, and
 the next build answers it. `StaleClaims` is different: nothing in the queue
@@ -2025,7 +2025,7 @@ The more conservative alternative is (2) alone, without the repair of (1).
 
 ## `internal/importer`: scan and import of one candidate (2026-09-23, round 5)
 
-### N-114 · No process-wide space budget yet: a statfs check per import — DECIDED (budget: executor/pool round)
+### N-114 · No process-wide space budget yet: a statfs check per import — RESOLVED (round 9: `jobs.Budget`, N-139)
 §11.2 asks for three things: a conservative estimate, a `statfs` check with a
 1 GiB margin, and a process budget that reserves the estimates of the jobs in
 progress. This round does the first two only.
@@ -2805,3 +2805,195 @@ U+2029; N-099 describes the consequence for the fingerprint).
 - `media.CoverMIME` exports the writer's MIME table, so the render's
   `ExpectedCover.MIME` comes from the one place that embeds it
   (`TestCoverMIMEIsTheWritersMIME`).
+
+## Round 9: `internal/publish`, recovery, the render executor and the pool (2026-09-24)
+
+### N-135 · A failure after PREPARE stops the process; an illegal journal fails the boot — DECIDED
+§9.4: "un errore dopo PREPARE non diventa un semplice `job failed` seguito da
+altre pubblicazioni: il journal resta prioritario". The simplest reading
+that keeps a single recovery path:
+- **At run time.** Any error after PREPARE's commit (an INSTALL refusal, a
+  failed fsync or rename, a failed FINALIZE, the shutdown grace running
+  out), and an uncertain PREPARE commit, mark the publisher *suspended*
+  (in memory, under `publishMu`). From then on no `Publish` of this
+  process does anything: each returns `publish_suspended` marked with
+  `jobs.Stop`. The job stays running. `jobs.Pool` treats `jobs.Stop` like
+  a fatal store error: every worker stops, the builds are cancelled (their
+  tools killed), and `cmd/musiclibd` exits 1. Docker restarts it; boot
+  step 4 completes the journal (§9.4), and step 5 makes the job pending
+  again if FINALIZE did not complete it.
+- **At boot.** `Publisher.Recover` completes the journal forward. A state
+  that matches no legal transition is `publish_illegal_state`; a
+  filesystem error is `publish_io`. Both fail the boot like every other
+  refusal (exit 1, N-068): readiness never turns positive, no worker
+  starts, nothing is deleted, and the journal stays. With
+  `restart: unless-stopped` the recovery is retried at every restart. That
+  is harmless, since it is idempotent and never deletes, and it completes
+  by itself once a transient cause (EIO, ENOSPC) is gone. The operator
+  reads the code in the logs and either puts back what was moved by hand,
+  or stops the app and runs `rebuild` (Phase 6), which clears the journal
+  (§11.3). Doctor only reports the journal (§11.3); nothing but the boot
+  resolves it.
+- **The alternative.** Staying alive with negative readiness and
+  publishing suspended was considered. It would hold the volume lock
+  (keeping `doctor`/`rebuild` out, N-068's argument), and it would need a
+  second state machine for a process that serves but cannot publish.
+  **Flagged for the reviewer:** if the owner prefers a live process with
+  `/health/ready` reporting `publish_suspended`, the change is local to
+  `cmd/musiclibd` (`recoverJournal` and the pool's exit).
+- **§6.4, database loss (resolves N-070).** A lost connection or an
+  uncertain commit anywhere in a worker (a claim, a completion, PREPARE,
+  FINALIZE) stops the pool, and the process exits 1. An idle process
+  notices within the 2 s poll, and `/health/ready` answers
+  `db_unavailable` meanwhile. It is tested in process
+  (`TestDatabaseLossStopsTheProcess`) and with a real child process whose
+  two workers are running tools (`TestProcessDatabaseLossMidWork`: exit 1,
+  no tool survives, and a restart finishes the album).
+
+### N-136 · The publication's failpoints and the crash harness — DECIDED
+`publish.failpointHook` (nil in production) runs at six named points, in
+protocol order:
+1. `preflight`: checked, before PREPARE;
+2. `prepared`: the journal committed;
+3. `installed`: right after the rename or the exchange, before the
+   retirement and any fsync;
+4. `retired`: the old directory moved;
+5. `synced`: INSTALL complete, before FINALIZE;
+6. `finalized`: FINALIZE committed, before the release and the cleanup.
+
+In-process tests return an error there. `crash_test.go` runs the test
+binary as a child (`TestHelperProcess`, the pattern of `internal/volume`,
+N-061) whose hook sends itself SIGKILL, then runs the recovery in two fresh
+children.
+
+The §12.2 rows covered for the publication: four kinds of publication ×
+every point, which is 21 real crashes, plus crashes inside the recovery
+itself.
+
+| §12.2 row | Test |
+|---|---|
+| Crash prima/dopo PREPARE | `TestCrashMatrix/*/preflight`, `*/prepared`; `TestRecoverBeforePrepare` |
+| Crash subito dopo exchange, prima degli fsync, prima/dopo FINALIZE | `TestCrashMatrix/exchange/{installed,synced,finalized}` |
+| Crash tra installazione del nuovo path e ritiro del vecchio | `TestCrashMatrix/rename/{installed,retired}` |
+| Errore DB dopo rename | `TestRecoverDatabaseErrorAfterRename` (pgtest.Proxy: the FINALIZE commit cut, or its answer lost) |
+| Recovery run twice, or interrupted | every matrix case runs two recoveries; `TestCrashDuringRecovery` |
+| Illegal observed state | `TestRecoverIllegalStates` (7 states: nothing moved, the journal kept); `TestBootRefusesAnIllegalJournal` |
+| Modifica API durante un build / fra PREPARE e FINALIZE | `TestPublishSupersededBuild`, `TestExecuteRenderSupersededAndCancelled`, `TestPublishChangeBetweenPrepareAndFinalize` |
+| Riuso di un vecchio nome non ancora ritirato | `TestPublishNameReuseDuringRename` |
+| SIGTERM/SIGKILL con più worker e helper attivi | `TestProcessSignalsWithHelpersActive` |
+
+**Left for the Phase 3 failpoint round:**
+- the in-process hooks of the blob store, the claim and the builder
+  (N-044), which still only inject errors;
+- a real crash during a build or an import;
+- a really full disk (N-045);
+- the rest of §12.2 outside the publication.
+
+SIGKILL keeps the page cache, so the fsync order is argued, not tested
+against a power cut.
+
+### N-137 · Ownership on disk: the readings of §3.3 and §9.3 — DECIDED
+- **Another album's directory** is one whose `.musiclib.json` parses
+  (`render.ParseReceipt`, the strict parser) and names another album. It is
+  never replaced (at the new path) nor retired (at the old path), at run
+  time or in the recovery.
+- **The new path, when it differs exactly from the old one.** Any
+  directory there is a conflict (`publish_destination_occupied`), even one
+  with this album's own receipt of an older build: only the published path
+  is the album's (§3.3).
+- **The published path.** A missing, unparseable or older receipt, and
+  altered or added files, are output damage. The exchange replaces the
+  whole directory, so added files do not survive (§3.3).
+- **Unsafe entries.** A symlink or a special file anywhere on a path (the
+  artist directory included), or a file where a directory must be, is
+  `publish_unsafe_entry` before the journal and `publish_illegal_state`
+  after it. fsops resolves with `RESOLVE_NO_SYMLINKS`, so nothing is
+  followed.
+- **The whole transition is checked before anything moves**
+  (`checkTransition`): the new path, the staging, the artist directory,
+  the old path and the free name `work/retired/<build_id>`. *Found by
+  `TestRecoverIllegalStates`:* the first version installed the new album
+  and only then refused a symlink at the old path, leaving a changed
+  library behind a refusal. Mutation-checked.
+- **What is read.** The receipt is the only content read under `publishMu`
+  (§2.2: no media hashing), and the files it lists are not hashed again.
+  Doctor verifies them (§11.3).
+- **The old artist directory** is removed with `rmdir` when the album
+  leaves it. It is not tried when the new path is under the same artist
+  directory (exact comparison). An `rmdir` error other than not-empty or
+  not-found is a warning.
+
+### N-138 · FINALIZE without the journal's running attempt — DECIDED
+FINALIZE completes the album's render row only if it is running with the
+journal's ticket (`jobs.FinishRender`, §6.4). The protocol never leaves it
+otherwise: only the attempt holding the journal completes it, and step 5
+(`RecoverRunning`) runs after step 4.
+
+If it ever is otherwise, for example after a manual edit, FINALIZE still
+records the publication, deletes the journal and logs a warning. The
+output on disk is the journal's, by its receipt, and refusing would block
+every publication until a rebuild. A missing job is not recreated: the
+next catalog change enqueues one.
+
+### N-139 · The process space budget — DECIDED (resolves N-114)
+- **`jobs.Budget`** lives in `internal/jobs`, which both the importer and
+  the renderer already import. `Reserve(free, estimate)` compares
+  `free − 1 GiB − reserved` with the estimate, and reserves, under one
+  mutex. `free` is the `statfs` value the caller reads just before. A late
+  reading can only count twice bytes already written by a job that is
+  still reserved: conservative. `jobs.SpaceMargin` replaces the two
+  `spaceMargin` constants.
+- **Release points.** The importer reserves before the copies and releases
+  when the import's writes are done. The builder reserves before it
+  creates the staging and hands the reservation over in
+  `render.Result.Space`; `ExecuteRender` releases it once the staging is
+  installed or discarded (N-114's requirement). A failed build releases at
+  once.
+- **Rebuilt after a crash.** There is one budget per process, empty at
+  every start: the cleanup of step 5 removes every staging, retired
+  directory and temporary before any worker reserves.
+- Every write still handles ENOSPC (`insufficient_space`), and nothing
+  published is ever removed to make room.
+- Tests: `TestBudgetConcurrentReservationsNeverOverspend` (64 goroutines ×
+  50 rounds; mutation-checked), `TestReserveSpace` (importer),
+  `TestBuildReservesSpace` (builder).
+
+### N-140 · Where the round-9 pieces live — DECIDED
+- **`internal/publish` owns the journal.** `sql/publish.sql` holds the
+  journal row, `SetAlbumPublished` and the album's render row `FOR
+  UPDATE`; they are used only in PREPARE and FINALIZE, under
+  `store.InCatalogTx`. `albums.published_*` is written there and nowhere
+  else, because it is the journal's outcome (§2.3: "internal/publish:
+  journal, rename delle directory, recovery").
+- **`ExecuteRender`** is a method of the publisher: the render job is plan,
+  build, publish, and the publisher already needs the builder (to discard
+  builds). `cmd/musiclibd.execute` dispatches the three kinds.
+- **`render.Result`** gained `Dir` (the journal's new_path, from the plan)
+  and `Space`. `render.MaxReceiptBytes` is exported for the readers of a
+  receipt on disk (the publisher, later doctor).
+- **`jobs.Stop` / `jobs.Stops`:** a marked executor error stops the pool
+  like a fatal store error (N-135).
+- **Builds that are not published** (superseded, refused, a preflight
+  conflict) are discarded after `publishMu` is released (§2.2: no
+  recursive removal in the critical section). A failed discard is a
+  warning; the boot removes the build.
+- **The shutdown order:**
+  1. readiness off;
+  2. the workers' context cancelled: no more claims, the builds and their
+     tools killed;
+  3. HTTP closed;
+  4. the workers awaited: a prepared publication has 30 s from the
+     cancellation, then its journal is left to the recovery;
+  5. the database pool closed;
+  6. the volume closed, the lock released last.
+
+  The Compose stop grace is 45 s.
+
+### N-141 · Creating an import batch before the API exists — DECIDED
+There is no HTTP API until Phase 5, and no product surface was added for
+this round. For the Compose end-to-end check, `docs/docker.md` documents a
+test path: two SQL statements through `docker compose exec postgres psql`,
+which insert an `import_batches` row and its scan job, the same rows that
+`catalog.CreateImportBatch` writes. The 2 s poll finds the job. The section
+is marked as a Phase 2 verification step, to be replaced by
+`POST /api/imports`.

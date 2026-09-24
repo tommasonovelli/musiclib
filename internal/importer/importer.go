@@ -49,7 +49,10 @@ type Config struct {
 	// Work is /data/work, on the filesystem of originals (§3.1): its
 	// free space is the space of the import (§11.2).
 	Work *fsops.Root
-	Log  *slog.Logger
+	// Budget is the process-wide space budget (§11.2), shared with the
+	// builder.
+	Budget *jobs.Budget
+	Log    *slog.Logger
 }
 
 // Importer runs scan and import jobs. It is safe for concurrent use by the
@@ -60,20 +63,21 @@ type Importer struct {
 	blobs   *blobstore.Store
 	src     source
 	work    *fsops.Root
+	budget  *jobs.Budget
 	log     *slog.Logger
 }
 
 // New returns an importer and creates work/import durably if missing.
 func New(cfg Config) (*Importer, error) {
-	if cfg.Catalog == nil || cfg.Tools == nil || cfg.Blobs == nil || cfg.Source == nil || cfg.Work == nil || cfg.Log == nil {
-		return nil, errorf(CodeInvalidArgument, "the importer needs a catalog, the tools, a blob store, /import, work and a logger")
+	if cfg.Catalog == nil || cfg.Tools == nil || cfg.Blobs == nil || cfg.Source == nil || cfg.Work == nil || cfg.Budget == nil || cfg.Log == nil {
+		return nil, errorf(CodeInvalidArgument, "the importer needs a catalog, the tools, a blob store, /import, work, the space budget and a logger")
 	}
 	if err := cfg.Work.MkdirAllSync(workDir, 0o755); err != nil {
 		return nil, err
 	}
 	return &Importer{
 		catalog: cfg.Catalog, tools: cfg.Tools, blobs: cfg.Blobs,
-		src: source{root: cfg.Source}, work: cfg.Work, log: cfg.Log,
+		src: source{root: cfg.Source}, work: cfg.Work, budget: cfg.Budget, log: cfg.Log,
 	}, nil
 }
 
@@ -152,26 +156,23 @@ func (im *Importer) fail(ctx context.Context, kind jobs.Kind, a jobs.Attempt, er
 	return nil
 }
 
-// spaceMargin is the free space that an import must leave on /data (§11.2).
-const spaceMargin = 1 << 30
-
-// checkSpace is §11.2's check before the copies: a conservative estimate
-// plus the 1 GiB margin must fit in the space available to the process on
-// /data.
-//
-// There is no process-wide budget yet (NOTES.md N-114): the executor/pool
-// round adds the in-memory reservation of the estimates of the jobs in
-// progress here, so that two workers never spend the same free space.
-func (im *Importer) checkSpace(estimate int64) error {
+// reserveSpace is §11.2 before the copies: the conservative estimate is
+// reserved in the process-wide budget, which requires the free space of
+// /data minus the 1 GiB margin minus every other job's reservation to cover
+// it (NOTES.md N-114). The caller releases the reservation when the job's
+// copies are done. Every write still handles ENOSPC.
+func (im *Importer) reserveSpace(estimate int64) (*jobs.Reservation, error) {
 	fs, err := im.work.StatFS()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if fs.FreeBytes-spaceMargin < estimate {
-		return errorf(CodeInsufficientSpace, "the import needs about %d bytes plus a margin of %d, %d are available",
-			estimate, int64(spaceMargin), fs.FreeBytes)
+	r, avail := im.budget.Reserve(fs.FreeBytes, estimate)
+	if r == nil {
+		return nil, errorf(CodeInsufficientSpace,
+			"the import needs about %d bytes; %d are free, of which %d are kept as a margin and %d are reserved by other jobs in progress",
+			estimate, fs.FreeBytes, int64(jobs.SpaceMargin), max(0, fs.FreeBytes-jobs.SpaceMargin-avail))
 	}
-	return nil
+	return r, nil
 }
 
 // testHook, when set by a test, runs at named points of an import so that a

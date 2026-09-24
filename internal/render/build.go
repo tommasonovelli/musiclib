@@ -16,6 +16,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
+	"musiclib/internal/jobs"
 	"musiclib/internal/media"
 	"musiclib/internal/store"
 )
@@ -36,8 +37,6 @@ const (
 	workDir = "render"
 	// albumDir is the album directory inside a build's directory.
 	albumDir = "album"
-	// spaceMargin is the free space a build must leave on /data (§11.2).
-	spaceMargin = 1 << 30
 	// tagSlack bounds what a tag write adds to a track besides the cover:
 	// the managed fields (at most 11 texts of 1,024 characters) and TagLib's
 	// padding, which it caps at 1 MiB (N-085).
@@ -62,26 +61,30 @@ type Config struct {
 	// Work is /data/work, on the filesystem of library/ (§3.1): the builds
 	// live in work/render, and its free space is the space of a build.
 	Work *fsops.Root
+	// Budget is the process-wide space budget (§11.2), shared with the
+	// importer.
+	Budget *jobs.Budget
 }
 
 // Builder builds the staging directory of a plan (§9.1 steps 4 to 8). It
 // is safe for concurrent use by the pool's workers: every build has its own
 // directory and state. It never opens library/: it has no root for it.
 type Builder struct {
-	tools *media.Tools
-	blobs *blobstore.Store
-	work  *fsops.Root
+	tools  *media.Tools
+	blobs  *blobstore.Store
+	work   *fsops.Root
+	budget *jobs.Budget
 }
 
 // New returns a builder and creates work/render durably if missing.
 func New(cfg Config) (*Builder, error) {
-	if cfg.Tools == nil || cfg.Blobs == nil || cfg.Work == nil {
-		return nil, errorf(CodeInvalidArgument, "the builder needs the tools, the blob store and work")
+	if cfg.Tools == nil || cfg.Blobs == nil || cfg.Work == nil || cfg.Budget == nil {
+		return nil, errorf(CodeInvalidArgument, "the builder needs the tools, the blob store, work and the space budget")
 	}
 	if err := cfg.Work.MkdirAllSync(workDir, dirPerm); err != nil {
 		return nil, err
 	}
-	return &Builder{tools: cfg.Tools, blobs: cfg.Blobs, work: cfg.Work}, nil
+	return &Builder{tools: cfg.Tools, blobs: cfg.Blobs, work: cfg.Work, budget: cfg.Budget}, nil
 }
 
 // Result is a finished build, what the publisher consumes (§9.3): the
@@ -94,12 +97,19 @@ type Result struct {
 	// Removal: the plan was a removal (§9.1 step 3). There is no staging
 	// and no receipt; the build id names the retired directory (§9.3).
 	Removal bool
+	// Dir is the album's directory under library/, the plan's Dir.Path
+	// (§5.1): the journal's new_path. "" for a removal.
+	Dir string
 	// Staging is the built album directory relative to /data/work,
 	// render/<build_id>/album; "" for a removal.
 	Staging string
 	// ReceiptHash is the SHA-256 of the staging's .musiclib.json (§9.2);
 	// "" for a removal.
 	ReceiptHash string
+	// Space is the build's reservation in the process budget (§11.2),
+	// nil for a removal. The staging still occupies that space until it is
+	// installed or discarded: the caller releases it then (N-114).
+	Space *jobs.Reservation
 }
 
 // StagingDir is the album directory of a build, relative to /data/work.
@@ -158,13 +168,15 @@ func (b *Builder) Build(ctx context.Context, p Plan) (res Result, err error) {
 	if len(p.Tracks) == 0 {
 		return Result{}, errorf(CodeInvalidArgument, "the plan has no track")
 	}
-	if err := b.checkSpace(estimate(p)); err != nil {
+	res.Dir = p.Dir.Path
+	if res.Space, err = b.reserveSpace(estimate(p)); err != nil {
 		return Result{}, err
 	}
 	defer func() {
 		if err != nil {
 			// The removal must run even when ctx is what ended the build.
 			err = errors.Join(err, b.Discard(context.WithoutCancel(ctx), res.BuildID))
+			res.Space.Release()
 			res = Result{}
 		}
 	}()
@@ -180,23 +192,23 @@ func (b *Builder) Build(ctx context.Context, p Plan) (res Result, err error) {
 	return res, nil
 }
 
-// checkSpace is §11.2's check before a build: the estimate plus the 1 GiB
-// margin must fit in the space available to the process on /data.
-//
-// There is no process-wide budget yet (NOTES.md N-114): the pool round adds
-// the in-memory reservation of the estimates of the jobs in progress here,
-// and in the importer's checkSpace, so that two workers never spend the
-// same free space. Every write still handles ENOSPC (§11.2).
-func (b *Builder) checkSpace(estimate int64) error {
+// reserveSpace is §11.2 before a build: the estimate is reserved in the
+// process-wide budget, which requires the free space of /data minus the
+// 1 GiB margin minus every other job's reservation to cover it (NOTES.md
+// N-114). The reservation lives in the Result until the staging is
+// installed or discarded. Every write still handles ENOSPC (§11.2).
+func (b *Builder) reserveSpace(estimate int64) (*jobs.Reservation, error) {
 	fs, err := b.work.StatFS()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if fs.FreeBytes-spaceMargin < estimate {
-		return errorf(CodeInsufficientSpace, "the build needs about %d bytes plus a margin of %d, %d are available",
-			estimate, int64(spaceMargin), fs.FreeBytes)
+	r, avail := b.budget.Reserve(fs.FreeBytes, estimate)
+	if r == nil {
+		return nil, errorf(CodeInsufficientSpace,
+			"the build needs about %d bytes; %d are free, of which %d are kept as a margin and %d are reserved by other jobs in progress",
+			estimate, fs.FreeBytes, int64(jobs.SpaceMargin), max(0, fs.FreeBytes-jobs.SpaceMargin-avail))
 	}
-	return nil
+	return r, nil
 }
 
 // estimate is the conservative space estimate of §11.2 for a plan: every

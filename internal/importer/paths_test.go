@@ -53,18 +53,43 @@ func TestImportTheImportRoot(t *testing.T) {
 	}
 }
 
-// §11.2: the estimate plus the 1 GiB margin must fit in the free space.
-func TestCheckSpace(t *testing.T) {
+// §11.2: the estimate plus the 1 GiB margin must fit in the free space,
+// minus what other jobs in progress have reserved in the process budget.
+func TestReserveSpace(t *testing.T) {
 	e := newEnv(t)
 	fs, err := e.work.StatFS()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.im.checkSpace(1); err != nil && fs.FreeBytes > spaceMargin+1<<20 {
-		t.Errorf("a small estimate: %v", err)
+	if fs.FreeBytes < jobs.SpaceMargin+64<<20 {
+		t.Skipf("only %d bytes free on the test volume", fs.FreeBytes)
 	}
-	if err := e.im.checkSpace(fs.FreeBytes - spaceMargin + 1<<30); Code(err) != CodeInsufficientSpace {
+	r, err := e.im.reserveSpace(1)
+	if err != nil {
+		t.Fatalf("a small estimate: %v", err)
+	}
+	r.Release()
+	if _, err := e.im.reserveSpace(fs.FreeBytes - jobs.SpaceMargin + 1<<30); Code(err) != CodeInsufficientSpace {
 		t.Errorf("an estimate beyond the free space minus the margin: %v", err)
+	}
+	// Another job holds all but 16 MiB of what this one could have: a
+	// 1 GiB import is refused (a margin against the other tests writing to
+	// the same volume), and accepted once that job releases.
+	other, _ := e.im.budget.Reserve(fs.FreeBytes, fs.FreeBytes-jobs.SpaceMargin-16<<20)
+	if other == nil {
+		t.Fatal("the other job's reservation was refused")
+	}
+	if _, err := e.im.reserveSpace(1 << 30); Code(err) != CodeInsufficientSpace {
+		t.Errorf("an estimate beyond what other jobs left: %v", err)
+	}
+	other.Release()
+	r, err = e.im.reserveSpace(32 << 20)
+	if err != nil {
+		t.Fatalf("after the release: %v", err)
+	}
+	r.Release()
+	if got := e.im.budget.Reserved(); got != 0 {
+		t.Errorf("%d bytes still reserved", got)
 	}
 	if got := estimate([]*srcFile{{ID: identity{Size: 10}}, {ID: identity{Size: 5}}}); got != 15+2*MaxCoverBytes {
 		t.Errorf("estimate %d", got)

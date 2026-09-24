@@ -27,7 +27,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
-- [ ] Full repository layout (§2.3): `cmd/musiclibd`, `internal/volume` (N-060) and `internal/media` now exist; the other packages arrive with their phases
+- [ ] Full repository layout (§2.3): every package of §2.3 up to Phase 2 exists (`internal/publish` since round 9); `internal/http`, `internal/maintenance` and `web/` arrive with their phases
 - [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). ffmpeg/ffprobe (N-073) and the static TagLib helper `musiclib-tags` (N-083) are in the runtime image since Phase 2
 - [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
 - [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
@@ -37,21 +37,21 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Volume lock (`flock` on `/data/.lock`) and volume identity (`.musiclib-store` ↔ `settings.store_id`) (§2.2, §11.1) — `internal/volume`; maintenance marker read and enforced (§11.3)
 - [x] `internal/blobstore`: 5-step verified put, dedup, `corrupt_blob` (§7.5)
 - [x] Boot checks: same filesystem and mount, permissions, `RENAME_EXCHANGE` available (§3.1) — `volume.CheckFilesystem`
-- [x] `cmd/musiclibd`: environment configuration, umask 022, no root, JSON logs, boot steps 1, 2, 3, 5 (blob temporaries and probe leftovers) and 7, `/health/live` and `/health/ready`, `healthcheck` subcommand, graceful shutdown with the lock released last (§2.3, §6.1, §11.1). There is no worker pool yet: step 7 only turns readiness positive
+- [x] `cmd/musiclibd`: environment configuration, umask 022, no root, JSON logs, boot steps 1 to 7 (steps 4–7 since Phase 2, round 9), `/health/live` and `/health/ready`, `healthcheck` subcommand, graceful shutdown with the lock released last (§2.3, §6.1, §11.1)
 
 ## Phase 2 — First vertical slice (one FLAC album)
 
 - [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
 - [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`, ID3 tags in a FLAC stripped by a declared rule (N-090); MP3 and M4A answer a typed `unsupported_format` until Phase 4 (N-094)
 - [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC complete** (table in `native/musiclib-tags/src/fields.h`, N-088); the MP3 and M4A tables are Phase 4 (N-094)
-- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC candidate (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); MP3 and M4A fail as `audio_format_not_supported_yet` until Phase 4. The executors (`ExecuteScan`, `ExecuteImport`) have the form `jobs.Pool` expects and are **not wired** into `cmd/musiclibd`: the pool starts in the publish round with the journal recovery (N-107, N-125); only `importer.CleanWork` joined boot step 5
+- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC candidate (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); MP3 and M4A fail as `audio_format_not_supported_yet` until Phase 4. The executors (`ExecuteScan`, `ExecuteImport`) run in the pool of `cmd/musiclibd` since round 9; the space check reserves in the process budget (N-139)
 - [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
-- [x] `internal/render`: snapshot → pure plan → build in staging (§9.1) — `render_version` (§2.1, N-010 resolved by N-130), the pure planner, the verified build in `work/render/<build_id>/album` with its failure cleanup; not wired into a job executor yet (next round, with the publisher)
+- [x] `internal/render`: snapshot → pure plan → build in staging (§9.1) — `render_version` (§2.1, N-010 resolved by N-130), the pure planner, the verified build in `work/render/<build_id>/album` with its failure cleanup; run by `publish.ExecuteRender` since round 9
 - [x] `.musiclib.json` receipt (§9.2) — canonical encoder, strict parser for recovery and doctor, `receipt_hash` (N-133)
-- [ ] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3)
-- [ ] Journal recovery at startup (§9.4)
-- [ ] Boot steps 4 (journal recovery), 5 (running jobs back to pending, cleanup of `work/render` and `work/retired`), 6 (stale renders) and the worker pool of step 7, in the places marked in `cmd/musiclibd` `boot()` (§11.1); exit on database loss once workers exist (§6.4, N-070). The helpers of steps 5 and 6 and the pool exist and are tested (`jobs.RecoverRunning`, `jobs.EnqueueStaleRenders`, `jobs.Pool`); `render_version` exists (`render.Version`, checked at boot step 3 by `render.CheckTools`); the wiring waits for step 4 (N-107)
-- [x] `internal/jobs`: claim, pool, completion (§6.2, §6.4) — the single `EnqueueRender`, the REPEATABLE READ claim with its snapshot, ticket-conditioned completions, boot helpers, the worker pool
+- [x] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3) — preflight, `publishMu`, suspension after PREPARE (N-135), ownership rules (N-137), the render executor `ExecuteRender`
+- [x] Journal recovery at startup (§9.4) — `Publisher.Recover`, idempotent, forward only; illegal states fail the boot with `publish_illegal_state`, deleting nothing
+- [x] Boot steps 4 (journal recovery), 5 (`work/render`, `work/retired` and the other leftovers cleaned, running → pending), 6 (stale renders) and the worker pool of step 7 with the scan, import and render executors (§11.1); exit on database loss or a pending publication (§6.4, N-070, N-135); shutdown with the 30 s grace for a prepared publication
+- [x] `internal/jobs`: claim, pool, completion (§6.2, §6.4) — the single `EnqueueRender`, the REPEATABLE READ claim with its snapshot, ticket-conditioned completions, boot helpers, the worker pool, wired in `cmd/musiclibd` with two workers tested end to end (§13.1); `jobs.Stop` for a pending publication; the process space budget `jobs.Budget` (§11.2)
 
 ## Phase 3 — Concurrency
 
@@ -60,7 +60,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] `path_claims` and global `pg_advisory_xact_lock` (§5.3) — `store.InCatalogTx`, `catalog.ReconcileClaims`
 - [~] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1) — the revision check in the transaction of the change, with typed `precondition_required` / `precondition_failed` (catalog); the HTTP ETag and headers come with the API
 - [~] Artist rename and album reassignment (§4.3) — both done and tested in the catalog (`RenameArtist`; `UpdateAlbum` with another `artist_id`); the HTTP endpoints come with the API
-- [ ] Named failpoints and failure matrix (§12.2)
+- [~] Named failpoints and failure matrix (§12.2) — the publication's six failpoints with real SIGKILL crashes in child processes, recovery twice and interrupted, DB loss after the rename, SIGTERM/SIGKILL with helpers active, DB loss mid-work (N-136); the blob store, claim and builder hooks and the rest of the matrix are this phase's (N-044)
 
 ## Phase 4 — Formats and content
 
@@ -85,7 +85,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] `doctor`, normal and `--deep` (§11.3)
 - [ ] `rebuild` with maintenance marker (§11.3)
 - [ ] `backup` / `restore` (§11.4)
-- [~] Space budget and `statfs` check (§11.2) — the estimates and `statfs` checks with the 1 GiB margin of the import and of the build; the process-wide budget is the executor/pool round's (N-114)
+- [x] Space budget and `statfs` check (§11.2) — the conservative estimates of the import and of the build, reserved atomically in the process budget `jobs.Budget` against `statfs` minus the 1 GiB margin (N-114, N-139); ENOSPC handled by every write
 - [ ] Operations guide with Compose examples (§11)
 
 ---
@@ -339,16 +339,21 @@ logs JSON on stderr.
 
 `boot()` is the §11.1 sequence, one small function per step:
 
-| Step | Now | Phase 2 |
-|---|---|---|
-| 1 | HTTP serving with negative readiness; `volume.Acquire` | |
-| (N-065) | `CheckMaintenance`, before anything touches the database | |
-| 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` | |
-| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg, ffprobe and musiclib-tags, `media_tool_unavailable` / `media_tool_version`), `/import` listable | |
-| 4 | — | journal recovery |
-| 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)` | running → pending; `work/render`, `work/retired` |
-| 6 | — | enqueue stale renders |
-| 7 | readiness positive | start the worker pool |
+| Step | What |
+|---|---|
+| 1 | HTTP serving with negative readiness; `volume.Acquire` |
+| (N-065) | `CheckMaintenance`, before anything touches the database |
+| 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` |
+| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg, ffprobe and musiclib-tags, `media_tool_unavailable` / `media_tool_version`), `/import` listable |
+| 4 | the blob store, the process space budget, the builder and the publisher; `Publisher.Recover` (§9.4): the pending journal completed forward, or the boot refused with `publish_illegal_state` / `publish_io` (N-135) |
+| 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)`, `importer.CleanWork`, `Publisher.CleanWork` (`work/render`, `work/retired` not referenced by a journal); `jobs.RecoverRunning` |
+| 6 | `jobs.EnqueueStaleRenders(render.Version)` |
+| 7 | the catalog (whose commits wake the pool), the importer on `/import`, `jobs.NewPool` with `WORKERS` workers dispatching scan, import and render; readiness positive |
+
+While the server runs, an error that stops the pool (`store.IsFatal`: a
+lost connection or an uncertain commit; or `jobs.Stop`: a publication left
+pending) makes `run` return it, and the process exits 1 so that Docker
+restarts it (§6.4, N-070, N-135).
 
 - `/health/live` is always 200.
 - `/health/ready` is 503 `not_ready` until step 7 and during shutdown. After
@@ -357,15 +362,18 @@ logs JSON on stderr.
 - Both endpoints are GET only, answer JSON with `Cache-Control: no-store`,
   and every other route is 404.
 - A refused boot logs its stable `code` and exits 1 (N-068).
-- On SIGTERM or SIGINT the server stops accepting HTTP (graceful, 10 s),
-  closes the pool, then closes the volume's roots and releases the flock,
-  last. It exits 0.
+- On SIGTERM or SIGINT the server cancels the workers (no claim, builds
+  and their tools killed), stops accepting HTTP (graceful, 10 s), waits for
+  every worker (a prepared publication has 30 s, N-140), closes the pool,
+  then closes the volume's roots and releases the flock, last. It exits 0.
 
 Tests use real PostgreSQL 17 and ext4, with no mocks:
 - **Readiness lifecycle.** The database refuses connections at first: live is
   200, ready is `not_ready`, the lock is held and nothing is written. Once the
-  database is allowed, ready turns 200. When the database goes away, ready is
-  `db_unavailable` and live stays 200; when it comes back, ready is 200 again.
+  database is allowed, ready turns 200.
+- **Database loss (§6.4).** With the workers running, the database goes
+  away: the next poll fails fatally, the workers stop, `run` returns
+  `store_connection_lost` with the lock released; a restart boots again.
 - **Shutdown order.** The shutdown events come in order, then the lock is
   free and nothing answers any more.
 - **Stop during the wait.** Stopping while waiting for PostgreSQL is a clean
@@ -375,7 +383,30 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
   malformed maintenance, mismatch, new database, lock held, missing `/data`
   and missing `/import`: each gives its code, never turns ready, and releases
   the lock.
-- **Step 5 cleanup.** Only temporaries and probe directories are removed.
+- **Step 5 cleanup.** Temporaries, probe directories, `work/import`
+  content and unreferenced builds and retired directories are removed;
+  nothing else.
+- **Steps 4 to 7 in order** (`TestBootStepsInOrder`): a pending journal is
+  completed first and its FINALIZE completes its running job, then the
+  cleanup and `running → pending` (no job left running), then exactly one
+  stale render (the album without a job; a failed job and an album with
+  the current renderer are left alone), then the workers, then `ready`.
+- **An illegal journal** (`TestBootRefusesAnIllegalJournal`): the boot
+  fails with `publish_illegal_state`, never turns ready, starts no worker,
+  changes nothing in `library/`, keeps the journal, releases the lock.
+- **End to end, two workers (§13.1)** (`TestEndToEndTwoWorkers`): two FLAC
+  albums in `/import`, a batch, then the server scans, imports, renders
+  and publishes; the output matches §1.1 with the managed tags read back
+  and a receipt whose hash is the album's; an artist rename moves the album,
+  retires the old directory and releases its claim; trash removes it,
+  restore brings it back; `originals/` unchanged after the import and
+  `/import` never changed; `work/render` and `work/retired` empty.
+- **Real processes with helpers running** (`TestProcessDatabaseLossMidWork`,
+  `TestProcessSignalsWithHelpersActive`): two workers with ffmpeg /
+  musiclib-tags children observed in `/proc`; losing the database gives a
+  non-zero exit; SIGTERM gives exit 0 with the shutdown order; SIGKILL is
+  covered by `Pdeathsig`. In every case none of the observed tools
+  survives, and a restart finishes the albums with no failed job.
 - **Configuration.** 40 table cases, all problems reported at once, the
   password absent from errors and logs, and the `WORKERS` default.
 - **Healthcheck.** Exit codes for 200, 503, 500, a redirect (not followed),
@@ -388,8 +419,9 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
 
 Mutation-checked: the maintenance check moved after the database wait, the
 pool closed after the lock, no umask, readiness positive without the
-database, readiness never positive, redirects followed, root allowed, and a
-`WORKERS` default of 2. Each makes a test fail.
+database, readiness never positive, redirects followed, root allowed, a
+`WORKERS` default of 2, and (round 9) `run` ignoring the pool's fatal
+error. Each makes a test fail.
 
 ```sh
 scripts/check.sh ./cmd/...
@@ -820,8 +852,14 @@ Tests on real PostgreSQL 17 (albums as SQL fixtures):
 - the pool: Wake with an hour's poll, the 2 s poll, 120 jobs on 16 workers
   each run once with no 40001 between the workers (pgx tracer), shutdown
   reaching the running job and no goroutine left, a fatal executor error and
-  a lost database stopping every worker;
-- the closed types, strict both ways.
+  a lost database stopping every worker, an error marked with `Stop`
+  stopping it and the same error unmarked not (`TestPoolStop`,
+  mutation-checked);
+- the closed types, strict both ways;
+- the space budget (§11.2, N-139): `NewBudget`, `Reserve(free, estimate)`
+  against free minus `SpaceMargin` minus what is reserved, `Release`
+  idempotent; 64 goroutines racing for 100 MiB never overspend, every
+  fitting reservation granted, 50 rounds (mutation-checked).
 
 ```sh
 scripts/check.sh ./internal/jobs/...
@@ -1193,6 +1231,120 @@ directory-spelling comparison off; the planner or the catalog not calling
 ```sh
 scripts/check.sh ./internal/render/...
 scripts/dev.sh go test -race -count=10 ./internal/render/
+```
+
+### `internal/publish` — publication, journal, recovery, the render executor (§3.2, §5.3, §6.3, §6.4, §9.3, §9.4, §9.5, §11.1) ✔
+
+The protocol that makes a finished build visible in `library/`, and the
+forward completion of an interrupted publication at boot. Disk access goes
+only through `internal/fsops` (library/ and work/ as two roots on the same
+filesystem, cross-root `renameat2`), SQL only through `sql/publish.sql`
+(sqlc) and the catalog's and queue's functions, always under
+`store.InCatalogTx`.
+
+| Function | Role |
+|---|---|
+| `New(Config{DB, Library, Work, Builder, Log})` | the process's one publisher; creates `work/retired` durably |
+| `Publisher.Publish(ctx, snap, res)` | preflight, PREPARE, INSTALL, FINALIZE under `publishMu`, then the cleanup outside it; `Report{Outcome, Job, Journal}` |
+| `Publisher.Recover(ctx)` | §9.4 at boot step 4: the pending journal completed forward, idempotent; `publish_illegal_state` for a state matching no legal step |
+| `Publisher.CleanWork(ctx)` | boot step 5: builds and retired directories no journal references |
+| `Publisher.ExecuteRender(ctx, claim)` | the render executor: `render.NewPlan` → `Builder.Build` → `Publish`; every non-fatal path ends in a completion (N-107) |
+| `Journal`, `Outcome` (`Published`, `Superseded`, `Refused`) | the publication row and what a publication did |
+| `Error` / `Code` | `publish_destination_occupied`, `publish_foreign_output`, `publish_unsafe_entry`, `publish_staging_invalid`, `publish_state_changed`, `publish_illegal_state`, `publish_io`, `publish_suspended`, `publish_journal_pending`, `publish_canceled` |
+
+How §9.3 maps to the code:
+
+- **`publishMu`** is a one-slot channel (so waiting respects the context),
+  always taken before any catalog transaction; the catalog never takes it.
+- **Preflight** (`preflight`): the staging's receipt parses and names the
+  album, build, revision and renderer with the build's hash; the new path
+  is absent, or exactly the album's published path without another
+  album's receipt; the old path, when different, absent or a directory
+  without another album's receipt; no symlink, special file or file on the
+  way (N-137). A conflict returns a typed error: the executor fails the
+  job (`FailRender`, §6.4) and the build is discarded; no journal.
+- **PREPARE** (`prepare`): `catalog.CheckFresh`; ticket, revision or
+  renderer stale → `RequeueRender`, discard, no journal; stale claims →
+  `ReconcileClaims` in the same transaction, and if another album owns a
+  path, `FailRender` with `path_reserved` naming it, never requeued (N-112);
+  otherwise the album's current published path and build are checked
+  against the preflight's, the single row is inserted (the built revision,
+  the renderer, the build, the receipt hash or NULL for a removal, old and
+  new paths) and the claims are reconciled to include them. An uncertain
+  commit is fatal.
+- **INSTALL** (`install`, shared with the recovery): the whole observed
+  state is checked first (`checkTransition`); then the new path already
+  holding the build is left alone (never a second exchange); otherwise
+  parents created and `RENAME_NOREPLACE` of the staging, or
+  `RENAME_EXCHANGE` when the new path is exactly the old one; the old path,
+  when different, retired to `work/retired/<build_id>` with NOREPLACE
+  (absent is already retired; an existing retired name is never
+  overwritten); the old artist directory `rmdir`ed if empty (a failure is
+  a warning); every directory involved fsynced, deepest first.
+- **FINALIZE** (`finalize`): the row re-read `FOR UPDATE` and compared with
+  the journal; `published_*` written from the journal's values (NULL path,
+  build and receipt for a removal); the render row completed with
+  `FinishRender` by the journal's ticket (deleted, or pending for a newer
+  request); the journal deleted; the claims reconciled.
+- **After the release:** the build directory (which holds the old album
+  after an exchange) and the retired directory removed; a failure is a
+  warning, and boot step 5 resumes it.
+- **After PREPARE, any failure** suspends publishing in the process and is
+  returned marked with `jobs.Stop`: the pool stops, the process exits 1,
+  and the boot recovers the journal (N-135). A publication already
+  prepared gets 30 s after a shutdown to finish (`graceful`), otherwise it
+  is left to the recovery.
+
+Tests on real ext4 and PostgreSQL 17 (the protocol tests stage their builds
+with a real receipt; the executor and the boot tests build real FLAC albums
+with the real tools):
+- **Transitions:** a new album; the same path (the exchange, with the old
+  album seen in the staging right after it); an artist rename (both
+  directories between install and retirement, the old artist directory
+  removed, the old claim released); a title change; a case-only rename
+  (`Abba/X` → `ABBA/X`, exact paths); a removal, a removal never
+  published, a restore.
+- **Ownership:** a foreign directory at the new path; another album's
+  receipt at the published path and at the new path; damage at the own
+  path replaced (receipt removed or garbage, a file altered, a file added);
+  symlinks at the new path, as the artist directory and at the old path, a
+  FIFO and a file at the new path. Every refusal leaves `library/`
+  unchanged and writes no journal.
+- **Concurrency (§9.5):** a change during the build (superseded, requeued,
+  discarded); a new renderer; a change between PREPARE and FINALIZE
+  (published revision is the built one, the job pending again, a second
+  render publishes the new one); N-112 repaired and refused (failed,
+  never requeued); a name reused during a rename (`path_reserved` naming
+  the owner, also between INSTALL and FINALIZE, free after the
+  retirement); trash then restore before and after PREPARE; the lock
+  order (a catalog mutation commits while a publisher waits for
+  `publishMu`); two workers and an artist rename over several albums with
+  real builds.
+- **Failure and recovery:** a failure at every point after PREPARE for four
+  kinds of publication, then a new publisher's recovery, run twice, and the
+  cleanup; before PREPARE (old output valid, the render runs again); seven
+  illegal states (a missing staging, a foreign directory, another album's
+  receipt, the exchanged output damaged so that only a reverse exchange
+  would "fix" it, an existing retired name, a symlink at the old path, a
+  removal over another album), each refused twice with nothing moved;
+  the database lost at FINALIZE through `pgtest.Proxy` (the commit cut, the
+  answer lost); the suspension (a second publication refused untouched);
+  the shutdown grace, kept and exceeded.
+- **Real crashes** (`crash_test.go`, N-136): the publisher in a child
+  process killed with SIGKILL at each of the six failpoints for the four
+  kinds (21 cases), then two recoveries in fresh children; a crash during
+  the recovery itself.
+
+Mutation-checked, each making a test fail: `old_path == new_path` compared
+case-insensitively; the "already installed" check removed (a second
+exchange); `published_revision` from the album instead of the journal;
+the ticket condition of the completion removed; N-112 requeueing instead
+of failing; `publishMu` taken under a catalog transaction; the whole-state
+check before INSTALL removed.
+
+```sh
+scripts/check.sh ./internal/publish/...
+scripts/dev.sh go test -race -count=10 -timeout 60m ./internal/publish/
 ```
 
 ---

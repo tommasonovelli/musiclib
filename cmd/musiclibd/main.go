@@ -27,6 +27,7 @@ import (
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
 	"musiclib/internal/media"
+	"musiclib/internal/publish"
 	"musiclib/internal/render"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
@@ -137,6 +138,8 @@ const (
 	codeRoot   = "run_as_root"
 	codeHTTP   = "http_listen"
 	codeImport = "import_unavailable"
+	// codeWorkers: the worker pool stopped without an error of its own.
+	codeWorkers = "workers_stopped"
 )
 
 func (e *bootError) Error() string {
@@ -166,6 +169,8 @@ func codeOf(err error) string {
 		return ve.Code
 	case errors.As(err, &se):
 		return se.Code
+	case publish.Code(err) != "":
+		return publish.Code(err)
 	case errors.As(err, &bl):
 		return bl.Code
 	case errors.As(err, &me):

@@ -18,9 +18,10 @@ import (
 // ReceiptSchemaVersion is the only schema_version of the receipt (§9.2).
 const ReceiptSchemaVersion = 1
 
-// maxReceiptBytes bounds what ParseReceipt reads: 10,000 files (§7.2) plus
+// MaxReceiptBytes bounds what ParseReceipt accepts, and what a reader of a
+// receipt on disk (the publisher, doctor) reads: 10,000 files (§7.2) plus
 // the tracks' LRC files and the cover, at about 1.2 KB each at most.
-const maxReceiptBytes = 16 << 20
+const MaxReceiptBytes = 16 << 20
 
 // Receipt is the content of .musiclib.json (§9.2), exactly: no names, no
 // titles, no timestamps, and not itself among its files.
@@ -153,8 +154,8 @@ func ParseReceipt(data []byte) (Receipt, error) {
 	fail := func(format string, args ...any) (Receipt, error) {
 		return Receipt{}, errorf(CodeReceiptInvalid, "the receipt is not valid: "+format, args...)
 	}
-	if len(data) > maxReceiptBytes {
-		return fail("%d bytes, the maximum is %d", len(data), maxReceiptBytes)
+	if len(data) > MaxReceiptBytes {
+		return fail("%d bytes, the maximum is %d", len(data), MaxReceiptBytes)
 	}
 	if !utf8.Valid(data) {
 		return fail("not valid UTF-8")

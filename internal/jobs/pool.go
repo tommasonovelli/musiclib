@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -23,7 +24,8 @@ const pollInterval = 2 * time.Second
 // completed, through Finish, FinishRender, RequeueRender or FailRender, or
 // return an error. A job it leaves running stays so until the next boot's
 // RecoverRunning. It receives the pool's context, cancelled at shutdown.
-// An error for which store.IsFatal is true stops the whole pool (§6.4).
+// An error for which store.IsFatal is true, or one marked with Stop, stops
+// the whole pool (§6.4, §9.4).
 type Executor func(ctx context.Context, c *Claim) error
 
 // Pool is the worker pool of §6.1: a fixed number of goroutines, each
@@ -79,8 +81,10 @@ func (p *Pool) Wake() {
 // its executor. It returns nil after a cancellation.
 //
 // A fatal error (store.IsFatal: an uncertain commit or a lost connection,
-// §6.4), from a claim or from an executor, stops every worker; Run then
-// returns it, and the caller stops the process so that Docker restarts it.
+// §6.4), from a claim or from an executor, or an executor error marked with
+// Stop (a publication left pending after PREPARE, §9.4), stops every
+// worker; Run then returns it, and the caller stops the process so that
+// Docker restarts it.
 func (p *Pool) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -109,8 +113,8 @@ func (p *Pool) worker(ctx context.Context, id int, stop func(error)) {
 	defer timer.Stop()
 	for {
 		busy, err := p.step(ctx, log)
-		if store.IsFatal(err) {
-			log.Error("fatal database failure, stopping the workers", "error", err, "code", Code(err))
+		if Stops(err) {
+			log.Error("fatal failure, stopping the workers", "error", err, "code", Code(err))
 			stop(err)
 			return
 		}
@@ -154,4 +158,28 @@ func (p *Pool) step(ctx context.Context, log *slog.Logger) (busy bool, err error
 	}
 	log.Info("job executed", attrs...)
 	return true, nil
+}
+
+// Stop marks err, returned by an executor, as one that must stop the whole
+// pool like a fatal database error (§6.4): the publisher uses it when a
+// publication is left pending after PREPARE, since the journal must be
+// resolved before anything else is published (§9.4). The process then
+// exits and the next boot recovers the journal (§11.1 step 4).
+func Stop(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &stopError{err: err}
+}
+
+type stopError struct{ err error }
+
+func (e *stopError) Error() string { return e.err.Error() }
+func (e *stopError) Unwrap() error { return e.err }
+
+// Stops reports whether err stops the pool: a fatal database error
+// (store.IsFatal) or an error marked with Stop.
+func Stops(err error) bool {
+	var s *stopError
+	return store.IsFatal(err) || errors.As(err, &s)
 }

@@ -309,6 +309,42 @@ func TestPoolFatalStopsEveryWorker(t *testing.T) {
 	}
 }
 
+// An executor error marked with Stop (a publication left pending, §9.4)
+// stops the pool like a fatal one; the same error unmarked does not.
+func TestPoolStop(t *testing.T) {
+	f := newFixture(t)
+	f.enqueue(f.album("plain"))
+	f.enqueue(f.album("stop"))
+	cause := &Error{Code: "publish_suspended", Msg: "injected"}
+	var runs atomic.Int32
+	p, err := NewPool(f.db, 1, testRenderer, func(ctx context.Context, c *Claim) error {
+		if runs.Add(1) == 1 {
+			return cause // an ordinary failure: the worker goes on
+		}
+		return Stop(cause)
+	}, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.poll = 10 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- p.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, cause) || !Stops(err) || store.IsFatal(err) || Code(err) != "publish_suspended" {
+			t.Errorf("Run = %v, want the stop error", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not stop on a Stop error")
+	}
+	if n := runs.Load(); n != 2 {
+		t.Errorf("%d executions, want 2: the unmarked error must not stop the pool", n)
+	}
+	if Stops(cause) || Stop(nil) != nil {
+		t.Error("an unmarked error stops the pool, or Stop(nil) is not nil")
+	}
+}
+
 // A fatal error of the claim itself stops the pool too.
 func TestPoolFatalClaim(t *testing.T) {
 	f := newFixture(t)

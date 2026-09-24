@@ -17,6 +17,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/jobs"
 	"musiclib/internal/media"
 )
 
@@ -391,6 +392,62 @@ func TestBuildSpaceCheck(t *testing.T) {
 	if n := estimate(a.plan()); n != want {
 		t.Fatalf("estimate %d, want %d", n, want)
 	}
+}
+
+// §11.2 and N-114: a build reserves its estimate in the process budget and
+// the Result holds it until the caller releases it (the staging is
+// installed or discarded); a failed build releases it at once; another
+// job's reservation counts against the free space.
+func TestBuildReservesSpace(t *testing.T) {
+	e := newEnv(t)
+	a := kindOfBlueAlbum(t, e)
+	p := a.plan()
+	res := e.mustBuild(p)
+	if got := e.b.budget.Reserved(); got != estimate(p) || res.Space == nil {
+		t.Fatalf("reserved %d, want the estimate %d", got, estimate(p))
+	}
+	if res.Dir != p.Dir.Path || res.Dir == "" {
+		t.Fatalf("Result.Dir %q, want %q", res.Dir, p.Dir.Path)
+	}
+	res.Space.Release()
+	res.Space.Release() // idempotent
+	if err := e.b.Discard(context.Background(), res.BuildID); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.b.budget.Reserved(); got != 0 {
+		t.Fatalf("reserved %d after the release", got)
+	}
+
+	// A failure after the reservation releases it.
+	setFailpoint(t, func(pt, pa string, f *os.File) error {
+		if pt == "write" && pa == ReceiptName {
+			return &os.PathError{Op: "write", Path: pa, Err: syscall.EIO}
+		}
+		return nil
+	})
+	if _, err := e.build(p); err == nil {
+		t.Fatal("the failpoint did not fail the build")
+	}
+	setFailpoint(t, nil)
+	if got := e.b.budget.Reserved(); got != 0 {
+		t.Fatalf("reserved %d after a failed build", got)
+	}
+
+	// Another job holds all the free space but the margin and 1 MiB: the
+	// build is refused before anything is written, and passes once it is
+	// released.
+	fs, err := e.work.StatFS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := e.b.budget.Reserve(fs.FreeBytes, fs.FreeBytes-jobs.SpaceMargin-(1<<20))
+	if other == nil {
+		t.Skipf("only %d bytes free on the test volume", fs.FreeBytes)
+	}
+	_, err = e.build(p)
+	wantRenderCode(t, err, CodeInsufficientSpace)
+	other.Release()
+	e.mustBuild(p).Space.Release()
 }
 
 // §9.1 step 8: every file fsynced once, before any directory; every new

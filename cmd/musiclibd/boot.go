@@ -12,9 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"musiclib/internal/blobstore"
+	"musiclib/internal/catalog"
 	"musiclib/internal/fsops"
 	"musiclib/internal/importer"
+	"musiclib/internal/jobs"
 	"musiclib/internal/media"
+	"musiclib/internal/publish"
 	"musiclib/internal/render"
 	"musiclib/internal/store"
 	"musiclib/internal/volume"
@@ -51,6 +54,21 @@ type daemon struct {
 	// N-010).
 	runner *media.Runner
 	tools  *media.Tools
+	blobs  *blobstore.Store
+
+	// The components of steps 4 to 7, built after the tool check: the one
+	// space budget (§11.2), the builder, the publisher (§9.3), the catalog,
+	// the importer on /import, and the worker pool.
+	budget    *jobs.Budget
+	publisher *publish.Publisher
+	catalog   *catalog.Service
+	source    *fsops.Root
+	importer  *importer.Importer
+	workers   *jobs.Pool
+	// stopWorkers cancels the pool's context; poolDone receives the result
+	// of its Run once every worker has returned.
+	stopWorkers context.CancelFunc
+	poolDone    chan error
 
 	// ready holds the pool once the boot is complete, nil before and during
 	// shutdown: /health/ready is positive only while it is set (§11.1).
@@ -74,8 +92,22 @@ func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Lo
 		return err
 	}
 	log.Info("ready", "store_id", d.vol.StoreID().String())
-	<-ctx.Done()
-	return d.serveErr()
+	select {
+	case <-ctx.Done():
+		return d.serveErr()
+	case err := <-d.poolDone:
+		// §6.4: an uncertain commit, a lost database or a publication left
+		// pending stopped the workers. The process exits non-zero so that
+		// Docker restarts it; the next boot recovers (N-070, N-135).
+		// Every worker has returned; the shutdown must not report the
+		// error a second time.
+		d.poolDone = make(chan error, 1)
+		d.poolDone <- nil
+		if err == nil {
+			err = &bootError{code: codeWorkers, msg: "the worker pool stopped by itself"}
+		}
+		return err
+	}
 }
 
 // boot runs the startup sequence of §11.1, one small step per line. The
@@ -116,21 +148,33 @@ func (d *daemon) boot(ctx context.Context) error {
 		return err
 	}
 
-	// Step 4, journal recovery (§9.4): Phase 2, internal/publish.
-
-	// Step 5: clean what work/ no longer needs. Recovering running jobs
-	// (running -> pending, §6.4) comes with internal/jobs in Phase 2, and so
-	// does the cleanup of work/render and work/retired, which depends on
-	// the journal.
-	if err := d.cleanWork(ctx); err != nil {
+	if err := d.buildPublisher(); err != nil {
 		return err
 	}
 
-	// Step 6, enqueue of renders with a stale renderer: Phase 2,
-	// internal/jobs.
+	// Step 4: the pending publication, if any, completed forward (§9.4).
+	if err := d.recoverJournal(ctx); err != nil {
+		return err
+	}
 
-	// Step 7: there is no worker pool yet (Phase 2); readiness turns
-	// positive.
+	// Step 5: clean what work/ no longer needs, then running -> pending
+	// (§6.4).
+	if err := d.cleanWork(ctx); err != nil {
+		return err
+	}
+	if err := d.recoverRunning(ctx); err != nil {
+		return err
+	}
+
+	// Step 6: renders of active albums with a stale renderer and no job.
+	if err := d.enqueueStale(ctx); err != nil {
+		return err
+	}
+
+	// Step 7: start the pool, then readiness turns positive.
+	if err := d.startWorkers(ctx); err != nil {
+		return err
+	}
 	d.ready.Store(d.pool)
 	return nil
 }
@@ -229,16 +273,15 @@ func checkImport(path string) error {
 	return nil
 }
 
-// cleanWork runs the part of §11.1 step 5 that exists today: temporaries of
-// interrupted blob puts (N-048), directories of an interrupted boot probe
-// (N-033) and the importer's work/import. It runs after the probe of step 3
-// and before anything can start a put, so nothing it removes can be in use.
+// cleanWork is the cleanup of §11.1 step 5: temporaries of interrupted blob
+// puts (N-048), directories of an interrupted boot probe (N-033), the
+// importer's work/import, and the builds and retired directories no
+// journal references (work/render, work/retired). It runs after the probe
+// of step 3 and the recovery of step 4, and before any worker, so nothing
+// it removes can be in use. The space budget starts empty after it
+// (§11.2).
 func (d *daemon) cleanWork(ctx context.Context) error {
-	blobs, err := blobstore.New(d.vol.Originals(), d.vol.Work())
-	if err != nil {
-		return err
-	}
-	temps, err := blobs.CleanTemps(ctx)
+	temps, err := d.blobs.CleanTemps(ctx)
 	if err != nil {
 		return err
 	}
@@ -250,9 +293,12 @@ func (d *daemon) cleanWork(ctx context.Context) error {
 	if err := importer.CleanWork(ctx, d.vol.Work()); err != nil {
 		return err
 	}
-	if len(temps) > 0 || len(probes) > 0 {
-		d.log.Info("work cleaned", "blob_temporaries", len(temps), "probe_directories", len(probes))
+	builds, err := d.publisher.CleanWork(ctx)
+	if err != nil {
+		return err
 	}
+	d.log.Info("work cleaned", "blob_temporaries", len(temps), "probe_directories", len(probes),
+		"builds_and_retired", len(builds))
 	return nil
 }
 
@@ -289,15 +335,20 @@ func (d *daemon) serveErr() error {
 //  1. readiness turns negative;
 //  2. the HTTP server stops accepting and finishes its requests (the
 //     mutations of later phases come through it);
-//  3. (Phase 2: stop claims, cancel builds, end child processes, give a
-//     prepared publication up to 30 s; the run context is already
-//     cancelled, N-031);
+//  3. the workers stop claiming and their builds are cancelled, which kills
+//     the child processes through the Runner (§6.1, N-031); a publication
+//     already prepared gets up to 30 s to finish, then its journal is left
+//     to the recovery (internal/publish); the shutdown waits for every
+//     worker;
 //  4. the database pool is closed;
 //  5. the volume's roots are closed and the flock is released, last:
 //     nothing can publish any more.
 func (d *daemon) shutdown() error {
 	d.ready.Store(nil)
 	var errs []error
+	if d.stopWorkers != nil {
+		d.stopWorkers() // no claim from now on; builds cancelled
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	defer cancel()
@@ -305,6 +356,18 @@ func (d *daemon) shutdown() error {
 		errs = append(errs, &bootError{code: codeHTTP, msg: "graceful HTTP shutdown", err: errors.Join(err, d.srv.Close())})
 	}
 	d.log.Info("http server stopped")
+
+	if d.poolDone != nil {
+		if err := <-d.poolDone; err != nil {
+			errs = append(errs, err)
+		}
+		d.log.Info("workers stopped")
+	}
+	if d.source != nil {
+		if err := d.source.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 
 	if d.pool != nil {
 		d.pool.Close()
@@ -317,4 +380,104 @@ func (d *daemon) shutdown() error {
 		d.log.Info("volume lock released", "lock", volume.LockFile)
 	}
 	return errors.Join(errs...)
+}
+
+// buildPublisher builds what steps 4 to 7 need: the blob store, the
+// process's one space budget (§11.2: empty at every start, N-114), the
+// builder and the publisher (§9.3).
+func (d *daemon) buildPublisher() error {
+	var err error
+	if d.blobs, err = blobstore.New(d.vol.Originals(), d.vol.Work()); err != nil {
+		return err
+	}
+	d.budget = jobs.NewBudget()
+	builder, err := render.New(render.Config{Tools: d.tools, Blobs: d.blobs, Work: d.vol.Work(), Budget: d.budget})
+	if err != nil {
+		return err
+	}
+	d.publisher, err = publish.New(publish.Config{DB: d.pool, Library: d.vol.Library(), Work: d.vol.Work(),
+		Builder: builder, Log: d.log})
+	return err
+}
+
+// recoverJournal is §11.1 step 4 (§9.4): no worker starts before the
+// pending publication is completed. A state that matches no legal
+// transition fails the boot with publish_illegal_state, deleting nothing
+// (N-135).
+func (d *daemon) recoverJournal(ctx context.Context) error {
+	j, err := d.publisher.Recover(ctx)
+	if err != nil {
+		return err
+	}
+	if j == nil {
+		d.log.Info("no pending publication")
+		return nil
+	}
+	d.log.Info("journal recovered", "album_id", j.AlbumID, "build_id", j.BuildID, "revision", j.Revision)
+	return nil
+}
+
+// recoverRunning is the second half of §11.1 step 5: no attempt of the
+// previous process survives (§6.4).
+func (d *daemon) recoverRunning(ctx context.Context) error {
+	n, err := jobs.RecoverRunning(ctx, d.pool)
+	if err != nil {
+		return err
+	}
+	d.log.Info("running jobs recovered", "jobs", n)
+	return nil
+}
+
+// enqueueStale is §11.1 step 6: renders of the active albums whose
+// published renderer is not render.Version and that have no job; a failed
+// job stays as it is.
+func (d *daemon) enqueueStale(ctx context.Context) error {
+	n, err := jobs.EnqueueStaleRenders(ctx, d.pool, render.Version)
+	if err != nil {
+		return err
+	}
+	d.log.Info("stale renders enqueued", "albums", n, "render_version", render.Version)
+	return nil
+}
+
+// startWorkers is §11.1 step 7: the catalog (whose commits wake the pool,
+// §6.4), the importer on /import, and the pool of WORKERS workers
+// executing scans, imports and renders (§6.1). It runs until shutdown or a
+// fatal error (§6.4), which run turns into a non-zero exit.
+func (d *daemon) startWorkers(ctx context.Context) error {
+	var err error
+	d.catalog, err = catalog.New(d.pool, func() { d.workers.Wake() }, importer.CoverFits)
+	if err != nil {
+		return err
+	}
+	if d.source, err = fsops.OpenRoot(d.paths.imports); err != nil {
+		return &bootError{code: codeImport, msg: "cannot open the import source", err: err}
+	}
+	d.importer, err = importer.New(importer.Config{Catalog: d.catalog, Tools: d.tools, Blobs: d.blobs,
+		Source: d.source, Work: d.vol.Work(), Budget: d.budget, Log: d.log})
+	if err != nil {
+		return err
+	}
+	d.workers, err = jobs.NewPool(d.pool, d.cfg.Workers, render.Version, d.execute, d.log)
+	if err != nil {
+		return err
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	d.stopWorkers, d.poolDone = cancel, make(chan error, 1)
+	go func() { d.poolDone <- d.workers.Run(wctx) }()
+	d.log.Info("workers started", "workers", d.cfg.Workers)
+	return nil
+}
+
+// execute dispatches a claimed job to its executor.
+func (d *daemon) execute(ctx context.Context, c *jobs.Claim) error {
+	switch c.Kind {
+	case jobs.KindScan:
+		return d.importer.ExecuteScan(ctx, c)
+	case jobs.KindImport:
+		return d.importer.ExecuteImport(ctx, c)
+	case jobs.KindRender:
+		return d.publisher.ExecuteRender(ctx, c)
+	}
+	return &bootError{code: codeWorkers, msg: "a job of unknown kind " + string(c.Kind)}
 }

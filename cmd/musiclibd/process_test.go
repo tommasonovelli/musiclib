@@ -43,7 +43,7 @@ type serverProcess struct {
 	done   chan struct{} // closed when the child has been waited for
 }
 
-func startServerProcess(t *testing.T, dbURL string, p paths, umask int) *serverProcess {
+func startServerProcess(t *testing.T, dbURL string, p paths, umask int, extraEnv ...string) *serverProcess {
 	t.Helper()
 	addr := "127.0.0.1:" + closedPort(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$", "-test.count=1")
@@ -51,6 +51,8 @@ func startServerProcess(t *testing.T, dbURL string, p paths, umask int) *serverP
 		"TEST_DATA="+p.data, "TEST_IMPORT="+p.imports,
 		envDatabaseURL+"="+dbURL, envPublicOrigin+"=http://127.0.0.1:8080",
 		envHTTPAddr+"="+addr, envWorkers+"=1")
+	// Later entries win (os/exec keeps the last value of a duplicate).
+	cmd.Env = append(cmd.Env, extraEnv...)
 	s := &serverProcess{cmd: cmd, stderr: &syncBuffer{}, addr: addr, done: make(chan struct{})}
 	cmd.Stderr = s.stderr
 	// The child inherits the umask: start it with a hostile one, which the

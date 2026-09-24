@@ -66,7 +66,7 @@ func newEnv(t *testing.T) *env {
 	if e.blobs, err = blobstore.New(originals, e.work); err != nil {
 		t.Fatal(err)
 	}
-	if e.b, err = New(Config{Tools: e.tools, Blobs: e.blobs, Work: e.work}); err != nil {
+	if e.b, err = New(Config{Tools: e.tools, Blobs: e.blobs, Work: e.work, Budget: jobs.NewBudget()}); err != nil {
 		t.Fatal(err)
 	}
 	return e

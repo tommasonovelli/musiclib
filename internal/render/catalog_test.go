@@ -54,7 +54,7 @@ func TestBuildFromCatalog(t *testing.T) {
 	}
 	source := e.hostRoot(src)
 	im, err := importer.New(importer.Config{Catalog: cat, Tools: e.tools, Blobs: e.blobs, Source: source, Work: e.work,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		Budget: jobs.NewBudget(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

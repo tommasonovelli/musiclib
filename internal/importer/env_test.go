@@ -69,7 +69,7 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool) *env {
 		t.Fatal(err)
 	}
 	e.im, err = New(Config{Catalog: e.cat, Tools: tools(t), Blobs: e.blobs, Source: src, Work: e.work,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		Budget: jobs.NewBudget(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

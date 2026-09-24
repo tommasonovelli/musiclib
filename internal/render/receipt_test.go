@@ -203,7 +203,7 @@ func TestParseReceiptStrict(t *testing.T) {
 			wantRenderCode(t, err, CodeReceiptInvalid)
 		})
 	}
-	if _, err := ParseReceipt(bytes.Repeat([]byte(" "), maxReceiptBytes+1)); Code(err) != CodeReceiptInvalid {
+	if _, err := ParseReceipt(bytes.Repeat([]byte(" "), MaxReceiptBytes+1)); Code(err) != CodeReceiptInvalid {
 		t.Errorf("an oversized receipt: %v", err)
 	}
 }

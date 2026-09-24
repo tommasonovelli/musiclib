@@ -58,10 +58,13 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 	before := tree.snapshot()
 	srcFiles := tree.files()
 
-	// §11.2, then §7.5 for every file.
-	if err := im.checkSpace(estimate(srcFiles)); err != nil {
+	// §11.2, then §7.5 for every file. The reservation is held until the
+	// job's writes are done: the blobs and the pictures of work/import.
+	space, err := im.reserveSpace(estimate(srcFiles))
+	if err != nil {
 		return catalog.ImportCandidate{}, nil, err
 	}
+	defer space.Release()
 	hook("before-copy")
 	files := make([]*importFile, len(srcFiles))
 	for i, f := range srcFiles {

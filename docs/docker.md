@@ -193,15 +193,64 @@ step (`docker compose logs app`):
    ffprobe and the TagLib helper musiclib-tags present at the pinned
    versions (the line lists all four: `ffmpeg`, `ffprobe`, `musiclib_tags`,
    `taglib`); `/import` readable.
-7. Leftovers of an interrupted run removed from `work/`; `ready`.
+7. `journal recovered` (or `no pending publication`): a publication that a
+   crash, a lost database or an error left half done is completed forward
+   before anything else (§9.4). If the disk matches no legal step of it, the
+   boot stops with `publish_illegal_state` (next section) and deletes
+   nothing.
+8. `work cleaned`: leftovers of an interrupted run removed from `work/`
+   (blob temporaries, probe directories, `work/import`, and every build in
+   `work/render` and retired directory in `work/retired` that no journal
+   references); `running jobs recovered`: jobs of the previous process back
+   to pending.
+9. `stale renders enqueued`: every active album whose published renderer is
+   not this binary's `render_version`, and that has no job, gets a render. A
+   failed render is left failed.
+10. `workers started` (`WORKERS` of them: scans, imports, renders and
+    publications), then `ready`.
 
-`/health/ready` then also checks PostgreSQL on every request (2 s timeout):
-if the database goes away it answers 503 `db_unavailable` and the container
-turns unhealthy, while the process keeps running.
+`/health/ready` then also checks PostgreSQL on every request (2 s timeout)
+and answers 503 `db_unavailable` while it is unreachable. The workers poll
+the queue every 2 s: when the database is lost, or a commit's outcome is
+unknown, or a publication fails after its journal was written, the workers
+stop, their tool processes are killed, and the process **exits 1**
+(`fatal failure, stopping the workers`, with the `code`). Docker restarts
+it; the new process waits for PostgreSQL and recovers (§6.4).
 
-SIGTERM (`docker compose stop`) stops the HTTP server, closes the database
-pool and releases the volume lock last (`http server stopped`,
-`database pool closed`, `volume lock released`, `stopped`; exit 0).
+SIGTERM (`docker compose stop`) stops the claims and cancels the builds
+(their tools are killed), gives a publication already under way up to 30 s
+to finish (otherwise its journal is completed at the next boot), then
+closes the database pool and releases the volume lock last
+(`http server stopped`, `workers stopped`, `database pool closed`,
+`volume lock released`, `stopped`; exit 0). The 45 s stop grace covers it.
+
+### Importing an album before the HTTP API exists (Phase 2 check)
+
+There is no HTTP API until Phase 5 (`POST /api/imports`). To check the
+whole slice on a running Compose app, put an album directory under the
+import mount, then create an import batch and its scan job by hand: these
+are exactly the rows `catalog.CreateImportBatch` writes, and the 2 s poll
+of the workers finds them (NOTES.md N-141). This is a verification path,
+not a product feature.
+
+```sh
+docker compose exec -T postgres psql -U musiclib -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+INSERT INTO import_batches (id, root_rel, created_at) VALUES (gen_random_uuid(), '', now()) RETURNING id \gset
+INSERT INTO jobs (id, kind, batch_id, state, queued_at, updated_at) VALUES (gen_random_uuid(), 'scan', :'id', 'pending', now(), now());
+COMMIT;
+SQL
+docker compose exec -T postgres psql -U musiclib -c "SELECT kind, state, error_code FROM jobs" \
+  -c "SELECT title, published_path, published_revision FROM albums"
+docker compose exec app find /data/library
+```
+
+`root_rel` `''` scans the whole of `/import`; a subdirectory scans only
+that. Verified with a three-track FLAC album on Docker Desktop (a separate
+project, `-p musiclib-e2e`, `MUSICLIB_PORT=18080`, `WORKERS=2`): scan,
+import, render and publication done, `library/Miles Davis/Kind of Blue/`
+with its tracks and a receipt whose SHA-256 is `published_receipt_hash`,
+`work/render` and `work/retired` empty; a restart logged steps 4 to 7.
 
 ### When the app refuses to start
 
@@ -225,6 +274,9 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
 | `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | rebuild the image from this repository (`docker compose --profile app build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
+| `publish_illegal_state` | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted | put back what was moved, or run `rebuild` (Phase 6), which regenerates the whole library from the catalog |
+| `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the next start retries |
+| `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown (§6.4) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
 
 The files at the top of `/data`:
 

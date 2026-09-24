@@ -259,6 +259,10 @@ func assertShutdownOrder(t *testing.T, logs *syncBuffer, withPool bool) {
 	if withPool {
 		want = []string{"http server stopped", "database pool closed", "volume lock released"}
 	}
+	if logs.has(t, "workers started") {
+		// The workers stop after HTTP and before the database (§11.1).
+		want = append([]string{want[0], "workers stopped"}, want[1:]...)
+	}
 	msgs := logs.messages(t)
 	start := -1
 	for i, m := range msgs {

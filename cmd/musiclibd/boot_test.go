@@ -75,19 +75,6 @@ func TestBootReadinessLifecycle(t *testing.T) {
 		t.Fatalf("POST /health/live: %d", resp.StatusCode)
 	}
 
-	// The database goes away and comes back: readiness follows it, the
-	// process stays alive.
-	allowConnections(t, dbURL, false)
-	d.waitStatus(t, "/health/ready", http.StatusServiceUnavailable)
-	if _, code := d.get(t, "/health/ready"); code != "db_unavailable" {
-		t.Fatalf("ready without the database: %s", code)
-	}
-	if st, _ := d.get(t, "/health/live"); st != http.StatusOK {
-		t.Fatalf("live without the database: %d", st)
-	}
-	allowConnections(t, dbURL, true)
-	d.waitStatus(t, "/health/ready", http.StatusOK)
-
 	// Shutdown.
 	assertLockHeld(t, p.data)
 	if err := d.stop(t); err != nil {
@@ -98,6 +85,34 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	if st, _ := d.get(t, "/health/live"); st != 0 {
 		t.Fatalf("live after shutdown: %d", st)
 	}
+}
+
+// §6.4 with the workers running (N-070): when the database goes away,
+// readiness turns negative, and the next statement of a worker (its 2 s
+// poll) finds the connection lost, which is fatal: the workers stop and
+// run returns the fatal error, so that the process exits non-zero and
+// Docker restarts it; the lock is released last. A restart waits for the
+// database and boots normally.
+func TestDatabaseLossStopsTheProcess(t *testing.T) {
+	dbURL := pgtest.EmptyDB(t)
+	p := testPaths(t)
+	d := startDaemon(t, testConfig(dbURL), p)
+	d.waitStatus(t, "/health/ready", http.StatusOK)
+
+	allowConnections(t, dbURL, false)
+	err := d.wait(t)
+	if !store.IsFatal(err) || codeOf(err) != store.CodeConnectionLost {
+		t.Fatalf("run: %v (code %q), want %s", err, codeOf(err), store.CodeConnectionLost)
+	}
+	if !d.logs.has(t, "fatal failure, stopping the workers") {
+		t.Fatalf("no fatal event; logs:\n%s", d.logs)
+	}
+	assertShutdownOrder(t, d.logs, true)
+	assertLockFree(t, p.data)
+
+	allowConnections(t, dbURL, true)
+	again := startDaemon(t, testConfig(dbURL), p)
+	again.waitStatus(t, "/health/ready", http.StatusOK)
 }
 
 // A termination while the boot waits for PostgreSQL is a normal stop: no
@@ -297,9 +312,9 @@ func bootOnce(t *testing.T, dbURL string, p paths) {
 	}
 }
 
-// §11.1 step 5 as far as it exists: leftover blob temporaries, probe
-// directories and the importer's work/import content are removed; nothing
-// else is.
+// §11.1 step 5: leftover blob temporaries, probe directories, the
+// importer's work/import content, and the builds and retired directories
+// that no journal references are removed; nothing else is.
 func TestBootCleansWork(t *testing.T) {
 	dbURL := pgtest.EmptyDB(t)
 	p := testPaths(t)
@@ -309,7 +324,8 @@ func TestBootCleansWork(t *testing.T) {
 	writeFile(t, filepath.Join(work, "blobs", "0123.tmp"), "partial")
 	writeFile(t, filepath.Join(work, "blobs", "keep"), "not a temporary")
 	writeFile(t, filepath.Join(work, ".musiclib-probe-a0123", "marker"), "b")
-	writeFile(t, filepath.Join(work, "render", "build", "01.flac"), "phase 2")
+	writeFile(t, filepath.Join(work, "render", "build", "album", "01.flac"), "a build")
+	writeFile(t, filepath.Join(work, "retired", "old", "01.flac"), "a retired album")
 	writeFile(t, filepath.Join(work, "import", "x.img"), "an interrupted import")
 
 	d := startDaemon(t, testConfig(dbURL), p)
@@ -318,7 +334,10 @@ func TestBootCleansWork(t *testing.T) {
 		"blobs/0123.tmp":        false,
 		".musiclib-probe-a0123": false,
 		"blobs/keep":            true,
-		"render/build/01.flac":  true,
+		"render/build":          false,
+		"retired/old":           false,
+		"render":                true,
+		"retired":               true,
 		"import/x.img":          false,
 		"import":                true,
 	} {
