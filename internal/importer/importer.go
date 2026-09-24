@@ -27,6 +27,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
@@ -53,6 +54,12 @@ type Config struct {
 	// builder.
 	Budget *jobs.Budget
 	Log    *slog.Logger
+	// Failpoints is nil in production. Tests set it to inject an error, to
+	// change the source at an exact moment, or to crash the process at the
+	// named points (§12.2, NOTES.md N-142): import_copying,
+	// import_copied, import_rechecking, import_committing,
+	// import_committed, scan_committing, scan_committed.
+	Failpoints failpoint.Hook
 }
 
 // Importer runs scan and import jobs. It is safe for concurrent use by the
@@ -65,6 +72,8 @@ type Importer struct {
 	work    *fsops.Root
 	budget  *jobs.Budget
 	log     *slog.Logger
+	// failpoints is Config.Failpoints.
+	failpoints failpoint.Hook
 }
 
 // New returns an importer and creates work/import durably if missing.
@@ -78,6 +87,7 @@ func New(cfg Config) (*Importer, error) {
 	return &Importer{
 		catalog: cfg.Catalog, tools: cfg.Tools, blobs: cfg.Blobs,
 		src: source{root: cfg.Source}, work: cfg.Work, budget: cfg.Budget, log: cfg.Log,
+		failpoints: cfg.Failpoints,
 	}, nil
 }
 
@@ -110,9 +120,15 @@ func (im *Importer) ExecuteScan(ctx context.Context, c *jobs.Claim) error {
 	if err != nil {
 		return im.fail(ctx, jobs.KindScan, c.Attempt, err, nil)
 	}
+	if err := im.failpoints.Hit("scan_committing"); err != nil {
+		return im.fail(ctx, jobs.KindScan, c.Attempt, err, nil)
+	}
 	n, err := im.catalog.CommitScan(ctx, o)
 	if err != nil {
 		return im.fail(ctx, jobs.KindScan, c.Attempt, err, nil)
+	}
+	if err := im.failpoints.Hit("scan_committed"); err != nil {
+		return err
 	}
 	im.log.Info("scan finished", "job_id", c.Attempt.JobID, "batch_id", c.BatchID, "state", o.Result.State,
 		"imports", len(o.Imports), "inserted", n, "warnings", len(o.Result.Warnings))
@@ -131,9 +147,15 @@ func (im *Importer) ExecuteImport(ctx context.Context, c *jobs.Claim) error {
 	if err != nil {
 		return im.fail(ctx, jobs.KindImport, c.Attempt, err, warnings)
 	}
+	if err := im.failpoints.Hit("import_committing"); err != nil {
+		return im.fail(ctx, jobs.KindImport, c.Attempt, err, warnings)
+	}
 	out, err := im.catalog.CommitImport(ctx, cand)
 	if err != nil {
 		return im.fail(ctx, jobs.KindImport, c.Attempt, err, warnings)
+	}
+	if err := im.failpoints.Hit("import_committed"); err != nil {
+		return err
 	}
 	im.log.Info("import finished", "job_id", c.Attempt.JobID, "batch_id", c.BatchID, "state", out.State,
 		"album_id", out.AlbumID, "code", out.ErrorCode, "already_completed", out.AlreadyCompleted)
@@ -173,15 +195,4 @@ func (im *Importer) reserveSpace(estimate int64) (*jobs.Reservation, error) {
 			estimate, fs.FreeBytes, int64(jobs.SpaceMargin), max(0, fs.FreeBytes-jobs.SpaceMargin-avail))
 	}
 	return r, nil
-}
-
-// testHook, when set by a test, runs at named points of an import so that a
-// test can change the source at an exact moment (§12.2). It is nil in
-// production.
-var testHook func(point string)
-
-func hook(point string) {
-	if testHook != nil {
-		testHook(point)
-	}
 }

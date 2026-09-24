@@ -73,6 +73,10 @@ type daemon struct {
 	// ready holds the pool once the boot is complete, nil before and during
 	// shutdown: /health/ready is positive only while it is set (§11.1).
 	ready atomic.Pointer[pgxpool.Pool]
+	// suspended is set when the boot found the journal in an illegal state
+	// (§9.4, N-135): the process stays alive, holding the lock, with no
+	// worker, and /health/ready answers this error.
+	suspended atomic.Pointer[errorBody]
 }
 
 // run boots the server on ln, serves until ctx is cancelled, then shuts
@@ -86,6 +90,12 @@ func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Lo
 	defer func() { err = errors.Join(err, d.shutdown()) }()
 
 	if err := d.boot(ctx); err != nil {
+		if errors.Is(err, errPublishingSuspended) {
+			// §9.4: suspended, not stopped. Serve the error until SIGTERM;
+			// the shutdown releases everything as usual.
+			<-ctx.Done()
+			return d.serveErr()
+		}
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return d.serveErr()
 		}
@@ -400,12 +410,23 @@ func (d *daemon) buildPublisher() error {
 	return err
 }
 
+// errPublishingSuspended ends the boot after step 4 without an exit: the
+// journal is in an illegal state (N-135).
+var errPublishingSuspended = errors.New("publishing suspended: the pending publication is in an illegal state")
+
 // recoverJournal is §11.1 step 4 (§9.4): no worker starts before the
 // pending publication is completed. A state that matches no legal
-// transition fails the boot with publish_illegal_state, deleting nothing
-// (N-135).
+// transition suspends publishing (§9.4: "la pubblicazione viene sospesa e
+// l'errore esposto", owner decision N-135): nothing is deleted, the boot
+// stops before step 5, the process stays alive with the lock held and
+// /health/ready answers the error; it returns errPublishingSuspended.
+// Any other error (publish_io, the database) fails the boot: it may be
+// transient, and the restart retries the recovery.
 func (d *daemon) recoverJournal(ctx context.Context) error {
 	j, err := d.publisher.Recover(ctx)
+	if publish.Code(err) == publish.CodeIllegalState {
+		return d.suspendPublishing(j, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -415,6 +436,25 @@ func (d *daemon) recoverJournal(ctx context.Context) error {
 	}
 	d.log.Info("journal recovered", "album_id", j.AlbumID, "build_id", j.BuildID, "revision", j.Revision)
 	return nil
+}
+
+// suspendPublishing records the illegal journal for /health/ready and
+// logs what the operator must do (§9.4, §11.3). The details name the
+// album and the build, never a path of the host (§10.1).
+func (d *daemon) suspendPublishing(j *publish.Journal, err error) error {
+	body := &errorBody{Code: publish.CodeIllegalState,
+		Message: "the pending publication matches no legal transition: publishing is suspended " +
+			"until library/ is corrected by hand and the app restarted, or the app is stopped and rebuild is run"}
+	attrs := []any{"code", publish.CodeIllegalState, "error", err.Error(),
+		"action", "compare library/ and work/ with the journal; put back by hand what was moved and restart the app " +
+			"to run the recovery again, or stop the app and run rebuild (DESIGN.md §9.4, §11.3). Nothing was deleted."}
+	if j != nil {
+		body.Details = map[string]string{"album_id": j.AlbumID.String(), "build_id": j.BuildID.String()}
+		attrs = append(attrs, "album_id", j.AlbumID, "build_id", j.BuildID, "old_path", j.OldPath, "new_path", j.NewPath)
+	}
+	d.suspended.Store(body)
+	d.log.Error("publishing suspended: the pending publication is in an illegal state", attrs...)
+	return errPublishingSuspended
 }
 
 // recoverRunning is the second half of §11.1 step 5: no attempt of the

@@ -18,6 +18,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/faulttest"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
@@ -34,6 +35,8 @@ type env struct {
 	blobs *blobstore.Store
 	tools *media.Tools
 	b     *Builder
+	// fp is the builder's failpoint hook (setFailpoint).
+	fp faulttest.Switch
 }
 
 // sharedTools are the verified tools, one Runner for the whole test binary.
@@ -66,7 +69,7 @@ func newEnv(t *testing.T) *env {
 	if e.blobs, err = blobstore.New(originals, e.work); err != nil {
 		t.Fatal(err)
 	}
-	if e.b, err = New(Config{Tools: e.tools, Blobs: e.blobs, Work: e.work, Budget: jobs.NewBudget()}); err != nil {
+	if e.b, err = New(Config{Tools: e.tools, Blobs: e.blobs, Work: e.work, Budget: jobs.NewBudget(), Failpoints: e.fp.Hook()}); err != nil {
 		t.Fatal(err)
 	}
 	return e

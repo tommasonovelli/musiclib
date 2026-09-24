@@ -480,8 +480,8 @@ func TestSnapshotCoherence(t *testing.T) {
 	e := f.enqueue(album)
 
 	var once sync.Once
-	setHook(t, func(point string) {
-		if point != "after-album" {
+	f.setHook(func(point string) {
+		if point != "claim_snapshot_album" {
 			return
 		}
 		once.Do(func() {
@@ -491,7 +491,7 @@ func TestSnapshotCoherence(t *testing.T) {
 			f.exec(`UPDATE albums SET title = 'changed' WHERE id = $1`, album)
 		})
 	})
-	c, err := ClaimNext(ctx, f.db, testRenderer)
+	c, err := claimNext(ctx, f.db, testRenderer, f.fp.Hook())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,12 +531,12 @@ func TestClaimRetriesSerializationFailure(t *testing.T) {
 	id := f.importJob(f.batch(), "album", time.Now())
 	f.exec(`UPDATE jobs SET overrides = '{"artist": "Someone"}' WHERE id = $1`, id)
 	var runs atomic.Int32
-	setHook(t, func(point string) {
-		if point == "after-select-render" && runs.Add(1) == 1 {
+	f.setHook(func(point string) {
+		if point == "claim_selected_render" && runs.Add(1) == 1 {
 			f.exec(`UPDATE jobs SET updated_at = now() WHERE id = $1`, id)
 		}
 	})
-	c, err := ClaimNext(ctx, f.db, testRenderer)
+	c, err := claimNext(ctx, f.db, testRenderer, f.fp.Hook())
 	if err != nil {
 		t.Fatal(err)
 	}

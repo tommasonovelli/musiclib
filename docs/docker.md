@@ -96,6 +96,32 @@ a "different filesystem" for the cross-device cases. No privileges, loop
 devices or `mount` are needed. A loop-mounted ext4 image was rejected because it
 needs `CAP_SYS_ADMIN` or `--privileged`.
 
+### The really full filesystem (`/fullfs`)
+
+The full-disk tests (DESIGN.md §12.2 "Disco pieno durante build",
+NOTES.md N-143) need a filesystem that really fills up. The `test` and
+`dev` services mount a **fixed-size tmpfs** at `/fullfs`
+(`size=1088m`: the 1 GiB space margin of §11.2 plus room for the test
+albums), set `MUSICLIB_FULLFS=/fullfs`, and the gate also sets
+`MUSICLIB_REQUIRE_FULLFS=1`, so these tests fail instead of skipping there.
+
+- The daemon mounts it; the test container gains no privilege.
+- It is private to each container and disappears when the container exits:
+  nothing persists, and no other run or volume shares it.
+- Before it cleans or fills anything, `internal/faulttest.FullFS` requires
+  `/fullfs` to be a mount point of at most 2 GiB that is not the filesystem
+  of `TMPDIR`. It also serializes the test binaries with a `flock`. The
+  shared ext4 `testdata` volume is never filled.
+- tmpfs holds its data in RAM: while a full-disk test runs, up to about
+  1.1 GiB of the Docker VM's memory is in use, then released.
+- It is tmpfs, not ext4. No unprivileged container can mount an ext4
+  image: Docker's `local` volume driver passes its options straight to
+  mount(2), so an image file gives "block device required" and `o=loop` is
+  rejected; a loop device needs a privileged container on the host. ext4's
+  delayed-allocation ENOSPC at fsync is covered by injected failpoints.
+
+Outside Docker (`MUSICLIB_FULLFS` unset) these tests skip.
+
 If a volume was created by a different uid and is no longer writable, the
 script says so. Remove the volume and it is recreated on the next run:
 
@@ -195,9 +221,14 @@ step (`docker compose logs app`):
    `taglib`); `/import` readable.
 7. `journal recovered` (or `no pending publication`): a publication that a
    crash, a lost database or an error left half done is completed forward
-   before anything else (§9.4). If the disk matches no legal step of it, the
-   boot stops with `publish_illegal_state` (next section) and deletes
-   nothing.
+   before anything else (§9.4). If the disk matches no legal step of it,
+   publishing is **suspended** (`publishing suspended: ...`, code
+   `publish_illegal_state`, with `album_id`, `build_id`, the paths and the
+   `action` to take): the process stays up with the lock held, runs no
+   later step and no worker, deletes nothing, and `/health/ready` answers
+   503 `{"code": "publish_illegal_state", "message": ..., "details":
+   {"album_id": ..., "build_id": ...}}`, so the Compose healthcheck reports
+   the container unhealthy (NOTES.md N-135). See the next section.
 8. `work cleaned`: leftovers of an interrupted run removed from `work/`
    (blob temporaries, probe directories, `work/import`, and every build in
    `work/render` and retired directory in `work/retired` that no journal
@@ -255,7 +286,8 @@ with its tracks and a receipt whose SHA-256 is `published_receipt_hash`,
 ### When the app refuses to start
 
 Every refusal is a log line at level `ERROR` with a stable `code`, and the
-process exits 1; `restart: unless-stopped` retries, so the same line repeats
+process exits 1 (except `publish_illegal_state`, which keeps the process up
+and unhealthy); `restart: unless-stopped` retries, so the same line repeats
 until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 
 | `code` | Meaning | What to do |
@@ -274,8 +306,8 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
 | `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | rebuild the image from this repository (`docker compose --profile app build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
-| `publish_illegal_state` | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted | put back what was moved, or run `rebuild` (Phase 6), which regenerates the whole library from the catalog |
-| `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the next start retries |
+| `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or `docker compose stop app` and run `rebuild` (Phase 6), which regenerates the whole library from the catalog |
+| `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the process exits 1, since it may be transient, and the next start retries |
 | `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown (§6.4) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
 
 The files at the top of `/data`:

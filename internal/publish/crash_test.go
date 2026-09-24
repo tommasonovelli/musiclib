@@ -2,18 +2,13 @@ package publish
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"slices"
-	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
+	"musiclib/internal/faulttest"
 	"musiclib/internal/jobs"
 	"musiclib/internal/render"
 	"musiclib/internal/store"
@@ -26,18 +21,14 @@ import (
 // SIGKILL does not lose the page cache: the fsync ordering is argued, not
 // tested against a power cut (the limit of N-044 and N-061).
 
-// helperEnv selects the child-process mode of TestHelperProcess.
-const helperEnv = "MUSICLIB_PUBLISH_HELPER"
-
 // TestHelperProcess is not a test: it is the body of the child processes
 // started by the crash tests, and returns at once in a normal run.
 func TestHelperProcess(t *testing.T) {
-	mode := os.Getenv(helperEnv)
+	mode := faulttest.Mode()
 	if mode == "" {
 		return
 	}
-	fmt.Println("RESULT:", helperMain(t, mode))
-	os.Exit(0)
+	faulttest.Exit(helperMain(t, mode))
 }
 
 func helperMain(t *testing.T, mode string) string {
@@ -47,16 +38,8 @@ func helperMain(t *testing.T, mode string) string {
 		return "error " + err.Error()
 	}
 	e := newEnvOn(t, os.Getenv("PUBLISH_DB"), db, os.Getenv("PUBLISH_DATA"))
-	at := os.Getenv("CRASH_AT")
-	failpointHook = func(point string) error {
-		if point == at {
-			if err := unix.Kill(os.Getpid(), unix.SIGKILL); err != nil {
-				return err
-			}
-			select {} // never returns
-		}
-		return nil
-	}
+	e.fp.Set(faulttest.Crash(os.Getenv("CRASH_AT")))
+	e.bfp.Set(faulttest.Crash(os.Getenv("BUILD_CRASH_AT")))
 	switch mode {
 	case "publish":
 		rep, _, err := e.render(os.Getenv("PUBLISH_CONTENT"))
@@ -73,39 +56,23 @@ func helperMain(t *testing.T, mode string) string {
 			return "none"
 		}
 		return "recovered " + j.BuildID.String()
+	case "execute":
+		// The render executor on the next render job: plan, build, publish.
+		if err := e.p.ExecuteRender(ctx, e.claim()); err != nil {
+			return "error " + Code(err)
+		}
+		return "executed"
 	}
 	return "error: unknown mode " + mode
 }
 
 // runHelper runs the test binary as a child in the given mode on e's
-// volume and database. It returns the result line, or "killed".
-func (e *env) runHelper(mode, crashAt, content string) string {
+// volume and database, killed at crashAt if it gets there. It returns the
+// result line, or faulttest.Killed.
+func (e *env) runHelper(mode, crashAt, content string, env ...string) string {
 	e.t.Helper()
-	ctx, cancel := context.WithTimeout(e.t.Context(), 120*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcess$", "-test.count=1")
-	cmd.Env = append(os.Environ(), helperEnv+"="+mode, "PUBLISH_DB="+e.dbURL, "PUBLISH_DATA="+e.data,
-		"CRASH_AT="+crashAt, "PUBLISH_CONTENT="+content)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		e.t.Fatalf("child %s timed out\n%s", mode, out)
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
-			return "killed"
-		}
-	}
-	if err != nil {
-		e.t.Fatalf("child %s: %v\n%s", mode, err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if res, ok := strings.CutPrefix(line, "RESULT: "); ok {
-			return res
-		}
-	}
-	e.t.Fatalf("child %s: no result\n%s", mode, out)
-	return ""
+	return faulttest.RunChild(e.t, 2*time.Minute, mode, append([]string{"PUBLISH_DB=" + e.dbURL, "PUBLISH_DATA=" + e.data,
+		"CRASH_AT=" + crashAt, "PUBLISH_CONTENT=" + content}, env...)...)
 }
 
 // resultOf is the build a journal describes, for the checks.
@@ -206,6 +173,66 @@ func TestCrashDuringRecovery(t *testing.T) {
 			if got := e.entries("library"); !slices.Equal(got, []string{"New"}) {
 				t.Fatalf("library holds %q", got)
 			}
+		})
+	}
+}
+
+// §12.2 "Crash prima/dopo PREPARE" before PREPARE, inside the build, with
+// a real build of a real album: a child process runs the render executor
+// and is killed with SIGKILL in the middle of the build (the space
+// reserved, the first write of a copy, a track's tags written, the first
+// file fsync, the first directory fsync). The published album and the
+// originals are intact byte for byte (§9.1: "Un fallimento prima del
+// journal lascia intatta la directory pubblicata"); the next boot's step 5
+// removes the staging and makes the job pending; the render then
+// publishes the new revision.
+func TestCrashDuringBuild(t *testing.T) {
+	for _, at := range []string{"reserved", "write", "tags_written", "fsync_file", "fsync_dir"} {
+		t.Run(at, func(t *testing.T) {
+			m := newMediaEnv(t)
+			writeAlbum(t, m.src, "a", "Artist", "Album", 2)
+			if err := os.WriteFile(filepath.Join(m.src, "a", "notes.txt"), []byte("liner notes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			m.importAll()
+			m.runPool(1)
+			id := m.albumID("Album")
+			old := m.publishedResult(id)
+			m.bump(id)
+			library, originals := m.tree("library"), m.tree("originals")
+
+			if got := m.runHelper("execute", "", "", "BUILD_CRASH_AT="+at); got != faulttest.Killed {
+				t.Fatalf("child: %q, want killed at %s", got, at)
+			}
+			m.wantTree("library", library)
+			m.wantTree("originals", originals)
+			m.wantPublished(id, old)
+			if _, pending := m.journal(); pending {
+				t.Fatal("a journal after a crash in the build")
+			}
+			if n := len(m.entries("work/render")); n != map[bool]int{true: 0, false: 1}[at == "reserved"] {
+				t.Fatalf("work/render holds %d builds after a crash at %s", n, at)
+			}
+
+			// The next boot: no journal to recover, step 5, the pool.
+			if got := m.runHelper("recover", "", ""); got != "none" {
+				t.Fatalf("recovery: %s", got)
+			}
+			if _, err := m.p.CleanWork(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			m.wantWorkClean()
+			if n, err := jobs.RecoverRunning(context.Background(), m.db); err != nil || n != 1 {
+				t.Fatalf("RecoverRunning: %d %v", n, err)
+			}
+			m.runPool(1)
+			res := m.publishedResult(id)
+			if res.AlbumRevision != m.album(id).Revision || res.BuildID == old.BuildID {
+				t.Fatalf("published revision %d build %s after the restart", res.AlbumRevision, res.BuildID)
+			}
+			m.wantPublished(id, res)
+			m.wantTree("originals", originals)
+			m.wantWorkClean()
 		})
 	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 )
 
@@ -32,7 +33,13 @@ type env struct {
 
 func newEnv(t *testing.T) env {
 	t.Helper()
-	dir := t.TempDir()
+	return newEnvAt(t, t.TempDir())
+}
+
+// newEnvAt opens the store on dir/originals and dir/work, created if
+// missing: a fresh process's store on an existing volume.
+func newEnvAt(t *testing.T, dir string) env {
+	t.Helper()
 	e := env{originals: filepath.Join(dir, "originals"), temps: filepath.Join(dir, "work", tempDir)}
 	var err error
 	if e.s, err = New(openRoot(t, e.originals), openRoot(t, filepath.Join(dir, "work"))); err != nil {
@@ -321,7 +328,7 @@ func TestPutFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			if c.failpoint != nil {
-				e.s.failpoint = func(name string) error { return c.failpoint(e, name) }
+				e.s.failpoints = func(p failpoint.Point) error { return c.failpoint(e, p.Name) }
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -341,7 +348,7 @@ func TestPutFailures(t *testing.T) {
 				return
 			}
 			e.assertBlob(t, data)
-			e.s.failpoint = nil
+			e.s.failpoints = nil
 			if got, err := e.s.Put(context.Background(), bytes.NewReader(data)); err != nil || got != blobOf(data) {
 				t.Fatalf("retry = %+v, %v", got, err)
 			}
@@ -356,7 +363,8 @@ func TestPutProtocolOrder(t *testing.T) {
 	data := []byte("ordered")
 	sha := blobOf(data).SHA256
 	var seen []string
-	e.s.failpoint = func(name string) error {
+	e.s.failpoints = func(p failpoint.Point) error {
+		name := p.Name
 		seen = append(seen, name)
 		temps, err := os.ReadDir(e.temps)
 		if err != nil {

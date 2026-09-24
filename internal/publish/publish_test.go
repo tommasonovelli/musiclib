@@ -50,7 +50,7 @@ func TestPublishSamePathExchange(t *testing.T) {
 	_, first := e.mustPublish("v1")
 	e.bump(id)
 	var sawOld bool
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == "installed" {
 			// Right after the exchange: the staging holds the old album.
 			b, err := os.ReadFile(e.path("work/" + render.StagingDir(e.mustJournal().BuildID) + "/" + render.ReceiptName))
@@ -86,7 +86,7 @@ func TestPublishArtistRename(t *testing.T) {
 	e.renameArtist(id, "New Name")
 	e.wantClaims(id, "New Name/Album", "Old Name/Album") // the old name stays reserved (§5.3)
 	var during []string
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == "installed" {
 			during = e.entries("library")
 			e.wantClaims(id, "New Name/Album", "Old Name/Album")
@@ -381,7 +381,7 @@ func TestPublishSupersededBuild(t *testing.T) {
 func TestPublishChangeBetweenPrepareAndFinalize(t *testing.T) {
 	e := newEnv(t)
 	id := e.importAlbum("Artist", "Album")
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == "prepared" {
 			e.bump(id) // the API never waits for publishMu
 		}
@@ -399,7 +399,7 @@ func TestPublishChangeBetweenPrepareAndFinalize(t *testing.T) {
 	if j.State != "pending" {
 		t.Fatalf("job %s, want pending: a second render is still needed", j.State)
 	}
-	setFailpoint(t, nil)
+	e.setFailpoint(nil)
 	_, res = e.mustPublish("v2")
 	e.wantPublished(id, res)
 	if _, ok := e.renderJob(id); ok {
@@ -472,7 +472,7 @@ func TestPublishNameReuseDuringRename(t *testing.T) {
 		t.Fatalf("the owner named is %s, want %s", ce.Details.AlbumID, a)
 	}
 	// Also while A's publication is prepared and not finished.
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == "installed" {
 			if err := e.retitle(b, "X"); catalog.Code(err) != catalog.CodePathReserved {
 				t.Errorf("reusing X between INSTALL and FINALIZE: %v", err)
@@ -481,7 +481,7 @@ func TestPublishNameReuseDuringRename(t *testing.T) {
 		return nil
 	})
 	e.mustPublish("a2")
-	setFailpoint(t, nil)
+	e.setFailpoint(nil)
 	if err := e.retitle(b, "X"); err != nil {
 		t.Fatalf("X after its retirement: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestPublishTrashThenRestore(t *testing.T) {
 		id := e.importAlbum("Artist", "Album")
 		e.mustPublish("v1")
 		e.trash(id)
-		setFailpoint(t, func(point string) error {
+		e.setFailpoint(func(point string) error {
 			if point == "prepared" {
 				e.restore(id)
 			}
@@ -526,7 +526,7 @@ func TestPublishTrashThenRestore(t *testing.T) {
 		if !res.Removal || rep.Job != jobs.RenderRequeued || e.exists("library/Artist/Album") {
 			t.Fatalf("the prepared removal: %+v", rep)
 		}
-		setFailpoint(t, nil)
+		e.setFailpoint(nil)
 		_, res = e.mustPublish("v2")
 		e.wantPublished(id, res)
 		e.wantClaims(id, "Artist/Album")
@@ -545,7 +545,7 @@ func TestPublishLockOrder(t *testing.T) {
 	ca, cb := e.claim(), e.claim()
 	ra, rb := e.stage(ca.Render, "a"), e.stage(cb.Render, "b")
 	holding, release := make(chan struct{}), make(chan struct{})
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == "preflight" {
 			select {
 			case holding <- struct{}{}:
@@ -591,7 +591,7 @@ func TestPublishFailureAfterPrepareSuspends(t *testing.T) {
 	e := newEnv(t)
 	a := e.importAlbum("A", "One")
 	e.importAlbum("B", "Two")
-	failAt(t, "installed")
+	e.failAt("installed")
 	_, resA, err := e.render("a")
 	if !jobs.Stops(err) || Code(err) != CodeSuspended {
 		t.Fatalf("err %v (code %q), want a stop with %s", err, Code(err), CodeSuspended)
@@ -631,7 +631,7 @@ func TestPublishCompletesAfterCancellationWithinGrace(t *testing.T) {
 	c := e.claim()
 	res := e.stage(c.Render, "v1")
 	ctx, cancel := context.WithCancel(context.Background())
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == "prepared" {
 			cancel()
 		}
@@ -655,7 +655,7 @@ func TestPublishGivesUpAfterTheGrace(t *testing.T) {
 	c := e.claim()
 	res := e.stage(c.Render, "v1")
 	ctx, cancel := context.WithCancel(context.Background())
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		switch point {
 		case "prepared":
 			cancel()

@@ -37,6 +37,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
 	"musiclib/internal/render"
@@ -59,6 +60,15 @@ type Config struct {
 	// their stagings.
 	Builder *render.Builder
 	Log     *slog.Logger
+	// Failpoints is nil in production. Tests set it to inject an error or
+	// crash the process at the protocol's named points (§12.2, NOTES.md
+	// N-136, N-142), in order: preflight (checked, before PREPARE),
+	// prepared (the journal committed), installed (right after the rename
+	// or the exchange, before the retirement and the fsyncs), retired (the
+	// old directory moved, before the rmdir and the fsyncs), synced
+	// (INSTALL complete, before FINALIZE), finalized (FINALIZE committed,
+	// before the release and the cleanup).
+	Failpoints failpoint.Hook
 }
 
 // Publisher is the process's one publisher. It is safe for concurrent use
@@ -69,6 +79,7 @@ type Publisher struct {
 	builder       *render.Builder
 	log           *slog.Logger
 	renderVersion string
+	failpoints    failpoint.Hook
 
 	// mu is publishMu (§9.3), a channel so that waiting for it respects
 	// the caller's context.
@@ -88,7 +99,7 @@ func New(cfg Config) (*Publisher, error) {
 	}
 	return &Publisher{
 		db: cfg.DB, library: cfg.Library, work: cfg.Work, builder: cfg.Builder, log: cfg.Log,
-		renderVersion: render.Version, mu: make(chan struct{}, 1),
+		renderVersion: render.Version, mu: make(chan struct{}, 1), failpoints: cfg.Failpoints,
 	}, nil
 }
 
@@ -163,7 +174,7 @@ func (p *Publisher) publishLocked(ctx context.Context, snap *jobs.RenderSnapshot
 	if err := p.preflight(j); err != nil {
 		return rep, true, err
 	}
-	if err := failpoint("preflight"); err != nil {
+	if err := p.failpoints.Hit("preflight"); err != nil {
 		return rep, true, err
 	}
 	out, err := p.prepare(ctx, snap, j)
@@ -181,7 +192,7 @@ func (p *Publisher) publishLocked(ctx context.Context, snap *jobs.RenderSnapshot
 	}
 	p.log.Info("publication prepared", "album_id", j.AlbumID, "build_id", j.BuildID, "revision", j.Revision,
 		"old_path", j.OldPath, "new_path", j.NewPath)
-	if err := failpoint("prepared"); err != nil {
+	if err := p.failpoints.Hit("prepared"); err != nil {
 		return rep, false, p.suspend(j, err)
 	}
 
@@ -192,14 +203,14 @@ func (p *Publisher) publishLocked(ctx context.Context, snap *jobs.RenderSnapshot
 	if err := p.install(gctx, j); err != nil {
 		return rep, false, p.suspend(j, err)
 	}
-	if err := failpoint("synced"); err != nil {
+	if err := p.failpoints.Hit("synced"); err != nil {
 		return rep, false, p.suspend(j, err)
 	}
 	jo, err := p.finalize(gctx, j)
 	if err != nil {
 		return rep, false, p.suspend(j, err)
 	}
-	if err := failpoint("finalized"); err != nil {
+	if err := p.failpoints.Hit("finalized"); err != nil {
 		return rep, false, p.suspend(j, err)
 	}
 	rep.Outcome, rep.Job = Published, jo
@@ -241,22 +252,4 @@ func graceful(ctx context.Context) (context.Context, context.CancelFunc) {
 		}
 	}()
 	return gctx, cancel
-}
-
-// failpointHook, when a test sets it, runs at the named points of the
-// protocol and returns the error to inject there; a crash test kills the
-// process in it (§12.2, NOTES.md N-044, N-136). The points, in order:
-// "preflight" (checked, before PREPARE), "prepared" (the journal
-// committed), "installed" (right after the rename or the exchange, before
-// the retirement and the fsyncs), "retired" (the old directory moved, before
-// the rmdir and the fsyncs), "synced" (INSTALL complete, before FINALIZE),
-// "finalized" (FINALIZE committed, before the release and the cleanup).
-// Nil in production.
-var failpointHook func(point string) error
-
-func failpoint(point string) error {
-	if failpointHook == nil {
-		return nil
-	}
-	return failpointHook(point)
 }

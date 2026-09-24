@@ -49,7 +49,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] `internal/render`: snapshot → pure plan → build in staging (§9.1) — `render_version` (§2.1, N-010 resolved by N-130), the pure planner, the verified build in `work/render/<build_id>/album` with its failure cleanup; run by `publish.ExecuteRender` since round 9
 - [x] `.musiclib.json` receipt (§9.2) — canonical encoder, strict parser for recovery and doctor, `receipt_hash` (N-133)
 - [x] `internal/publish`: PREPARE / INSTALL / FINALIZE + journal (§9.3) — preflight, `publishMu`, suspension after PREPARE (N-135), ownership rules (N-137), the render executor `ExecuteRender`
-- [x] Journal recovery at startup (§9.4) — `Publisher.Recover`, idempotent, forward only; illegal states fail the boot with `publish_illegal_state`, deleting nothing
+- [x] Journal recovery at startup (§9.4) — `Publisher.Recover`, idempotent, forward only; an illegal state suspends publishing with `publish_illegal_state`: the process stays up, not ready, no worker, deleting nothing (owner decision N-135, round 10)
 - [x] Boot steps 4 (journal recovery), 5 (`work/render`, `work/retired` and the other leftovers cleaned, running → pending), 6 (stale renders) and the worker pool of step 7 with the scan, import and render executors (§11.1); exit on database loss or a pending publication (§6.4, N-070, N-135); shutdown with the 30 s grace for a prepared publication
 - [x] `internal/jobs`: claim, pool, completion (§6.2, §6.4) — the single `EnqueueRender`, the REPEATABLE READ claim with its snapshot, ticket-conditioned completions, boot helpers, the worker pool, wired in `cmd/musiclibd` with two workers tested end to end (§13.1); `jobs.Stop` for a pending publication; the process space budget `jobs.Budget` (§11.2)
 
@@ -60,7 +60,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] `path_claims` and global `pg_advisory_xact_lock` (§5.3) — `store.InCatalogTx`, `catalog.ReconcileClaims`
 - [~] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1) — the revision check in the transaction of the change, with typed `precondition_required` / `precondition_failed` (catalog); the HTTP ETag and headers come with the API
 - [~] Artist rename and album reassignment (§4.3) — both done and tested in the catalog (`RenameArtist`; `UpdateAlbum` with another `artist_id`); the HTTP endpoints come with the API
-- [~] Named failpoints and failure matrix (§12.2) — the publication's six failpoints with real SIGKILL crashes in child processes, recovery twice and interrupted, DB loss after the rename, SIGTERM/SIGKILL with helpers active, DB loss mid-work (N-136); the blob store, claim and builder hooks and the rest of the matrix are this phase's (N-044)
+- [x] Named failpoints and failure matrix (§12.2) — one mechanism (`internal/failpoint`, `internal/faulttest`, N-142); real SIGKILL crashes for every row about durability or idempotency; a really full filesystem (N-143); the matrix is below. Rows that need doctor, rebuild, restore, backup (Phase 6) or the UI (Phase 5) are marked for their phase
 
 ## Phase 4 — Formats and content
 
@@ -89,6 +89,48 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [ ] Operations guide with Compose examples (§11)
 
 ---
+
+## The §12.2 failure matrix
+
+Status: **crash** = tested with a real process crash (SIGKILL of a child
+process at a named failpoint, then the next boot), or a real process
+losing the database or its helpers; **in-process** = tested with real
+PostgreSQL 17, real ext4 and the real tools, failures injected at the
+named points; **later** = the phase that brings the feature.
+
+| §12.2 row | Required property | Status | Tests |
+|---|---|---|---|
+| Due worker sullo stesso job | Uno solo ottiene il claim | crash + in-process | `jobs.TestCrashAroundTheClaim` (killed inside the claim transaction, after its commit, in the executor: exactly one execution after `RecoverRunning`); `jobs.TestOneClaimPerJob`, `TestEveryJobClaimedOnce`, `TestPoolExecutesEachJobOnce` |
+| Due import dello stesso candidato / commit dalla risposta persa | Un album e un esito durevole, non duplicati | crash + in-process | `importer.TestCrashAtTheImportCommit` (before, after), `TestImportCommitAnswerLost` (answer lost, connection cut before the COMMIT; the process stops and restarts), `TestTwoProcessesImportTheSameCandidate` (two processes committing at once); `importer.TestCrashAtTheScanCommit`; `catalog.TestCommitImportLostAck`, `TestCommitImportConcurrentSameFingerprint`, `TestCommitImportIdempotent` |
+| Stesso blob fissato contemporaneamente | Un file integro, nessun overwrite | crash + in-process | `blobstore.TestCrashDuringPut` (killed at `temp_synced`, `temp_verified`, `shards_synced`, `pinned`; `CleanTemps`; re-put idempotent, same inode); `blobstore.TestPutConcurrentSameContent` |
+| Blob esistente corrotto | Errore, nessuna fiducia nel solo nome | in-process | `blobstore.TestPutDoesNotTrustExisting`; `render.TestBuildCorruptOriginal` |
+| Modifica API durante un build | Build obsoleta scartata, nuova richiesta conservata | in-process | `publish.TestPublishSupersededBuild`, `TestExecuteRenderSupersededAndCancelled`; `jobs.TestCoalescing` |
+| Modifica fra PREPARE e FINALIZE | Revisioni distinte e secondo render ancora necessario | in-process | `publish.TestPublishChangeBetweenPrepareAndFinalize` |
+| Riuso di un vecchio nome non ancora ritirato | Conflitto di prenotazione, mai furto di ownership | in-process | `publish.TestPublishNameReuseDuringRename`; `catalog.TestRenameReservation` |
+| Scambio numeri traccia | Transazione valida senza collisioni intermedie | in-process | `catalog.TestTrackSwap`; `store.TestTrackReorderIsChecked` |
+| Crash prima/dopo PREPARE | Vecchio output valido oppure journal recuperabile | crash | `publish.TestCrashMatrix/*/{preflight,prepared}`; `publish.TestCrashDuringBuild` (killed at `reserved`, `write`, `tags_written`, `fsync_file`, `fsync_dir` of a real build: old album and originals intact, staging removed at step 5, the render publishes after the restart); `TestRecoverBeforePrepare` |
+| Crash subito dopo exchange, prima degli fsync, prima/dopo FINALIZE | Recovery non esegue uno scambio inverso | crash | `publish.TestCrashMatrix/exchange/{installed,synced,finalized}`, `TestCrashDuringRecovery`; every case recovered twice |
+| Crash tra installazione del nuovo path e ritiro del vecchio | Entrambi completi, recovery rimuove solo il vecchio owner | crash | `publish.TestCrashMatrix/rename/{installed,retired}`, `TestCrashDuringRecovery` |
+| Disco pieno durante build | Vecchio album e originali intatti | really full fs + in-process | `publish.TestExecuteRenderOnAReallyFullDisk` (a real album on the full tmpfs `/fullfs`; ENOSPC at the copies, the attachment, the receipt; N-143); `blobstore.TestPutOnAReallyFullFilesystem`; `render.TestBuildNoSpace` (ext4's ENOSPC at fsync, injected) |
+| Errore DB dopo rename | Journal completato al riavvio | in-process (real wire loss) + crash | `publish.TestRecoverDatabaseErrorAfterRename` (the FINALIZE commit cut, its answer lost, through `pgtest.Proxy`); `cmd/musiclibd.TestProcessDatabaseLossMidWork` |
+| Tag writer altera i campioni o perde un tag non gestito | Album non pubblicato | in-process | `render.TestBuildTagWriterAltersSamples`, `TestBuildTagWriterLosesUnmanagedField`; `media.TestVerifyTags` |
+| Modifica dell'output con size/mtime invariati | Doctor deep la rileva e render/rebuild la ripara | **later: Phase 6** (doctor, rebuild) | render repairing damaged own output: `publish.TestPublishReplacesDamagedOwnOutput` |
+| Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
+| Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | **later: Phase 5** (HTTP API and UI); the catalog half is done | `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
+| SIGTERM/SIGKILL con più worker e helper attivi | Nessun helper del vecchio tentativo resta in attività | crash | `cmd/musiclibd.TestProcessSignalsWithHelpersActive`, `TestProcessDatabaseLossMidWork`; `media.TestRunToolDiesWithParent` (Pdeathsig), `TestRunCancelKillsAndReapsWholeGroup` |
+| Crash durante rebuild o restore | Marker impedisce il boot su una manutenzione incompleta | **later: Phase 6** (rebuild, restore); the marker's boot refusal is done | `volume.TestMaintenanceMarkerBlocksBoot`; the `cmd/musiclibd` maintenance refusals |
+| Backup, perdita DB/volume, restore su volumi nuovi | Catalogo e originali recuperati, output rigenerato verificabile | **later: Phase 6** | — |
+
+Beyond the rows, with real crashes: the first initialization
+(`volume.TestFirstInitInterruptedAtEveryStep`, 7 points, N-061) and an
+illegal journal at boot, which keeps a real server process up and not
+ready (`cmd/musiclibd.TestProcessSuspendedByAnIllegalJournal`, N-135).
+
+```sh
+scripts/check.sh                                   # everything, /fullfs required
+scripts/dev.sh go test -race -count=5 -timeout 50m -run 'TestCrash|ReallyFull|AnswerLost|TwoProcesses|Suspend' \
+  ./internal/blobstore/ ./internal/jobs/ ./internal/importer/ ./internal/publish/ ./cmd/musiclibd/
+```
 
 ---
 
@@ -198,12 +240,78 @@ match (bytes, size, symlink, directory) gives `corrupt_blob` and is left
 untouched; injected failures at every protocol point (source error,
 cancellation mid-copy, ENOSPC, temp altered before the re-read, failures
 before and after the rename, temp removal failure); protocol order; doctor
-checks; hash validation; temp cleanup. Not covered: a real full disk (N-045)
-and real crashes (N-044).
+checks; hash validation; temp cleanup. Since round 10: a real SIGKILL at
+each of the four points (`TestCrashDuringPut`: no corrupt pinned blob, the
+temporary removed by `CleanTemps`, the re-put idempotent on the same inode)
+and a really full filesystem (`TestPutOnAReallyFullFilesystem`, N-143).
 
 ```sh
 scripts/check.sh ./internal/blobstore/...
 scripts/dev.sh go test -race -count=20 ./internal/blobstore/
+```
+
+### `internal/failpoint` + `internal/faulttest` — named failpoints and real crashes (§12.2) ✔
+
+One mechanism for every failpoint of the protocol (N-142). There is no
+package-level hook, and nothing crash-related is linked into `musiclibd`.
+
+| Function | Role |
+|---|---|
+| `failpoint.Hook`, `failpoint.Point{Name, Path, File}` | the hook a component holds (nil in production) and where it is |
+| `Hook.Hit(name)` / `Hook.HitFile(name, path, f)` | run the hook at a named point; a nil hook returns nil |
+| `faulttest.Crash(name)` / `CrashWhen(match)` / `Kill()` | a real SIGKILL of the process itself at the point |
+| `faulttest.Switch` | a hook a test changes while the component lives (`Hook`, `Set`) |
+| `faulttest.Mode`, `Exit`, `Start`, `Child.Wait`, `RunChild`, `Killed` | the child-process harness: the test binary's `TestHelperProcess` in a mode, its result line or `killed` |
+| `faulttest.FullFS(t)` → `Disk{Dir}`, `Fill(leave)`, `Drain`, `Available`, `BlockSize` | the really full filesystem `/fullfs` (N-143): flock-serialized, refuses anything over 2 GiB or TMPDIR's filesystem, a fallocated ballast exact to the byte |
+
+Where the hooks are: `render.Config.Failpoints`,
+`importer.Config.Failpoints` and `publish.Config.Failpoints`; unexported
+fields in `blobstore.Store`, `volume.Volume` and `jobs.Pool`; `claimNext`
+for the claim. The catalogue of the points is in N-142.
+
+Tests:
+- a crash kills at exactly its point, by SIGKILL;
+- `Wait` fails on any other end;
+- `Switch`;
+- `FullFS`: real ENOSPC past the level left, exact writes succeed, the
+  space comes back, and an impossible level is an error;
+- the three `FullFS` guards (a mount point, at most 2 GiB, not TMPDIR's), each on its own;
+- `TestOnlyTestsImportFaulttest` (AST).
+
+Crash tests in the packages, on the matrix above:
+- `blobstore.TestCrashDuringPut`;
+- `jobs.TestCrashAroundTheClaim`;
+- `importer.TestCrashAtTheImportCommit`, `TestImportCommitAnswerLost`,
+  `TestTwoProcessesImportTheSameCandidate`, `TestCrashAtTheScanCommit`;
+- `publish.TestCrashMatrix`, `TestCrashDuringRecovery`,
+  `TestCrashDuringBuild`, `TestExecuteRenderOnAReallyFullDisk`;
+- `volume.TestFirstInitInterruptedAtEveryStep`;
+- `cmd/musiclibd.TestProcessSuspendedByAnIllegalJournal`.
+
+Mutation-checked, each making a test fail:
+- the crash hook not killing;
+- `CleanTemps` doing nothing;
+- `RecoverRunning` doing nothing;
+- each `FullFS` guard off (mount point, size, TMPDIR);
+- the import commit's fingerprint lookup off (two processes: done and
+  failed, not skipped);
+- the album directory or `retired/<build_id>` not fsynced;
+- the created artist directory not removed, or created after the rename;
+- the boot exiting on an illegal journal;
+- ENOSPC typed as `render_io`;
+- `Publisher.CleanWork` doing nothing;
+- `faulttest` imported by production code;
+- the boot suspending on any step-4 error instead of `publish_illegal_state` only;
+- the pre-rename fsync of a new artist directory dropped.
+
+Timings (Docker Desktop, 12 CPUs): the gate `scripts/check.sh` takes
+120 s. The crash and full-disk tests at `-race -count=5` take 376 s wall
+time: publish 365 s, importer 45 s, jobs 22 s, cmd 18 s, volume 14 s,
+blobstore 13 s, faulttest 12 s.
+
+```sh
+scripts/check.sh ./internal/faulttest/... ./internal/failpoint/...
+scripts/dev.sh go test -race -count=5 -run 'TestCrash|ReallyFull' ./internal/blobstore/ ./internal/jobs/ ./internal/importer/ ./internal/publish/
 ```
 
 ### `internal/store` + `migrations/` — schema, pool, migrations (§2.1, §4.2, §11.1) ✔
@@ -345,7 +453,7 @@ logs JSON on stderr.
 | (N-065) | `CheckMaintenance`, before anything touches the database |
 | 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` |
 | 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg, ffprobe and musiclib-tags, `media_tool_unavailable` / `media_tool_version`), `/import` listable |
-| 4 | the blob store, the process space budget, the builder and the publisher; `Publisher.Recover` (§9.4): the pending journal completed forward, or the boot refused with `publish_illegal_state` / `publish_io` (N-135) |
+| 4 | the blob store, the process space budget, the builder and the publisher; `Publisher.Recover` (§9.4): the pending journal completed forward; `publish_illegal_state` suspends publishing and keeps the process up without steps 5 to 7, `publish_io` fails the boot (N-135) |
 | 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)`, `importer.CleanWork`, `Publisher.CleanWork` (`work/render`, `work/retired` not referenced by a journal); `jobs.RecoverRunning` |
 | 6 | `jobs.EnqueueStaleRenders(render.Version)` |
 | 7 | the catalog (whose commits wake the pool), the importer on `/import`, `jobs.NewPool` with `WORKERS` workers dispatching scan, import and render; readiness positive |
@@ -358,7 +466,9 @@ restarts it (§6.4, N-070, N-135).
 - `/health/live` is always 200.
 - `/health/ready` is 503 `not_ready` until step 7 and during shutdown. After
   that it pings PostgreSQL on each request with a 2 s timeout, and answers
-  503 `db_unavailable` when the database is down (N-070).
+  503 `db_unavailable` when the database is down (N-070). With a journal in
+  an illegal state it is 503 `publish_illegal_state` with
+  `details: {album_id, build_id}`, and the process stays up (N-135).
 - Both endpoints are GET only, answer JSON with `Cache-Control: no-store`,
   and every other route is 404.
 - A refused boot logs its stable `code` and exits 1 (N-068).
@@ -391,9 +501,16 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
   cleanup and `running → pending` (no job left running), then exactly one
   stale render (the album without a job; a failed job and an album with
   the current renderer are left alone), then the workers, then `ready`.
-- **An illegal journal** (`TestBootRefusesAnIllegalJournal`): the boot
-  fails with `publish_illegal_state`, never turns ready, starts no worker,
-  changes nothing in `library/`, keeps the journal, releases the lock.
+- **An illegal journal** (N-135, round 10): `TestBootSuspendsOnAnIllegalJournal`
+  and, with a real process, `TestProcessSuspendedByAnIllegalJournal`: the
+  process stays up with the lock held and no worker, `/health/ready`
+  answers 503 `publish_illegal_state` with the album and build ids, the
+  healthcheck exits 1, the logs say what to do, nothing moves, the journal
+  and the running job stay; SIGTERM exits 0 and releases the lock.
+- **A recovery I/O error** (`TestBootFailsOnARecoveryIOError`): a legal
+  journal whose staging cannot be moved (EACCES) fails the boot with
+  `publish_io` (exit 1): no suspension, no worker, the lock released, the
+  journal kept, the created artist directory removed again.
 - **End to end, two workers (§13.1)** (`TestEndToEndTwoWorkers`): two FLAC
   albums in `/import`, a batch, then the server scans, imports, renders
   and publishes; the output matches §1.1 with the managed tags read back
@@ -1333,7 +1450,13 @@ with the real tools):
 - **Real crashes** (`crash_test.go`, N-136): the publisher in a child
   process killed with SIGKILL at each of the six failpoints for the four
   kinds (21 cases), then two recoveries in fresh children; a crash during
-  the recovery itself.
+  the recovery itself; since round 10 a crash at five points of a real
+  build (`TestCrashDuringBuild`) and a really full disk
+  (`TestExecuteRenderOnAReallyFullDisk`, N-143).
+- **INSTALL durability** (round 10, N-144): the new artist directory synced
+  before the rename and removed again if the installation fails; the moved
+  album and `work/retired/<build_id>` fsynced; the order traced
+  (`TestPublishFsyncOrder`, `TestPublishRemovesTheArtistDirectoryOfAFailedInstall`).
 
 Mutation-checked, each making a test fail: `old_path == new_path` compared
 case-insensitively; the "already installed" check removed (a second

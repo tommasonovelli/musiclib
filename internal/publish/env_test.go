@@ -23,6 +23,8 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/failpoint"
+	"musiclib/internal/faulttest"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
@@ -55,6 +57,9 @@ type env struct {
 	p     *Publisher
 	logs  *syncBuffer
 	batch uuid.UUID
+	// fp is the failpoint hook of every publisher the env makes, bfp the
+	// builder's (setFailpoint, setBuildFailpoint).
+	fp, bfp faulttest.Switch
 }
 
 // sharedTools are the verified tools, one Runner for the test binary.
@@ -90,7 +95,8 @@ func newEnvOn(t *testing.T, dbURL string, db *pgxpool.Pool, data string) *env {
 	if err != nil {
 		t.Fatalf("NewTools: %v (run the tests in Docker, docs/docker.md)", err)
 	}
-	if e.b, err = render.New(render.Config{Tools: tools, Blobs: blobs, Work: e.work, Budget: jobs.NewBudget()}); err != nil {
+	if e.b, err = render.New(render.Config{Tools: tools, Blobs: blobs, Work: e.work, Budget: jobs.NewBudget(),
+		Failpoints: e.bfp.Hook()}); err != nil {
 		t.Fatal(err)
 	}
 	e.p = e.publisher(db)
@@ -107,7 +113,7 @@ func newEnvOn(t *testing.T, dbURL string, db *pgxpool.Pool, data string) *env {
 func (e *env) publisher(db *pgxpool.Pool) *Publisher {
 	e.t.Helper()
 	p, err := New(Config{DB: db, Library: e.lib, Work: e.work, Builder: e.b,
-		Log: slog.New(slog.NewJSONHandler(io.MultiWriter(e.logs), nil))})
+		Log: slog.New(slog.NewJSONHandler(io.MultiWriter(e.logs), nil)), Failpoints: e.fp.Hook()})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -483,19 +489,20 @@ func wantCode(t *testing.T, err error, code string) {
 	}
 }
 
-// setFailpoint installs fn for the test. The protocol tests never run in
-// parallel: the hook is package state.
-func setFailpoint(t *testing.T, fn func(point string) error) {
-	t.Helper()
-	failpointHook = fn
-	t.Cleanup(func() { failpointHook = nil })
+// setFailpoint makes every publisher of the env run fn at its failpoints;
+// nil removes it.
+func (e *env) setFailpoint(fn func(point string) error) {
+	if fn == nil {
+		e.fp.Set(nil)
+		return
+	}
+	e.fp.Set(func(p failpoint.Point) error { return fn(p.Name) })
 }
 
 // failAt makes the named failpoint return an error once.
-func failAt(t *testing.T, at string) *atomic.Bool {
-	t.Helper()
+func (e *env) failAt(at string) *atomic.Bool {
 	var hit atomic.Bool
-	setFailpoint(t, func(point string) error {
+	e.setFailpoint(func(point string) error {
 		if point == at && hit.CompareAndSwap(false, true) {
 			return fmt.Errorf("injected at %s", point)
 		}

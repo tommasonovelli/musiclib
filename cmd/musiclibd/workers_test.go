@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -428,39 +429,92 @@ func deref[T any](p *T) T {
 	return *p
 }
 
-// §9.4: a journal whose state matches no legal transition fails the boot
-// with publish_illegal_state; readiness never turns positive, nothing is
-// deleted, the journal stays for the operator (or rebuild), no worker
-// starts, and the lock is released.
-func TestBootRefusesAnIllegalJournal(t *testing.T) {
-	dbURL := pgtest.EmptyDB(t)
-	p := testPaths(t)
+// plantIllegalJournal makes the §9.4 illegal state on a booted volume: a
+// journal whose new path holds a foreign directory and whose staging does
+// not exist. It returns the album, the journal's build and the library's
+// hashes.
+func plantIllegalJournal(t *testing.T, dbURL string, p paths) (album, build uuid.UUID, library map[string]string) {
+	t.Helper()
 	bootOnce(t, dbURL, p)
 	db := dbPool(t, dbURL)
 	id := seedAlbum(t, db, "Artist", "Album")
 	execSQL(t, db, `UPDATE jobs SET state = 'running', claimed = requested WHERE album_id = $1`, id)
-	// A new path with no staging and a foreign directory at it.
 	h := sha256.Sum256([]byte("receipt"))
+	build = store.NewID()
 	execSQL(t, db, `INSERT INTO publication (id, album_id, ticket, revision, renderer, build_id, receipt_hash, new_path)
-		VALUES (1, $1, 1, 1, $2, $3, $4, 'Artist/Album')`, id, render.Version, store.NewID(), hex.EncodeToString(h[:]))
+		VALUES (1, $1, 1, 1, $2, $3, $4, 'Artist/Album')`, id, render.Version, build, hex.EncodeToString(h[:]))
 	writeFile(t, filepath.Join(p.data, "library", "Artist", "Album", "mine.txt"), "the user's")
-	before := hashTree(t, filepath.Join(p.data, "library"))
+	return id, build, hashTree(t, filepath.Join(p.data, "library"))
+}
 
-	d := startDaemon(t, testConfig(dbURL), p)
-	err := d.wait(t)
-	if codeOf(err) != publish.CodeIllegalState {
-		t.Fatalf("run: %v (code %q), want %s", err, codeOf(err), publish.CodeIllegalState)
-	}
-	if d.logs.has(t, "ready") || d.logs.has(t, "workers started") {
-		t.Fatal("the boot went on past an illegal journal")
-	}
-	if !sameTree(before, hashTree(t, filepath.Join(p.data, "library"))) {
+// wantSuspended checks the state of a process that found an illegal
+// journal: nothing moved, the journal kept, the job neither run nor
+// recovered (no step after 4 ran).
+func wantSuspended(t *testing.T, dbURL string, p paths, album uuid.UUID, library map[string]string) {
+	t.Helper()
+	db := dbPool(t, dbURL)
+	if !sameTree(library, hashTree(t, filepath.Join(p.data, "library"))) {
 		t.Fatal("library/ changed")
 	}
 	if n := queryInt(t, db, `SELECT count(*) FROM publication`); n != 1 {
 		t.Fatal("the journal was resolved by guessing")
 	}
+	if n := queryInt(t, db, `SELECT count(*) FROM jobs WHERE album_id = $1 AND state = 'running'`, album); n != 1 {
+		t.Fatal("a step after the recovery ran: the job is no longer running")
+	}
+}
+
+// §9.4 "la pubblicazione viene sospesa e l'errore esposto" (owner
+// decision N-135): a journal whose state matches no legal transition does
+// not stop the process. It stays alive with the lock held, starts no
+// worker, and /health/ready answers 503 publish_illegal_state with the
+// journal's album and build and no path; /health/live is 200. Nothing is
+// deleted. A stop is a normal shutdown that releases the lock.
+func TestBootSuspendsOnAnIllegalJournal(t *testing.T) {
+	dbURL := pgtest.EmptyDB(t)
+	p := testPaths(t)
+	album, build, library := plantIllegalJournal(t, dbURL, p)
+
+	d := startDaemon(t, testConfig(dbURL), p)
+	d.logs.waitLog(t, "publishing suspended: the pending publication is in an illegal state")
+	status, body := getJSON(t, d.base+"/health/ready")
+	if status != http.StatusServiceUnavailable || body.Code != publish.CodeIllegalState ||
+		body.Details["album_id"] != album.String() || body.Details["build_id"] != build.String() || len(body.Details) != 2 {
+		t.Fatalf("ready: %d %+v", status, body)
+	}
+	if strings.Contains(body.Message, p.data) || body.Message == "" {
+		t.Fatalf("message %q", body.Message)
+	}
+	d.waitStatus(t, "/health/live", http.StatusOK)
+	assertLockHeld(t, p.data)
+	if d.logs.has(t, "ready") || d.logs.has(t, "workers started") || d.logs.has(t, "work cleaned") {
+		t.Fatal("the boot went on past an illegal journal")
+	}
+	wantSuspended(t, dbURL, p, album, library)
+	if err := d.stop(t); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
 	assertLockFree(t, p.data)
+	wantSuspended(t, dbURL, p, album, library)
+}
+
+// getJSON GETs url and decodes the error body.
+func getJSON(t *testing.T, url string) (int, errorBody) {
+	t.Helper()
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	var b errorBody
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, b
 }
 
 // toolChildren returns the pids of the native tools that are children of
@@ -650,4 +704,79 @@ func TestProcessSignalsWithHelpersActive(t *testing.T) {
 			}
 		})
 	}
+}
+
+// N-135's other half: a step-4 failure that is not an illegal state fails
+// the boot as before (exit 1), because it may be transient and the restart
+// retries it. A legal journal whose staging cannot be moved (its build
+// directory is read-only: EACCES on the rename) makes the recovery fail
+// with publish_io: run returns that code, nothing is suspended, no worker
+// starts, the lock is released, the journal stays.
+func TestBootFailsOnARecoveryIOError(t *testing.T) {
+	dbURL := pgtest.EmptyDB(t)
+	p := testPaths(t)
+	bootOnce(t, dbURL, p)
+	db := dbPool(t, dbURL)
+	id := seedAlbum(t, db, "Artist", "Album")
+	var ticket int64
+	if err := db.QueryRow(context.Background(),
+		`UPDATE jobs SET state = 'running', claimed = requested WHERE album_id = $1 RETURNING claimed`, id).Scan(&ticket); err != nil {
+		t.Fatal(err)
+	}
+	// A complete staging with its receipt: the journal is legal.
+	build := store.NewID()
+	staging := filepath.Join(p.data, "work", filepath.FromSlash(render.StagingDir(build)))
+	body := []byte("audio")
+	writeFile(t, filepath.Join(staging, "01 - One.flac"), string(body))
+	sum := sha256.Sum256(body)
+	receipt, err := render.Receipt{AlbumID: id, BuildID: build, AlbumRevision: 1, RenderVersion: render.Version,
+		Files: []render.ReceiptFile{{RelativePath: "01 - One.flac", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}}}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(staging, render.ReceiptName), string(receipt))
+	execSQL(t, db, `INSERT INTO publication (id, album_id, ticket, revision, renderer, build_id, receipt_hash, new_path)
+		VALUES (1, $1, $2, 1, $3, $4, $5, 'Artist/Album')`, id, ticket, render.Version, build, render.ReceiptHash(receipt))
+	buildDir := filepath.Dir(staging)
+	if err := os.Chmod(buildDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(buildDir, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+	library := libraryEntries(t, p)
+
+	d := startDaemon(t, testConfig(dbURL), p)
+	err = d.wait(t)
+	if codeOf(err) != publish.CodeIO {
+		t.Fatalf("run: %v (code %q), want %s", err, codeOf(err), publish.CodeIO)
+	}
+	for _, msg := range []string{"publishing suspended: the pending publication is in an illegal state", "workers started",
+		"work cleaned", "ready"} {
+		if d.logs.has(t, msg) {
+			t.Fatalf("%q logged after a recovery I/O error", msg)
+		}
+	}
+	assertLockFree(t, p.data)
+	if n := queryInt(t, db, `SELECT count(*) FROM publication`); n != 1 {
+		t.Fatal("the journal is gone")
+	}
+	// The artist directory created for the failed rename was removed again
+	// (N-144): the same entries (library/'s own mtime did change).
+	if got := libraryEntries(t, p); !slices.Equal(got, library) {
+		t.Fatalf("library/ holds %q, it held %q", got, library)
+	}
+}
+
+// libraryEntries lists every path under library/, sorted.
+func libraryEntries(t *testing.T, p paths) []string {
+	t.Helper()
+	var out []string
+	for r := range hashTree(t, filepath.Join(p.data, "library")) {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out
 }

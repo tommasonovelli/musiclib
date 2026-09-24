@@ -212,3 +212,58 @@ func processUmask(t *testing.T, pid int) int {
 	t.Skip("no Umask line in /proc status")
 	return 0
 }
+
+// N-135 with a real process: the server finds an illegal journal, stays up
+// holding the lock with no worker, answers 503 publish_illegal_state (the
+// Compose healthcheck, `musiclibd healthcheck`, reports it unhealthy),
+// logs what the operator must do, moves nothing, and stops cleanly on
+// SIGTERM with exit 0 and the lock released.
+func TestProcessSuspendedByAnIllegalJournal(t *testing.T) {
+	dbURL := pgtest.EmptyDB(t)
+	p := testPaths(t)
+	album, build, library := plantIllegalJournal(t, dbURL, p)
+	s := startServerProcess(t, dbURL, p, 0o022)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for !strings.Contains(s.stderr.String(), "publishing suspended") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no suspension within 60s; stderr:\n%s", s.stderr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	status, body := getJSON(t, "http://"+s.addr+"/health/ready")
+	if status != 503 || body.Code != "publish_illegal_state" ||
+		body.Details["album_id"] != album.String() || body.Details["build_id"] != build.String() {
+		t.Fatalf("ready: %d %+v", status, body)
+	}
+	if got := s.healthy(); got != exitFailure {
+		t.Fatalf("healthcheck exit %d, want %d", got, exitFailure)
+	}
+	// Still up a while later, and still suspended: it did not exit.
+	time.Sleep(time.Second)
+	select {
+	case <-s.done:
+		t.Fatalf("the server exited; stderr:\n%s", s.stderr)
+	default:
+	}
+	assertLockHeld(t, p.data)
+	logs := s.stderr.String()
+	for _, want := range []string{`"code":"publish_illegal_state"`, "rebuild", album.String(), build.String()} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("the logs do not say %q:\n%s", want, logs)
+		}
+	}
+	if strings.Contains(logs, `"msg":"workers started"`) || strings.Contains(logs, `"msg":"ready"`) {
+		t.Fatalf("workers started:\n%s", logs)
+	}
+	wantSuspended(t, dbURL, p, album, library)
+
+	if err := s.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := s.wait(t); code != exitOK {
+		t.Fatalf("exit %d after SIGTERM; stderr:\n%s", code, s.stderr)
+	}
+	assertLockFree(t, p.data)
+	wantSuspended(t, dbURL, p, album, library)
+}

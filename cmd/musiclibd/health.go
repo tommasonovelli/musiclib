@@ -33,8 +33,16 @@ func (d *daemon) handleLive(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleReady is positive only when the boot is complete and PostgreSQL
-// answers now (§11.1); otherwise 503 (§10.1).
+// answers now (§11.1); otherwise 503 (§10.1): not_ready, db_unavailable,
+// or publish_illegal_state with the journal's album and build while
+// publishing is suspended.
 func (d *daemon) handleReady(w http.ResponseWriter, r *http.Request) {
+	// §9.4: a journal in an illegal state suspends publishing, and the
+	// error is exposed here until the operator acts (N-135).
+	if s := d.suspended.Load(); s != nil {
+		d.writeJSON(w, http.StatusServiceUnavailable, s)
+		return
+	}
 	pool := d.ready.Load()
 	if pool == nil {
 		d.writeJSON(w, http.StatusServiceUnavailable,
@@ -52,10 +60,12 @@ func (d *daemon) handleReady(w http.ResponseWriter, r *http.Request) {
 	d.writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
-// errorBody follows the {code, message} convention of §10.1.
+// errorBody follows the {code, message, details} convention of §10.1.
+// Details never carry an absolute path.
 type errorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string            `json:"code"`
+	Message string            `json:"message"`
+	Details map[string]string `json:"details,omitempty"`
 }
 
 func (d *daemon) writeJSON(w http.ResponseWriter, status int, body any) {

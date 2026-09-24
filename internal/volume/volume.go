@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 )
 
@@ -59,10 +60,10 @@ type Volume struct {
 	storeID                  uuid.UUID   // set by Identify
 	originals, library, work *fsops.Root // set by OpenLayout
 
-	// failpoint, when set by tests, runs at the named points of the first
-	// initialization; tests make it kill the process (a real crash) or
-	// return an error. Nil in production.
-	failpoint func(name string) error
+	// failpoints is nil in production. The package's tests set it to kill
+	// the process (a real crash) or return an error at the named points of
+	// the first initialization (NOTES.md N-061, N-142).
+	failpoints failpoint.Hook
 }
 
 // Acquire opens the data volume at path and takes the exclusive,
@@ -146,7 +147,7 @@ func (v *Volume) OpenLayout() error {
 			return fsErr("cannot create "+d, err)
 		}
 	}
-	if err := v.fail("layout_created"); err != nil {
+	if err := v.failpoints.Hit("layout_created"); err != nil {
 		return err
 	}
 	if err := v.root.SyncDir(""); err != nil {
@@ -183,13 +184,6 @@ func (v *Volume) Close() error {
 	}
 	errs = append(errs, v.lock.Close())
 	return errors.Join(errs...)
-}
-
-func (v *Volume) fail(name string) error {
-	if v.failpoint == nil {
-		return nil
-	}
-	return v.failpoint(name)
 }
 
 // fsErr wraps an fsops failure, keeping permission problems recognizable.

@@ -4,12 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sys/unix"
 
+	"musiclib/internal/faulttest"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
 )
@@ -188,18 +185,14 @@ func wantCode(t *testing.T, err error, code string) {
 	}
 }
 
-// helperEnv selects the child-process mode of TestHelperProcess.
-const helperEnv = "MUSICLIB_VOLUME_HELPER"
-
 // TestHelperProcess is not a test: it is the body of the child processes
 // started by the tests, and returns at once in a normal run.
 func TestHelperProcess(t *testing.T) {
-	mode := os.Getenv(helperEnv)
+	mode := faulttest.Mode()
 	if mode == "" {
 		return
 	}
-	fmt.Println("RESULT:", helperMain(mode))
-	os.Exit(0)
+	faulttest.Exit(helperMain(mode))
 }
 
 func helperMain(mode string) string {
@@ -225,53 +218,21 @@ func helperMain(mode string) string {
 		if err != nil {
 			return "error " + err.Error()
 		}
-		at := os.Getenv("CRASH_AT")
-		v.failpoint = func(name string) error {
-			if name == at {
-				if err := unix.Kill(os.Getpid(), unix.SIGKILL); err != nil {
-					return err
-				}
-				select {} // SIGKILL is not deliverable late; never returns
-			}
-			return nil
-		}
+		v.failpoints = faulttest.Crash(os.Getenv("CRASH_AT"))
 		if _, err := bootSteps(ctx, v, pool); err != nil {
 			return "error " + err.Error()
 		}
-		return "completed without reaching " + at
+		return "completed without reaching " + os.Getenv("CRASH_AT")
 	default:
 		return "error: unknown mode " + mode
 	}
 }
 
 // runHelper runs the test binary as a child in the given mode. It returns
-// the result line, or "killed" if the child died of SIGKILL.
+// the result line, or faulttest.Killed if the child died of SIGKILL.
 func runHelper(t *testing.T, mode string, env ...string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcess$", "-test.count=1")
-	cmd.Env = append(append(os.Environ(), helperEnv+"="+mode), env...)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("child process %s timed out\n%s", mode, out)
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
-			return "killed"
-		}
-	}
-	if err != nil {
-		t.Fatalf("child process %s: %v\n%s", mode, err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if res, ok := strings.CutPrefix(line, "RESULT: "); ok {
-			return res
-		}
-	}
-	t.Fatalf("child process %s: no result\n%s", mode, out)
-	return ""
+	return faulttest.RunChild(t, 60*time.Second, mode, env...)
 }
 
 func unixMkfifo(p string) error { return unix.Mkfifo(p, 0o644) }

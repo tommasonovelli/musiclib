@@ -79,8 +79,8 @@ func TestPoolWake(t *testing.T) {
 	f := newFixture(t)
 	const workers = 3
 	var idle atomic.Int32
-	setHook(t, func(point string) {
-		if point == "after-select-import" {
+	f.setHook(func(point string) {
+		if point == "claim_selected_import" {
 			idle.Add(1)
 		}
 	})
@@ -93,6 +93,7 @@ func TestPoolWake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.failpoints = f.fp.Hook()
 	p.poll = time.Hour
 	stop := startPool(t, p)
 	waitUntil(t, "every worker to find nothing", func() bool { return idle.Load() >= workers })

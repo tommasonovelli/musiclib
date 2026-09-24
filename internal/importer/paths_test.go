@@ -107,8 +107,8 @@ func TestImportCancelledLeavesTheJobRunning(t *testing.T) {
 	}
 	c := e.claim()
 	ctx, cancel := context.WithCancel(context.Background())
-	setHook(t, func(p string) {
-		if p == "after-copy" {
+	e.setHook(func(p string) {
+		if p == "import_copied" {
 			cancel()
 		}
 	})

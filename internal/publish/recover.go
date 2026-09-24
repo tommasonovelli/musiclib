@@ -30,9 +30,11 @@ import (
 //
 // It is idempotent: it may run any number of times, and a crash inside it
 // is recovered by the next run. A state that matches no legal transition
-// is CodeIllegalState: nothing is deleted, the boot stops with that code,
-// and the operator corrects the disk or runs rebuild (§9.4, §11.3).
-// A fatal store error is returned as it is.
+// is CodeIllegalState: nothing is deleted, publishing stays suspended
+// (the boot starts no worker, N-135), and the operator corrects the disk
+// or runs rebuild (§9.4, §11.3). A fatal store error is returned as it is.
+// On an error, the pending journal is returned too when it was read, so
+// that the caller can name it (its album and build).
 func (p *Publisher) Recover(ctx context.Context) (*Journal, error) {
 	if err := p.lock(ctx); err != nil {
 		return nil, err
@@ -40,7 +42,7 @@ func (p *Publisher) Recover(ctx context.Context) (*Journal, error) {
 	j, err := p.recoverLocked(ctx)
 	p.unlock()
 	if err != nil || j == nil {
-		return nil, err
+		return j, err
 	}
 	p.cleanup(ctx, *j)
 	return j, nil
@@ -53,16 +55,16 @@ func (p *Publisher) recoverLocked(ctx context.Context) (*Journal, error) {
 	}
 	j := fromRow(row)
 	if err := j.validate(); err != nil {
-		return nil, wrap(CodeIllegalState, err, "the publication journal is not valid")
+		return &j, wrap(CodeIllegalState, err, "the publication journal is not valid")
 	}
 	p.log.Info("recovering a pending publication", "album_id", j.AlbumID, "build_id", j.BuildID,
 		"revision", j.Revision, "old_path", j.OldPath, "new_path", j.NewPath)
 	if err := p.install(ctx, j); err != nil {
-		return nil, err
+		return &j, err
 	}
 	jo, err := p.finalize(ctx, j)
 	if err != nil {
-		return nil, err
+		return &j, err
 	}
 	p.log.Info("pending publication completed", "album_id", j.AlbumID, "build_id", j.BuildID, "job", jo)
 	return &j, nil

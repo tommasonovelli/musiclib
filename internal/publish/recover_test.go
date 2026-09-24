@@ -74,12 +74,12 @@ func TestRecoverAfterEveryPoint(t *testing.T) {
 			t.Run(sc.name+"/"+at, func(t *testing.T) {
 				e := newEnv(t)
 				id := sc.setup(e)
-				failAt(t, at)
+				e.failAt(at)
 				_, res, err := e.render("new")
 				if !jobs.Stops(err) {
 					t.Fatalf("err %v, want a stop", err)
 				}
-				setFailpoint(t, nil)
+				e.setFailpoint(nil)
 				j, pending := e.journal()
 				if pending != (at != "finalized") {
 					t.Fatalf("journal pending = %v after a failure at %s", pending, at)
@@ -201,17 +201,20 @@ func TestRecoverIllegalStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			scenarios[tc.sc].setup(e)
-			failAt(t, tc.failAt)
+			e.failAt(tc.failAt)
 			if _, _, err := e.render("new"); !jobs.Stops(err) {
 				t.Fatalf("err %v, want a stop", err)
 			}
-			setFailpoint(t, nil)
+			e.setFailpoint(nil)
 			j := e.mustJournal()
 			tc.tamper(e, j)
 			lib, work := e.tree("library"), e.tree("work")
 			for range 2 {
-				_, err := e.publisher(e.db).Recover(context.Background())
+				got, err := e.publisher(e.db).Recover(context.Background())
 				wantCode(t, err, CodeIllegalState)
+				if got == nil || *got != j {
+					t.Fatalf("the refusal names %v, want the pending journal %v", got, j)
+				}
 				e.wantTree("library", lib)
 				e.wantTree("work", work)
 				if e.mustJournal() != j {
@@ -238,7 +241,7 @@ func TestRecoverDatabaseErrorAfterRename(t *testing.T) {
 			proxy := pgtest.NewProxy(t, dbURL)
 			viaProxy := e.publisher(pgtest.Pool(t, proxy.URL))
 			id := e.importAlbum("Artist", "Album")
-			setFailpoint(t, func(point string) error {
+			e.setFailpoint(func(point string) error {
 				if point == "synced" {
 					if mode == "commit cut" {
 						proxy.CutBeforeNextCommit()
@@ -254,7 +257,7 @@ func TestRecoverDatabaseErrorAfterRename(t *testing.T) {
 			if !store.IsFatal(err) || !jobs.Stops(err) {
 				t.Fatalf("err %v, want a fatal store error", err)
 			}
-			setFailpoint(t, nil)
+			e.setFailpoint(nil)
 			_, pending := e.journal()
 			if pending != (mode == "commit cut") {
 				t.Fatalf("journal pending = %v", pending)
@@ -276,7 +279,7 @@ func TestRecoverDatabaseErrorAfterRename(t *testing.T) {
 func TestCleanWorkKeepsTheJournalsBuild(t *testing.T) {
 	e := newEnv(t)
 	e.importAlbum("Artist", "Album")
-	failAt(t, "prepared")
+	e.failAt("prepared")
 	if _, _, err := e.render("v1"); !jobs.Stops(err) {
 		t.Fatal(err)
 	}

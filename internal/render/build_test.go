@@ -17,16 +17,19 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/failpoint"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
 )
 
-// setFailpoint installs fn for the test. Builds in these tests are never
-// parallel: the hook is package state.
-func setFailpoint(t *testing.T, fn func(point, path string, f *os.File) error) {
-	t.Helper()
-	failpointHook = fn
-	t.Cleanup(func() { failpointHook = nil })
+// setFailpoint makes the env's builder run fn at its failpoints; nil
+// removes it.
+func (e *env) setFailpoint(fn func(point, path string, f *os.File) error) {
+	if fn == nil {
+		e.fp.Set(nil)
+		return
+	}
+	e.fp.Set(func(p failpoint.Point) error { return fn(p.Name, p.Path, p.File) })
 }
 
 // kindOfBlueAlbum is the §1.1 example over real blobs: two tracks with old
@@ -287,8 +290,8 @@ func TestBuildTagWriterAltersSamples(t *testing.T) {
 	a := e.album("Artist", "Altered")
 	a.track(1, 1, "a", song{tags: []string{"COMMENT=x"}})
 	other := baseFLAC(t, sine(441, 0.3))
-	setFailpoint(t, func(point, path string, f *os.File) error {
-		if point != "tags-written" {
+	e.setFailpoint(func(point, path string, f *os.File) error {
+		if point != "tags_written" {
 			return nil
 		}
 		// Keep the written metadata (so STREAMINFO and every tag stay), put
@@ -305,8 +308,8 @@ func TestBuildTagWriterLosesUnmanagedField(t *testing.T) {
 	e := newEnv(t)
 	a := e.album("Artist", "Lossy")
 	a.track(1, 1, "a", song{tags: []string{"COMMENT=precious", "REPLAYGAIN_TRACK_GAIN=1 dB"}})
-	setFailpoint(t, func(point, path string, f *os.File) error {
-		if point != "tags-written" {
+	e.setFailpoint(func(point, path string, f *os.File) error {
+		if point != "tags_written" {
 			return nil
 		}
 		return rewrite(t, f, func(ff flacFile) flacFile {
@@ -347,14 +350,14 @@ func rewrite(t *testing.T, f *os.File, edit func(flacFile) flacFile) error {
 // output and the originals intact (checked by env.build), and no staging.
 func TestBuildNoSpace(t *testing.T) {
 	for _, at := range []string{"write:01 - So What.flac", "write:Extras/Scans/Ünïcödé/front_1.jpg", "write:" + ReceiptName,
-		"fsync-file:02 - Freddie Freeloader.flac", "fsync-dir:"} {
+		"fsync_file:02 - Freddie Freeloader.flac", "fsync_dir:"} {
 		t.Run(at, func(t *testing.T) {
 			e := newEnv(t)
 			p := kindOfBlueAlbum(t, e).plan()
 			point, path, _ := strings.Cut(at, ":")
 			hit := false
-			setFailpoint(t, func(pt, pa string, f *os.File) error {
-				if pt == point && (pa == path || point == "fsync-dir" && strings.HasSuffix(pa, "/album")) {
+			e.setFailpoint(func(pt, pa string, f *os.File) error {
+				if pt == point && (pa == path || point == "fsync_dir" && strings.HasSuffix(pa, "/album")) {
 					hit = true
 					return &os.PathError{Op: "write", Path: pa, Err: syscall.ENOSPC}
 				}
@@ -419,7 +422,7 @@ func TestBuildReservesSpace(t *testing.T) {
 	}
 
 	// A failure after the reservation releases it.
-	setFailpoint(t, func(pt, pa string, f *os.File) error {
+	e.setFailpoint(func(pt, pa string, f *os.File) error {
 		if pt == "write" && pa == ReceiptName {
 			return &os.PathError{Op: "write", Path: pa, Err: syscall.EIO}
 		}
@@ -428,7 +431,22 @@ func TestBuildReservesSpace(t *testing.T) {
 	if _, err := e.build(p); err == nil {
 		t.Fatal("the failpoint did not fail the build")
 	}
-	setFailpoint(t, nil)
+	if got := e.b.budget.Reserved(); got != 0 {
+		t.Fatalf("reserved %d after a failed build", got)
+	}
+	// ... and so does a failure right after it, before the staging exists.
+	var reserved int64
+	e.setFailpoint(func(pt, pa string, f *os.File) error {
+		if pt == "reserved" {
+			reserved = e.b.budget.Reserved()
+			return errors.New("injected at reserved")
+		}
+		return nil
+	})
+	if _, err := e.build(p); err == nil || reserved != estimate(p) {
+		t.Fatalf("a failure at reserved: %v, %d reserved there, want %d", err, reserved, estimate(p))
+	}
+	e.setFailpoint(nil)
 	if got := e.b.budget.Reserved(); got != 0 {
 		t.Fatalf("reserved %d after a failed build", got)
 	}
@@ -458,7 +476,7 @@ func TestBuildFsyncOrder(t *testing.T) {
 	e := newEnv(t)
 	p := kindOfBlueAlbum(t, e).plan()
 	var events []string
-	setFailpoint(t, func(point, path string, f *os.File) error {
+	e.setFailpoint(func(point, path string, f *os.File) error {
 		if strings.HasPrefix(point, "fsync") {
 			events = append(events, point+":"+path)
 		}
@@ -469,7 +487,7 @@ func TestBuildFsyncOrder(t *testing.T) {
 	var fileSyncs, dirSyncs []string
 	for i, ev := range events {
 		point, path, _ := strings.Cut(ev, ":")
-		if point == "fsync-file" {
+		if point == "fsync_file" {
 			if len(dirSyncs) > 0 {
 				t.Fatalf("file %s fsynced after a directory (event %d)", path, i)
 			}
@@ -632,7 +650,7 @@ func TestBuildCopyReadBack(t *testing.T) {
 			e := newEnv(t)
 			p := kindOfBlueAlbum(t, e).plan()
 			done := false
-			setFailpoint(t, func(point, pa string, f *os.File) error {
+			e.setFailpoint(func(point, pa string, f *os.File) error {
 				if point == "write" && pa == path && !done {
 					done = true
 					_, err := f.Write([]byte{0})

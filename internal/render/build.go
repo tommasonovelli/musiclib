@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"musiclib/internal/blobstore"
+	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
@@ -64,6 +65,14 @@ type Config struct {
 	// Budget is the process-wide space budget (§11.2), shared with the
 	// importer.
 	Budget *jobs.Budget
+	// Failpoints is nil in production. Tests set it to inject an error, act
+	// at an exact moment, or crash the process at the build's named points
+	// (§12.2, NOTES.md N-142): reserved (the space reserved, nothing
+	// created yet), write (before each write of a copy or of the receipt;
+	// Path and File), tags_written (after a track's tag write; Path and
+	// File), fsync_file and fsync_dir (before each fsync; Path relative to
+	// the album, or to work for a directory).
+	Failpoints failpoint.Hook
 }
 
 // Builder builds the staging directory of a plan (§9.1 steps 4 to 8). It
@@ -74,6 +83,8 @@ type Builder struct {
 	blobs  *blobstore.Store
 	work   *fsops.Root
 	budget *jobs.Budget
+	// failpoints is Config.Failpoints.
+	failpoints failpoint.Hook
 }
 
 // New returns a builder and creates work/render durably if missing.
@@ -84,7 +95,7 @@ func New(cfg Config) (*Builder, error) {
 	if err := cfg.Work.MkdirAllSync(workDir, dirPerm); err != nil {
 		return nil, err
 	}
-	return &Builder{tools: cfg.Tools, blobs: cfg.Blobs, work: cfg.Work, budget: cfg.Budget}, nil
+	return &Builder{tools: cfg.Tools, blobs: cfg.Blobs, work: cfg.Work, budget: cfg.Budget, failpoints: cfg.Failpoints}, nil
 }
 
 // Result is a finished build, what the publisher consumes (§9.3): the
@@ -180,6 +191,9 @@ func (b *Builder) Build(ctx context.Context, p Plan) (res Result, err error) {
 			res = Result{}
 		}
 	}()
+	if err := b.failpoints.Hit("reserved"); err != nil {
+		return res, err
+	}
 	bd, err := b.stage(res.BuildID)
 	if err != nil {
 		return res, err
@@ -362,7 +376,7 @@ func (bd *build) track(ctx context.Context, t Track, cover *media.Cover, expecte
 	if err := tools.WriteManagedTags(ctx, f, t.Format, t.Tags, cover); err != nil {
 		return err
 	}
-	if err := failpoint("tags-written", t.Path, f); err != nil {
+	if err := bd.b.failpoints.HitFile("tags_written", t.Path, f); err != nil {
 		return err
 	}
 	out, err := tools.Inspect(ctx, f, t.Format)
@@ -422,7 +436,7 @@ func (bd *build) copy(ctx context.Context, path string, blob Blob) (_ *os.File, 
 			err = errors.Join(err, closeFile(dst, path))
 		}
 	}()
-	n, got, err := stream(ctx, src, dst, path)
+	n, got, err := stream(ctx, src, dst, path, bd.b.failpoints)
 	if err = errors.Join(err, closeFile(src, "the original "+blob.Hash)); err != nil {
 		return nil, err
 	}
@@ -447,7 +461,7 @@ func (bd *build) copy(ctx context.Context, path string, blob Blob) (_ *os.File, 
 
 // stream copies src into dst in copyBuffer units and returns the bytes
 // copied and the SHA-256 of what was read, checking ctx between units.
-func stream(ctx context.Context, src io.Reader, dst *os.File, path string) (int64, string, error) {
+func stream(ctx context.Context, src io.Reader, dst *os.File, path string, fp failpoint.Hook) (int64, string, error) {
 	h := sha256.New()
 	buf := make([]byte, copyBuffer)
 	var n int64
@@ -458,7 +472,7 @@ func stream(ctx context.Context, src io.Reader, dst *os.File, path string) (int6
 		k, rerr := src.Read(buf)
 		if k > 0 {
 			h.Write(buf[:k])
-			if err := failpoint("write", path, dst); err != nil {
+			if err := fp.HitFile("write", path, dst); err != nil {
 				return 0, "", writeErr(path, err)
 			}
 			if _, err := dst.Write(buf[:k]); err != nil {
@@ -544,7 +558,7 @@ func (bd *build) receipt(ctx context.Context, p Plan) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := failpoint("write", ReceiptName, f); err != nil {
+	if err := bd.b.failpoints.HitFile("write", ReceiptName, f); err != nil {
 		return "", errors.Join(writeErr(ReceiptName, err), closeFile(f, ReceiptName))
 	}
 	if _, err := f.Write(data); err != nil {
@@ -563,7 +577,7 @@ func (bd *build) receipt(ctx context.Context, p Plan) (string, error) {
 
 // syncClose fsyncs a complete file and closes it, checking both (§13.2).
 func (bd *build) syncClose(f *os.File, path string) error {
-	if err := failpoint("fsync-file", path, nil); err != nil {
+	if err := bd.b.failpoints.HitFile("fsync_file", path, nil); err != nil {
 		return errors.Join(writeErr(path, err), closeFile(f, path))
 	}
 	if err := fsops.SyncAndClose(f); err != nil {
@@ -609,7 +623,7 @@ func (bd *build) syncDirs() error {
 
 // syncDir fsyncs one directory; trace is its path relative to work.
 func (bd *build) syncDir(root *fsops.Root, rel, trace string) error {
-	if err := failpoint("fsync-dir", trace, nil); err != nil {
+	if err := bd.b.failpoints.HitFile("fsync_dir", trace, nil); err != nil {
 		return writeErr(trace, err)
 	}
 	if err := root.SyncDir(rel); err != nil {
@@ -664,19 +678,4 @@ func closeFile(f *os.File, what string) error {
 		return ioErr("closing "+what, err)
 	}
 	return nil
-}
-
-// failpoint, when a test sets it, runs at named points of a build and
-// returns the error to inject there (§12.2, NOTES.md N-044): "write" before
-// each write of a copy or of the receipt, "tags-written" after a track's
-// tag write, "fsync-file" and "fsync-dir" before each fsync (paths of
-// directories relative to work). f is the file concerned, or nil. It is nil
-// in production.
-var failpointHook func(point, path string, f *os.File) error
-
-func failpoint(point, path string, f *os.File) error {
-	if failpointHook == nil {
-		return nil
-	}
-	return failpointHook(point, path, f)
 }

@@ -101,14 +101,14 @@ func (v *Volume) Identify(ctx context.Context, pool *pgxpool.Pool) (uuid.UUID, e
 			" but the database already has catalog content: it belongs to another volume, "+
 			"and an empty volume is never paired with it; mount the right /data (DESIGN.md §2.2, §11.1)", nil)
 	}
-	if err := v.fail("media_checked"); err != nil {
+	if err := v.failpoints.Hit("media_checked"); err != nil {
 		return uuid.Nil, err
 	}
 	id, err := v.initStoreID(ctx, pool)
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if err := v.fail("db_committed"); err != nil {
+	if err := v.failpoints.Hit("db_committed"); err != nil {
 		return uuid.Nil, err
 	}
 	if err := v.writeStoreMarker(id); err != nil {
@@ -166,7 +166,7 @@ func (v *Volume) initStoreID(ctx context.Context, pool *pgxpool.Pool) (_ uuid.UU
 	if _, err := q.InsertStoreID(ctx, store.NewID()); err != nil {
 		return uuid.Nil, newErr(CodeDB, "cannot insert settings.store_id", err)
 	}
-	if err := v.fail("db_inserted"); err != nil {
+	if err := v.failpoints.Hit("db_inserted"); err != nil {
 		return uuid.Nil, err
 	}
 	id, err := q.GetStoreID(ctx)
@@ -225,17 +225,17 @@ func (v *Volume) writeStoreMarker(id uuid.UUID) error {
 	if err := fsops.SyncAndClose(f); err != nil {
 		return fsErr("cannot make "+storeMarkerTemp+" durable", err)
 	}
-	if err := v.fail("marker_temp_synced"); err != nil {
+	if err := v.failpoints.Hit("marker_temp_synced"); err != nil {
 		return err
 	}
 	if err := fsops.RenameNoReplace(v.root, storeMarkerTemp, v.root, StoreMarker); err != nil {
 		return fsErr("cannot install "+StoreMarker, err)
 	}
-	if err := v.fail("marker_renamed"); err != nil {
+	if err := v.failpoints.Hit("marker_renamed"); err != nil {
 		return err
 	}
 	if err := v.root.SyncDir(""); err != nil {
 		return fsErr("cannot make "+StoreMarker+" durable", err)
 	}
-	return v.fail("marker_synced")
+	return v.failpoints.Hit("marker_synced")
 }

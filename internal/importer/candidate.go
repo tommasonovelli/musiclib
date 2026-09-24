@@ -65,7 +65,9 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 		return catalog.ImportCandidate{}, nil, err
 	}
 	defer space.Release()
-	hook("before-copy")
+	if err := im.failpoints.Hit("import_copying"); err != nil {
+		return catalog.ImportCandidate{}, nil, err
+	}
 	files := make([]*importFile, len(srcFiles))
 	for i, f := range srcFiles {
 		b, err := im.copyFile(ctx, r, f)
@@ -74,7 +76,9 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 		}
 		files[i] = &importFile{src: f, blob: b}
 	}
-	hook("after-copy")
+	if err := im.failpoints.Hit("import_copied"); err != nil {
+		return catalog.ImportCandidate{}, nil, err
+	}
 
 	// §7.2, §7.3, §7.6: everything read again from the verified copies.
 	for _, f := range files {
@@ -93,7 +97,9 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 	if err != nil {
 		return catalog.ImportCandidate{}, ws, err
 	}
-	hook("before-recheck")
+	if err := im.failpoints.Hit("import_rechecking"); err != nil {
+		return catalog.ImportCandidate{}, ws, err
+	}
 
 	// §7.1: the source must not have changed during the import.
 	if err := im.checkUnchanged(ctx, r, len(segs), c.SourceRel, before); err != nil {

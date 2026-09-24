@@ -13,6 +13,7 @@ import (
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/faulttest"
 	"musiclib/internal/fsops"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
@@ -33,6 +34,8 @@ type env struct {
 	work  *fsops.Root
 	// allowChange: the test changes the source on purpose during a job.
 	allowChange bool
+	// fp is the importer's failpoint hook (setHook).
+	fp faulttest.Switch
 }
 
 func tools(t testing.TB) *media.Tools {
@@ -51,7 +54,13 @@ func newEnv(t *testing.T) *env {
 
 func newEnvOn(t *testing.T, db *pgxpool.Pool) *env {
 	t.Helper()
-	dir := t.TempDir()
+	return newEnvAt(t, db, t.TempDir())
+}
+
+// newEnvAt is an env whose source and data are dir/import and dir/data,
+// created if missing: a fresh process on an existing volume.
+func newEnvAt(t *testing.T, db *pgxpool.Pool, dir string) *env {
+	t.Helper()
 	e := &env{t: t, db: db, src: filepath.Join(dir, "import"), data: filepath.Join(dir, "data")}
 	for _, d := range []string{e.src, filepath.Join(e.data, "originals"), filepath.Join(e.data, "work")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -69,7 +78,7 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool) *env {
 		t.Fatal(err)
 	}
 	e.im, err = New(Config{Catalog: e.cat, Tools: tools(t), Blobs: e.blobs, Source: src, Work: e.work,
-		Budget: jobs.NewBudget(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		Budget: jobs.NewBudget(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Failpoints: e.fp.Hook()})
 	if err != nil {
 		t.Fatal(err)
 	}

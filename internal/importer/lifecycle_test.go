@@ -14,15 +14,17 @@ import (
 	"github.com/google/uuid"
 
 	"musiclib/internal/catalog"
+	"musiclib/internal/failpoint"
 	"musiclib/internal/jobs"
 	"musiclib/internal/store"
 )
 
-// setHook installs testHook for one test.
-func setHook(t *testing.T, fn func(point string)) {
-	t.Helper()
-	testHook = fn
-	t.Cleanup(func() { testHook = nil })
+// setHook runs fn at every failpoint of the env's importer.
+func (e *env) setHook(fn func(point string)) {
+	e.fp.Set(func(p failpoint.Point) error {
+		fn(p.Name)
+		return nil
+	})
 }
 
 // A source changed during the import is refused (§7.1): a file rewritten,
@@ -33,26 +35,26 @@ func TestImportRefusesAChangedSource(t *testing.T) {
 		name, point string
 		change      func(e *env)
 	}{
-		{"content", "after-copy", func(e *env) { e.put("A/1.flac", track{tags: []string{"TITLE=changed"}}.flac(e.t)) }},
-		{"mtime only", "after-copy", func(e *env) {
+		{"content", "import_copied", func(e *env) { e.put("A/1.flac", track{tags: []string{"TITLE=changed"}}.flac(e.t)) }},
+		{"mtime only", "import_copied", func(e *env) {
 			if err := os.Chtimes(filepath.Join(e.src, "A/notes.txt"), time.Now(), time.Unix(1, 0)); err != nil {
 				e.t.Fatal(err)
 			}
 		}},
-		{"added", "before-recheck", func(e *env) { e.put("A/Scans/new.txt", []byte("new")) }},
-		{"removed", "before-recheck", func(e *env) {
+		{"added", "import_rechecking", func(e *env) { e.put("A/Scans/new.txt", []byte("new")) }},
+		{"removed", "import_rechecking", func(e *env) {
 			if err := os.Remove(filepath.Join(e.src, "A/notes.txt")); err != nil {
 				e.t.Fatal(err)
 			}
 		}},
-		{"replaced before its copy", "before-copy", func(e *env) {
+		{"replaced before its copy", "import_copying", func(e *env) {
 			p := filepath.Join(e.src, "A/notes.txt")
 			if err := os.Rename(p, p+".old"); err != nil {
 				e.t.Fatal(err)
 			}
 			e.put("A/notes.txt", []byte("same size!"))
 		}},
-		{"replaced", "after-copy", func(e *env) {
+		{"replaced", "import_copied", func(e *env) {
 			p := filepath.Join(e.src, "A/notes.txt")
 			if err := os.Rename(p, p+".old"); err != nil {
 				e.t.Fatal(err)
@@ -72,7 +74,7 @@ func TestImportRefusesAChangedSource(t *testing.T) {
 				t.Fatal("scan")
 			}
 			fired := false
-			setHook(t, func(p string) {
+			e.setHook(func(p string) {
 				if p == tc.point && !fired {
 					fired = true
 					tc.change(e)

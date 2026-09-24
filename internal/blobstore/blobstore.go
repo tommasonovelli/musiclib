@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 
+	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 )
 
@@ -43,9 +44,11 @@ type Blob struct {
 type Store struct {
 	originals *fsops.Root
 	work      *fsops.Root
-	// failpoint, when set by tests, runs at the named protocol points and its
-	// error aborts the put there (§12.2; N-044 for the crash variant).
-	failpoint func(name string) error
+	// failpoints is nil in production. The package's tests set it to
+	// inject an error, or to crash the process, at the named points of a
+	// put: temp_synced, temp_verified, shards_synced, pinned (§12.2,
+	// NOTES.md N-142).
+	failpoints failpoint.Hook
 }
 
 // New returns a Store over the two roots, creating work/blobs durably if it
@@ -55,13 +58,6 @@ func New(originals, work *fsops.Root) (*Store, error) {
 		return nil, wrap("create temp dir", "", err)
 	}
 	return &Store{originals: originals, work: work}, nil
-}
-
-func (s *Store) fail(name string) error {
-	if s.failpoint == nil {
-		return nil
-	}
-	return s.failpoint(name)
 }
 
 // Put copies src into the store following §7.5 and returns its hash and size.
@@ -93,7 +89,7 @@ func (s *Store) Put(ctx context.Context, src io.Reader) (_ Blob, err error) {
 	if err != nil {
 		return Blob{}, err
 	}
-	if err := s.fail("temp_synced"); err != nil {
+	if err := s.failpoints.Hit("temp_synced"); err != nil {
 		return Blob{}, wrap("temp_synced", b.SHA256, err)
 	}
 	got, err := readBlob(ctx, s.work, tmp, false)
@@ -104,7 +100,7 @@ func (s *Store) Put(ctx context.Context, src io.Reader) (_ Blob, err error) {
 		return Blob{}, &Error{Code: CodeIO, Op: "reread temp", SHA: b.SHA256,
 			Err: fmt.Errorf("re-read %s (%d bytes), wrote %d bytes", got.SHA256, got.Size, b.Size)}
 	}
-	if err := s.fail("temp_verified"); err != nil {
+	if err := s.failpoints.Hit("temp_verified"); err != nil {
 		return Blob{}, wrap("temp_verified", b.SHA256, err)
 	}
 
@@ -117,7 +113,7 @@ func (s *Store) Put(ctx context.Context, src io.Reader) (_ Blob, err error) {
 	if err := s.originals.SyncDirAndParents(shard); err != nil {
 		return Blob{}, wrap("sync shard", b.SHA256, err)
 	}
-	if err := s.fail("shards_synced"); err != nil {
+	if err := s.failpoints.Hit("shards_synced"); err != nil {
 		return Blob{}, wrap("shards_synced", b.SHA256, err)
 	}
 
@@ -133,7 +129,7 @@ func (s *Store) Put(ctx context.Context, src io.Reader) (_ Blob, err error) {
 	default:
 		return Blob{}, wrap("pin", b.SHA256, err)
 	}
-	if err := s.fail("pinned"); err != nil {
+	if err := s.failpoints.Hit("pinned"); err != nil {
 		return Blob{}, wrap("pinned", b.SHA256, err)
 	}
 

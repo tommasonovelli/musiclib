@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"musiclib/internal/failpoint"
 	"musiclib/internal/store"
 )
 
@@ -48,6 +49,9 @@ type Pool struct {
 	// the mutex, stays parallel. The database guarantee of one claim per
 	// job does not depend on it.
 	claimMu sync.Mutex
+	// failpoints is nil in production; the package's tests set it to
+	// inject errors or crash at the claim's points (claimNext).
+	failpoints failpoint.Hook
 }
 
 // NewPool returns a pool of workers goroutines (1..MaxWorkers, §6.1) that
@@ -141,7 +145,7 @@ func (p *Pool) worker(ctx context.Context, id int, stop func(error)) {
 // pending.
 func (p *Pool) step(ctx context.Context, log *slog.Logger) (busy bool, err error) {
 	p.claimMu.Lock()
-	c, err := ClaimNext(ctx, p.db, p.renderVersion)
+	c, err := claimNext(ctx, p.db, p.renderVersion, p.failpoints)
 	p.claimMu.Unlock()
 	if err != nil || c == nil {
 		return false, err

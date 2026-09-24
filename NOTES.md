@@ -161,6 +161,8 @@ any release.
 The container root is overlayfs, whose rename/exchange semantics differ from
 ext4; on Docker Desktop bind mounts are `fakeowner`. Only a named volume is
 used. A loop-mounted ext4 image was rejected: it needs CAP_SYS_ADMIN.
+Round 10 checked it again on Docker Desktop 29.6.1 and found no
+unprivileged way; the full-disk tests use a fixed-size tmpfs (N-143).
 
 ### N-019 · Go 1.25 is outside upstream support — DECIDED
 **Decision (2026-09-21, owner rule "stick to DESIGN.md"):** DESIGN.md only requires pinned versions; stay on Go 1.25.x and x/text v0.41.0, so no key migration is needed.
@@ -438,7 +440,12 @@ The upload size limits (§10.2) are the caller's job. `io.LimitReader`
 truncates silently, so the caller must read `limit+1` bytes and reject the
 upload, not pin a truncated prefix.
 
-### N-044 · Failpoints are in-process only — OPEN (phase 3; the publication's are real crashes since round 9, N-136)
+### N-044 · Failpoints are in-process only — RESOLVED (round 10: one mechanism, N-142; real crashes everywhere §12.2 needs them, PROGRESS.md matrix)
+**Round 10:** every hook below is now a `failpoint.Hook` held by its
+component (N-142), and each point is also hit by a real SIGKILL crash of a
+child process where durability or idempotency is at stake. The text below
+is the history.
+
 `Store.failpoint` (unexported, nil in production) runs at `temp_synced`,
 `temp_verified`, `shards_synced` and `pinned`. Tests use it to inject errors
 and to check the disk state at each point. §12.2 asks for real process
@@ -454,7 +461,13 @@ And for `failpointHook` in `internal/render/build.go` (round 8): `write`
 `fsync-file` and `fsync-dir`. It injects errors and traces the fsync order
 (N-132).
 
-### N-045 · ENOSPC is not tested on a really full filesystem — OPEN
+### N-045 · ENOSPC is not tested on a really full filesystem — RESOLVED (round 10, N-143: a really full tmpfs; ext4 stays injected)
+**Round 10:** a really full filesystem is tested: the daemon-mounted
+fixed-size tmpfs `/fullfs` (N-143). `blobstore.TestPutOnAReallyFullFilesystem`
+and `publish.TestExecuteRenderOnAReallyFullDisk` get the kernel's own
+ENOSPC. ext4 itself cannot be mounted without privileges; its
+delayed-allocation ENOSPC at fsync stays covered by injection (below).
+
 The `ENOSPC`/`EDQUOT` → `blob_no_space` mapping and its cleanup are tested
 by injecting `ENOSPC` at the `temp_synced` point. That point is realistic:
 with delayed allocation, ext4 can report ENOSPC at fsync. A real full-disk
@@ -2808,7 +2821,53 @@ U+2029; N-099 describes the consequence for the fingerprint).
 
 ## Round 9: `internal/publish`, recovery, the render executor and the pool (2026-09-24)
 
-### N-135 · A failure after PREPARE stops the process; an illegal journal fails the boot — DECIDED
+### N-135 · A failure after PREPARE stops the process; an illegal journal suspends publishing and keeps the process up — DECIDED (the boot part: owner decision 2026-09-24, round 10)
+**Owner decision (2026-09-24), implemented in round 10.** At boot, a
+journal in an illegal state (`publish_illegal_state`) no longer fails the
+boot. This is §9.4's "la pubblicazione viene sospesa e l'errore esposto":
+- The process does not exit. It keeps the flock and HTTP, and runs no step
+  after 4: no cleanup, no `running -> pending`, no worker.
+- `/health/ready` answers 503
+  `{code: "publish_illegal_state", message, details: {album_id, build_id}}`.
+  There is no path in it (§10.1). The Compose healthcheck reports the
+  container unhealthy. Docker does not restart an unhealthy container, so
+  it stays up.
+- The log line `publishing suspended: ...` gives the code, the ids, the
+  journal's relative paths, the cause and the `action`. The operator puts
+  back by hand what was moved and restarts the app, which runs the
+  recovery again, or stops the app and runs `rebuild` (Phase 6, §11.3).
+- SIGTERM is an ordinary shutdown: exit 0, the lock released last.
+- `publish.Recover` now returns the pending journal together with its
+  error, so that the boot can name it.
+- `publish_io` and database errors at boot still fail the boot (exit 1),
+  because they may be transient and the restart retries them. Run-time
+  failures after PREPARE still stop the process (below).
+- `publish_io` at boot keeps the exit path. `TestBootFailsOnARecoveryIOError`
+  uses a legal journal whose staging cannot be moved (its build directory
+  is read-only, so the rename gets EACCES). `run` returns `publish_io` (exit
+  1); there is no suspension log, no step 5, no worker; the lock is
+  released and the journal stays. The artist directory created for the
+  rename is removed again (N-144). The "suspend on any error" mutation
+  fails this test.
+- A database error at step 4 is not tested at that exact step. The boot
+  suspends only when `publish.Code(err)` is `publish_illegal_state`; every
+  other code, a fatal store code included, takes the same `return err` as
+  `publish_io`, and the test above pins that path. Losing the database
+  exactly between step 3 and step 4 would need a proxy cut timed on the
+  journal read. The database loss itself is covered at boot (the wait of
+  step 2: `TestBootReadinessLifecycle`, `TestStopWhileWaitingForDatabase`)
+  and at run time (`TestDatabaseLossStopsTheProcess`,
+  `TestProcessDatabaseLossMidWork`).
+- Tests: `TestBootSuspendsOnAnIllegalJournal` (in process) and
+  `TestProcessSuspendedByAnIllegalJournal` (a real server process: 503 with
+  the ids, `healthcheck` exit 1, alive a second later, the lock held, the
+  logs, nothing moved, the job left running, SIGTERM exit 0 with the lock
+  free). Mutation-checked (boot exiting again). `TestRecoverIllegalStates`
+  checks that the refusal names the journal.
+
+The round-9 text follows. Its "At boot" and "The alternative" paragraphs are
+superseded by the decision above.
+
 §9.4: "un errore dopo PREPARE non diventa un semplice `job failed` seguito da
 altre pubblicazioni: il journal resta prioritario". The simplest reading
 that keeps a single recovery path:
@@ -2850,7 +2909,13 @@ that keeps a single recovery path:
   two workers are running tools (`TestProcessDatabaseLossMidWork`: exit 1,
   no tool survives, and a restart finishes the album).
 
-### N-136 · The publication's failpoints and the crash harness — DECIDED
+### N-136 · The publication's failpoints and the crash harness — DECIDED (round 10: on the common mechanism, N-142; the "left for Phase 3" list is done)
+**Round 10:** the hook is now `publish.Config.Failpoints` (N-142), and the
+harness is `internal/faulttest`. The build crash (`TestCrashDuringBuild`),
+the import, claim, scan and blob-put crashes, and a really full disk
+(N-143) are covered. The full matrix is in PROGRESS.md. Two new publisher
+points came with the N-144 changes: `parents_synced` and `fsync_dir`.
+
 `publish.failpointHook` (nil in production) runs at six named points, in
 protocol order:
 1. `preflight`: checked, before PREPARE;
@@ -2997,3 +3062,158 @@ which insert an `import_batches` row and its scan job, the same rows that
 `catalog.CreateImportBatch` writes. The 2 s poll finds the job. The section
 is marked as a Phase 2 verification step, to be replaced by
 `POST /api/imports`.
+
+---
+
+## Round 10: failpoints, the §12.2 matrix, N-135 (2026-09-24)
+
+### N-142 · One failpoint mechanism, and its catalogue — DECIDED
+§12.2: "Inserire failpoint nominati nel protocollo e testare arresti reali
+del processo". The five ad-hoc hooks (three of them package-level
+variables) are replaced by one small mechanism.
+- **`internal/failpoint`** (production, imports only `os`) has three parts:
+  - `type Hook func(Point) error`;
+  - `Point{Name, Path, File}`, where Path is relative to the component's
+    root and never absolute;
+  - `Hook.Hit(name)` and `Hook.HitFile(name, path, f)`.
+
+  A nil hook is the production value: one comparison per point, and no
+  package state. A test's hook either returns the error to inject, or acts
+  at the exact moment (changes the disk or the database, fills the disk),
+  or kills the process.
+- **Where each component holds its hook.**
+  - The components built from a `Config` take `Config.Failpoints`: render,
+    importer and publish. The tests of other packages build these (the
+    full-disk test sets the builder's hook from `internal/publish`).
+  - `blobstore.Store`, `volume.Volume` and `jobs.Pool` keep an unexported
+    field, which their own package's tests set.
+  - The free function `jobs.ClaimNext` wraps
+    `claimNext(ctx, db, renderVersion, fp)`.
+- **Package-level hooks are gone.** Before this round, a hook set by one
+  test was visible to every component built in the package. Now tests hold
+  a `faulttest.Switch` in their environment, so a hook dies with its test.
+- **`internal/faulttest`** is imported only by tests. `TestOnlyTestsImportFaulttest`
+  is an AST check over every non-test file; it also checks that `failpoint`
+  imports only `os`. It is mutation-checked. The package holds:
+  - `Crash(name)` / `CrashWhen(match)` / `Kill()`: a real SIGKILL of the
+    process itself;
+  - `Switch`;
+  - the child-process harness: `Mode`, `Exit`, `Start`, `Wait`, `RunChild`
+    and `Killed`, run through each package's single `TestHelperProcess`;
+  - `FullFS` (N-143).
+- **How a crash test works.** The child is the test binary itself, never
+  `musiclibd` reading an environment variable: no production path knows
+  about crashes. SIGKILL keeps the page cache, so the fsync order is argued
+  and traced (render and publish `fsync_*` points), not proven against a
+  power cut.
+- **Names** are snake_case. The hyphenated names of rounds 4, 5 and 8 were
+  renamed.
+
+**Catalogue** (in protocol order; the doc comment of each `failpoints`
+field repeats its own list):
+
+| Component | Points |
+|---|---|
+| `blobstore.Store` (Put, §7.5) | `temp_synced`, `temp_verified`, `shards_synced`, `pinned` |
+| `volume.Volume` (first init, §11.1, N-061) | `media_checked`, `db_inserted` (inside the transaction), `db_committed`, `marker_temp_synced`, `marker_renamed`, `marker_synced`, `layout_created` |
+| `jobs` claim (§6.2) | `claim_selected_render` / `_scan` / `_import` and `claim_snapshot_album` (inside the REPEATABLE READ transaction), `claimed` (committed, before the executor) |
+| `importer` (§7.1–§7.6) | `import_copying`, `import_copied`, `import_rechecking`, `import_committing`, `import_committed`; `scan_committing`, `scan_committed` |
+| `render.Builder` (§9.1) | `reserved` (space reserved, nothing created), `write` (Path, File; before each write of a copy or the receipt), `tags_written` (Path, File), `fsync_file` (Path), `fsync_dir` (Path relative to work) |
+| `publish.Publisher` (§9.3, §9.4) | `preflight`, `prepared`, `parents_synced` (a new artist directory created and synced, before the rename), `installed`, `retired`, `fsync_dir` (Path `root:rel`, before each INSTALL fsync), `synced`, `finalized` |
+
+### N-143 · A really full disk: a daemon-mounted tmpfs, not ext4 — DECIDED
+§12.2 "Disco pieno durante build: vecchio album e originali intatti" and
+N-045 ask for a really full filesystem. The gate container has no
+`CAP_SYS_ADMIN` (N-018), and gets none.
+- **ext4 through the daemon: impossible.** Tried on Docker Desktop 29.6.1
+  (WSL2 kernel 6.18). A `local` volume with `type=ext4,device=<image file>`
+  fails with "block device required". Adding `o=loop` fails with
+  "data: loop: invalid argument". The driver calls mount(2) with the
+  options as they are, and loop is a feature of mount(8). A loop device on
+  the host would need a privileged container, which is out of the question
+  for a hermetic gate, and on a native Engine it would change the host.
+- **Filling the shared ext4 `testdata` volume: unsafe.** It is the Docker
+  data disk (944 GB free here, backed by the host's disk), and other
+  tests use it.
+- **Chosen: a fixed-size tmpfs** mounted by the daemon in the `test` and
+  `dev` services, `/fullfs` of size 1088 MiB. That is the §11.2 margin of
+  1 GiB, which the build's own space check needs free, plus room.
+  - It is private to the container and gone at its exit, so it is
+    hermetic.
+  - It gives real kernel ENOSPC at the real write points, including inside
+    the tag helper.
+  - `FullFS` adds three guards: it refuses a filesystem over 2 GiB or the
+    one of TMPDIR; it takes a `flock`, because the test binaries of
+    several packages run in parallel; and it cleans leftovers.
+  - `Fill(leave)` fallocates a ballast so that exactly `leave` bytes stay
+    available (verified exact to the byte on tmpfs).
+  - Cost: up to about 1.1 GiB of RAM during the full-disk test.
+- **What it tests.**
+  - `TestPutOnAReallyFullFilesystem` (blob put): `blob_no_space` with the
+    errno, no temporary, no blob, other blobs intact, and success with
+    exactly the blob's blocks free.
+  - `TestExecuteRenderOnAReallyFullDisk`: a real album is rebuilt through
+    `ExecuteRender` while an "external writer" (§11.2) fills the disk at the
+    `reserved` point, across 18 free-space levels. ENOSPC hit the copies of
+    both tracks, the attachment and the receipt. Each time the job failed
+    before the journal with `insufficient_space` carrying "no space left on
+    device"; the published album, the originals and `work/` were
+    unchanged. Then it published. Mutation-checked (ENOSPC typed as
+    `render_io`).
+- **Limit.** tmpfs has no delayed allocation, so ENOSPC at fsync or close
+  (ext4) is still only injected (`render.TestBuildNoSpace`,
+  `blobstore.TestPutFailures`).
+- **Safety guards (review, round 10).** Before `FullFS` removes or fills
+  anything, `dedicated` requires three things, each tested on its own and
+  mutation-checked:
+  - the root is a mount point (its device differs from its parent's: a
+    positive sign that it is the filesystem mounted for these tests);
+  - it is at most 2 GiB;
+  - it is not TMPDIR's filesystem.
+- **ENOSPC inside the tag helper — TO CONFIRM (Phase 4, with the helper's
+  next protocol change).** Every write made in Go maps ENOSPC to
+  `insufficient_space` with the errno (`render.writeErr`). The TagLib
+  helper writes the tags itself. If a tag write grows the file past its
+  padding on a full disk, the helper fails with its generic `io` code, and
+  the job fails with `media_tags_io` without the errno.
+  - The handling is the same as for any other space error (§6.4, §11.2):
+    the job fails before the journal, the staging is discarded, nothing is
+    published, the old album and the originals are intact, and there is no
+    automatic retry.
+  - Only the code differs. Reporting `insufficient_space` there needs a
+    helper failure code for ENOSPC. That is a helper protocol change, so
+    it changes `render_version` (N-130); it belongs with the Phase 4 helper
+    work.
+  - The sweep never reached this case: a FLAC tag write stays inside
+    TagLib's padding. The full-disk test now accepts `insufficient_space`
+    only, with the kernel's message, so a future `media_tags_io` there will
+    fail the test and bring this entry back up.
+
+### N-144 · Round 9 review nits in INSTALL — RESOLVED
+- (a) §9.3 B "creare/sincronizzare i parent e spostare lo staging":
+  `moveIntoPlace` creates the artist directory and, if it created it,
+  fsyncs it and `library/` (`SyncDirAndParents`) **before** the rename.
+  The new point `parents_synced` sits between the two.
+- (b) The installed album directory and `work/retired/<build_id>` are
+  fsynced too, because their `..` changed. `syncAll` is now a method, and
+  the `fsync_dir` point traces each fsync. `TestPublishFsyncOrder` (a
+  rename, and an exchange) checks that the two are there and that every
+  directory is synced before its parent.
+- (c) If the rename, or anything after the creation, fails, the artist
+  directories this call created are removed with `rmdir` (only if they
+  are still empty, §3.3). A failure of that `rmdir` is a warning.
+  `TestPublishRemovesTheArtistDirectoryOfAFailedInstall` covers it.
+- All three are mutation-checked.
+- Review follow-up: the pre-rename fsync of (a) went through
+  `SyncDirAndParents`, which the hook did not see, so deleting it passed
+  every test. It now goes through `syncAll`, so each fsync passes the
+  `fsync_dir` point. `TestPublishFsyncOrder` requires exactly
+  `library:<new artist>` then `library:` before the point `installed` (a
+  new artist directory), and nothing there for an exchange.
+  Mutation-checked.
+- Test harness race, found by `-count=3`: `runPool` in the publish tests
+  cancelled the pool as soon as no job was left. The publisher's cleanup
+  after FINALIZE was still running, so it was interrupted and left a build
+  directory. The helper now waits for `work/render` and `work/retired` to
+  empty before it cancels. This is not a product bug: boot step 5 resumes
+  the cleanup (§9.3).

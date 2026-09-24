@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"musiclib/internal/failpoint"
 	"musiclib/internal/store"
 )
 
@@ -137,17 +138,6 @@ func deref[T any](p *T) T {
 	return *p
 }
 
-// testHook, when set by a test, runs at named points of the claim
-// transaction, so that a test can commit a concurrent change at an exact
-// point (§12.2). It is nil in production.
-var testHook func(point string)
-
-func hook(point string) {
-	if testHook != nil {
-		testHook(point)
-	}
-}
-
 // ClaimNext claims the next pending job in the fixed order of §6.1: render,
 // then scan, then import, each by queued_at and id. It returns nil when
 // nothing is pending.
@@ -165,11 +155,19 @@ func hook(point string) {
 // (store.CodeRetriesExhausted, having claimed nothing). Pool serializes the
 // claims of its own workers for that reason (N-110).
 func ClaimNext(ctx context.Context, db *pgxpool.Pool, renderVersion string) (*Claim, error) {
+	return claimNext(ctx, db, renderVersion, nil)
+}
+
+// claimNext is ClaimNext with the claim's failpoints (nil in production,
+// NOTES.md N-142): claim_selected_<kind> after the select of each kind and
+// claim_snapshot_album after the album of a render snapshot, both inside
+// the transaction; claimed after its commit, before the job is returned.
+func claimNext(ctx context.Context, db *pgxpool.Pool, renderVersion string, fp failpoint.Hook) (*Claim, error) {
 	var claim *Claim
 	err := store.InSnapshotTx(ctx, db, func(q *store.Queries) error {
 		claim = nil
 		for _, kind := range claimOrder {
-			c, err := claimKind(ctx, q, kind, renderVersion)
+			c, err := claimKind(ctx, q, kind, renderVersion, fp)
 			if err != nil || c != nil {
 				claim = c
 				return err
@@ -180,13 +178,20 @@ func ClaimNext(ctx context.Context, db *pgxpool.Pool, renderVersion string) (*Cl
 	if err != nil {
 		return nil, err
 	}
+	if claim != nil {
+		if err := fp.Hit("claimed"); err != nil {
+			return nil, err
+		}
+	}
 	return claim, nil
 }
 
 // claimKind claims the oldest pending job of one kind, or returns nil.
-func claimKind(ctx context.Context, q *store.Queries, kind Kind, renderVersion string) (*Claim, error) {
+func claimKind(ctx context.Context, q *store.Queries, kind Kind, renderVersion string, fp failpoint.Hook) (*Claim, error) {
 	row, err := q.NextPendingJob(ctx, string(kind))
-	hook("after-select-" + string(kind))
+	if ferr := fp.Hit("claim_selected_" + string(kind)); ferr != nil {
+		return nil, ferr
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -200,7 +205,7 @@ func claimKind(ctx context.Context, q *store.Queries, kind Kind, renderVersion s
 	c := &Claim{Attempt: Attempt{JobID: row.ID, Ticket: ticket}, Kind: kind}
 	switch kind {
 	case KindRender:
-		c.Render, err = loadSnapshot(ctx, q, *row.AlbumID, c.Attempt, renderVersion)
+		c.Render, err = loadSnapshot(ctx, q, *row.AlbumID, c.Attempt, renderVersion, fp)
 	case KindScan:
 		c.BatchID = *row.BatchID
 	case KindImport:
@@ -214,12 +219,14 @@ func claimKind(ctx context.Context, q *store.Queries, kind Kind, renderVersion s
 }
 
 // loadSnapshot reads the album of a render claim, in the claim's snapshot.
-func loadSnapshot(ctx context.Context, q *store.Queries, albumID uuid.UUID, a Attempt, renderVersion string) (*RenderSnapshot, error) {
+func loadSnapshot(ctx context.Context, q *store.Queries, albumID uuid.UUID, a Attempt, renderVersion string, fp failpoint.Hook) (*RenderSnapshot, error) {
 	al, err := q.SnapshotAlbum(ctx, albumID)
 	if err != nil {
 		return nil, dbErr("loading album "+albumID.String(), err)
 	}
-	hook("after-album")
+	if err := fp.Hit("claim_snapshot_album"); err != nil {
+		return nil, err
+	}
 	tracks, err := q.SnapshotTracks(ctx, albumID)
 	if err != nil {
 		return nil, dbErr("loading the tracks of album "+albumID.String(), err)

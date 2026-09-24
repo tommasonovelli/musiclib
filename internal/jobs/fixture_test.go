@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"musiclib/internal/failpoint"
+	"musiclib/internal/faulttest"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
 )
@@ -23,13 +25,21 @@ const testRenderer = "rv-test-1"
 // SQL: package jobs cannot import the catalog, and the queue must work on
 // whatever rows the catalog wrote.
 type fixture struct {
-	t  *testing.T
-	db *pgxpool.Pool
+	t   *testing.T
+	url string
+	db  *pgxpool.Pool
+	// fp is the claim's failpoint hook for this test (claimNext).
+	fp faulttest.Switch
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	return &fixture{t: t, db: pgtest.New(t)}
+	url := pgtest.EmptyDB(t)
+	f := &fixture{t: t, url: url, db: pgtest.Pool(t, url)}
+	if err := store.Migrate(t.Context(), f.db); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
 func (f *fixture) exec(sql string, args ...any) {
@@ -131,19 +141,19 @@ func (f *fixture) jobExists(id uuid.UUID) bool {
 
 func (f *fixture) claim() *Claim {
 	f.t.Helper()
-	c, err := ClaimNext(context.Background(), f.db, testRenderer)
+	c, err := claimNext(context.Background(), f.db, testRenderer, f.fp.Hook())
 	if err != nil {
 		f.t.Fatalf("ClaimNext: %v", err)
 	}
 	return c
 }
 
-// setHook installs testHook for the test. Tests that use it do not run in
-// parallel.
-func setHook(t *testing.T, fn func(point string)) {
-	t.Helper()
-	testHook = fn
-	t.Cleanup(func() { testHook = nil })
+// setHook runs fn at every failpoint of this fixture's claims.
+func (f *fixture) setHook(fn func(point string)) {
+	f.fp.Set(func(p failpoint.Point) error {
+		fn(p.Name)
+		return nil
+	})
 }
 
 func ptr[T any](v T) *T { return &v }

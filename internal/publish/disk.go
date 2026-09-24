@@ -251,8 +251,10 @@ func checkOld(j Journal, e entry, unsafeCode, foreignCode string) error {
 //     RENAME_NOREPLACE, so an existing retired directory is never
 //     overwritten. Then the old artist directory is removed if empty, with
 //     rmdir; a failure there is only a warning.
-//   - Every directory involved is fsynced: the new and old artist
-//     directories, library/, the build's directory, work/retired, work/.
+//   - Every directory involved is fsynced, deepest first: the installed
+//     album directory and work/retired/<build_id> (their ".." changed),
+//     the new and old artist directories, library/, the build's
+//     directory, work/render, work/retired, work/.
 //
 // Every refusal is CodeIllegalState and deletes nothing (§9.4).
 func (p *Publisher) install(ctx context.Context, j Journal) error {
@@ -272,7 +274,8 @@ func (p *Publisher) install(ctx context.Context, j Journal) error {
 				return err
 			}
 		}
-		syncs = append(syncs,
+		// The album directory itself too: its ".." changed with the move.
+		syncs = append(syncs, syncTarget{p.library, j.NewPath},
 			syncTarget{p.library, artistDir(j.NewPath)}, syncTarget{p.library, ""},
 			syncTarget{p.work, buildDir(j.BuildID)}, syncTarget{p.work, renderDir(j.BuildID)})
 	}
@@ -280,18 +283,18 @@ func (p *Publisher) install(ctx context.Context, j Journal) error {
 		if err := p.retireOld(j); err != nil {
 			return err
 		}
-		if err := failpoint("retired"); err != nil {
+		if err := p.failpoints.Hit("retired"); err != nil {
 			return err
 		}
 		p.removeArtistDir(j)
-		syncs = append(syncs,
+		syncs = append(syncs, syncTarget{p.work, j.retired()},
 			syncTarget{p.library, artistDir(j.OldPath)}, syncTarget{p.library, ""},
 			syncTarget{p.work, retiredDir}, syncTarget{p.work, ""})
 	}
 	if err := ctx.Err(); err != nil {
 		return wrap(CodeCanceled, err, "%s: interrupted before the fsyncs", j)
 	}
-	return syncAll(syncs)
+	return p.syncAll(syncs)
 }
 
 // checkTransition verifies, without changing anything, that the disk is in
@@ -351,11 +354,8 @@ func (p *Publisher) installNew(j Journal, e entry) error {
 		if err := p.checkParent(j.NewPath, CodeIllegalState); err != nil {
 			return err
 		}
-		if _, err := p.library.MkdirAll(artistDir(j.NewPath), dirPerm); err != nil {
-			return fsErr(j, err, "creating the artist directory")
-		}
-		if err := fsops.RenameNoReplace(p.work, j.staging(), p.library, j.NewPath); err != nil {
-			return fsErr(j, err, "installing the staging")
+		if err := p.moveIntoPlace(j); err != nil {
+			return err
 		}
 	} else {
 		// The album's own output at exactly the old path: the exchange
@@ -364,7 +364,46 @@ func (p *Publisher) installNew(j Journal, e entry) error {
 			return fsErr(j, err, "exchanging the staging with the published directory")
 		}
 	}
-	return failpoint("installed")
+	return p.failpoints.Hit("installed")
+}
+
+// moveIntoPlace is §9.3 B for an absent new path: "creare/sincronizzare
+// i parent e spostare lo staging con RENAME_NOREPLACE". A created artist
+// directory is made durable (fsync of it and of library/) before the
+// rename. If the rename, or anything before it, fails, the artist
+// directory this call created is removed again with rmdir, which only
+// removes it if it is still empty (§3.3); a failure of that rmdir is a
+// warning, since an empty artist directory is harmless.
+func (p *Publisher) moveIntoPlace(j Journal) (err error) {
+	dir := artistDir(j.NewPath)
+	created, err := p.library.MkdirAll(dir, dirPerm)
+	defer func() {
+		if err == nil {
+			return
+		}
+		for i := len(created) - 1; i >= 0; i-- {
+			if rerr := p.library.Rmdir(created[i]); rerr != nil {
+				p.log.Warn("an artist directory created for a failed installation could not be removed",
+					"album_id", j.AlbumID, "build_id", j.BuildID, "path", created[i], "error", rerr.Error())
+			}
+		}
+	}()
+	if err != nil {
+		return fsErr(j, err, "creating the artist directory")
+	}
+	if len(created) > 0 {
+		// Through syncAll, so that the fsync_dir point traces it.
+		if err := p.syncAll([]syncTarget{{p.library, dir}, {p.library, ""}}); err != nil {
+			return err
+		}
+	}
+	if err := p.failpoints.Hit("parents_synced"); err != nil {
+		return err
+	}
+	if err := fsops.RenameNoReplace(p.work, j.staging(), p.library, j.NewPath); err != nil {
+		return fsErr(j, err, "installing the staging")
+	}
+	return nil
 }
 
 // retireOld moves the old directory to work/retired/<build_id>, once.
@@ -413,8 +452,9 @@ type syncTarget struct {
 // syncAll fsyncs every target once, deepest first. A directory that no
 // longer exists (an artist directory just removed, a build directory
 // cleaned by an operator) has nothing to make durable; its parent is in
-// the list.
-func syncAll(targets []syncTarget) error {
+// the list. The failpoint fsync_dir runs before each fsync, with the
+// root's name and the path.
+func (p *Publisher) syncAll(targets []syncTarget) error {
 	slices.SortStableFunc(targets, func(a, b syncTarget) int {
 		return depth(b.rel) - depth(a.rel)
 	})
@@ -424,6 +464,9 @@ func syncAll(targets []syncTarget) error {
 			continue
 		}
 		done[t] = true
+		if err := p.failpoints.HitFile("fsync_dir", t.root.Name()+":"+t.rel, nil); err != nil {
+			return wrap(CodeIO, err, "fsync of %s/%s", t.root.Name(), t.rel)
+		}
 		if err := t.root.SyncDir(t.rel); err != nil {
 			if fsops.Code(err) == fsops.CodeNotFound {
 				continue
