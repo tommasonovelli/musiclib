@@ -21,9 +21,9 @@ TAGLIB_BUILD ?=
 CXX ?= g++
 OUT := build/$(MODE)
 
-SRCS := src/main.cpp src/fdio.cpp src/flac.cpp src/inspection.cpp src/json.cpp \
+SRCS := src/main.cpp src/ape.cpp src/fdio.cpp src/flac.cpp src/id3v2.cpp src/inspection.cpp src/json.cpp src/mp3.cpp \
         src/request.cpp src/sha256.cpp src/text.cpp
-UNIT_SRCS := tests/unit_tests.cpp src/json.cpp src/sha256.cpp src/text.cpp
+UNIT_SRCS := tests/unit_tests.cpp src/ape.cpp src/id3v2.cpp src/json.cpp src/sha256.cpp src/text.cpp
 
 WARNINGS := -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
             -Wnon-virtual-dtor -Woverloaded-virtual -Werror
@@ -54,7 +54,7 @@ $(OUT)/musiclib-tags: $(SRCS) src/*.h Makefile
 check: build/unit/unit_tests
 	build/unit/unit_tests
 
-build/unit/unit_tests: $(UNIT_SRCS) src/*.h Makefile
+build/unit/unit_tests: $(UNIT_SRCS) src/*.h tests/*.inc Makefile
 	@mkdir -p build/unit
 	$(CXX) -std=c++20 $(WARNINGS) $(SANITIZE) -o $@ $(UNIT_SRCS) src/sanitizers.cpp -DMUSICLIB_SANITIZERS
 

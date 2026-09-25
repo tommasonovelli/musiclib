@@ -28,8 +28,13 @@ std::uint64_t checkDescriptor(int fd, Access access, const std::string &what);
 std::string readAt(int fd, std::uint64_t off, std::size_t n, const std::string &what);
 
 // writeAt writes all of data at offset off (pwrite: the descriptor's own
-// offset is not used); Failure(io) on error.
+// offset is not used); Failure(no_space) on ENOSPC or EDQUOT, Failure(io) on
+// any other error.
 void writeAt(int fd, std::uint64_t off, std::string_view data, const std::string &what);
+
+// writeFailureCode is the failure code of a write that failed with err:
+// no_space for ENOSPC and EDQUOT, io otherwise.
+const char *writeFailureCode(int err) noexcept;
 
 // FdStream is TagLib's IOStream over a descriptor, with positioned reads and
 // writes (pread/pwrite: the descriptor's own offset is never used) and
@@ -58,11 +63,14 @@ class FdStream final : public TagLib::IOStream {
   TagLib::offset_t length() override;
   void truncate(TagLib::offset_t length) override;
 
-  // check throws Failure(io) if any operation failed.
+  // check throws the first failure, if any operation failed:
+  // Failure(no_space) for a write, truncate or move that met ENOSPC or
+  // EDQUOT, Failure(io) otherwise.
   void check() const;
 
  private:
   void fail(const std::string &op, int err);
+  int errno_ = 0;
   bool preadFull(char *p, std::size_t n, std::uint64_t off);
   bool pwriteFull(const char *p, std::size_t n, std::uint64_t off);
   // moveRange copies n bytes from src to dst (possibly overlapping), in

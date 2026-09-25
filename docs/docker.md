@@ -454,22 +454,29 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
   takes about 80 s without cache; a change under `native/musiclib-tags/`
   rebuilds only the helper.
 - **The helper's version** is two strings: `musiclib-tags version` prints
-  `{"helper":"2","taglib":"2.3.2-musiclib1"}`. `helper` is
+  `{"helper":"3","taglib":"2.3.2-musiclib1"}`. `helper` is
   `kHelperVersion` in `native/musiclib-tags/src/version.h`; `taglib` is the
   linked TagLib's own version plus `TAGLIB_BUILD_REVISION`, the revision of
   the cmake line. `musiclibd` refuses to boot with anything else
   (`media_tool_version`), and so does the gate (`TestPinnedToolsInstalled`).
 - **Changing the helper** in a way that can change an inspection or a
   written file (the field table, a reading rule, the bytes written): bump
-  `kHelperVersion` and `media.PinnedTagsVersion` together.
+  `kHelperVersion` and `media.PinnedTagsVersion` together, then re-pin the
+  binary's sha256 in `render.TestToolBinariesPinned` and the value in
+  `TestVersionGolden` (every album renders again, NOTES.md N-130). The MP3
+  reader and writer (`src/id3v2.cpp`, `src/ape.cpp`, `src/mp3.cpp`) are the
+  helper's own; TagLib only cross-checks them (N-152).
 - **Bumping TagLib:**
   1. Download the new release tarball, compute its sha256 and compare it
      with GitHub's asset digest and an independent pin (Homebrew's formula).
      TagLib does not sign its releases.
   2. Read the release's changes to `flac/flacfile.cpp`,
-     `ogg/xiphcomment.cpp` and `flac/flacpicture.cpp`. The helper's reader
-     mirrors what TagLib drops or alters (NOTES.md N-085): a change there
-     can require a change of the reader.
+     `ogg/xiphcomment.cpp` and `flac/flacpicture.cpp`, and for MP3
+     `mpeg/mpegfile.cpp`, `mpeg/id3v2/id3v2framefactory.cpp`,
+     `mpeg/id3v2/id3v2frame.cpp`, `ape/apetag.cpp` and `tagutils.cpp`
+     (`Utils::findID3v1`, `findAPE`). The helper's readers mirror where
+     TagLib finds tags and what it drops or alters (NOTES.md N-085, N-152,
+     N-154): a change there can require a change of a reader.
   3. Update `TAGLIB_VERSION` and `TAGLIB_SHA256`; reset
      `TAGLIB_BUILD_REVISION` to `musiclib1`, or increase it when only the
      cmake line changes.

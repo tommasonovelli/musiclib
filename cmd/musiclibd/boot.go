@@ -531,7 +531,7 @@ func (d *daemon) enqueueStale(ctx context.Context) error {
 // fatal error (§6.4), which run turns into a non-zero exit.
 func (d *daemon) startWorkers(ctx context.Context) error {
 	var err error
-	d.catalog, err = catalog.New(d.pool, func() { d.workers.Wake() }, importer.CoverFits)
+	d.catalog, err = catalog.New(d.pool, func() { d.workers.Wake() }, importer.CoverFits, importer.GenreFits)
 	if err != nil {
 		return err
 	}

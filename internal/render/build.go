@@ -374,6 +374,10 @@ func (bd *build) track(ctx context.Context, t Track, cover *media.Cover, expecte
 		return err
 	}
 	if err := tools.WriteManagedTags(ctx, f, t.Format, t.Tags, cover); err != nil {
+		if media.Code(err) == media.CodeTagsNoSpace {
+			// The helper met ENOSPC in its own write (§11.2, N-143).
+			return &Error{Code: CodeInsufficientSpace, Message: fmt.Sprintf("the disk is full while writing the tags of %q", t.Path), Err: err}
+		}
 		return err
 	}
 	if err := bd.b.failpoints.HitFile("tags_written", t.Path, f); err != nil {

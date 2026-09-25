@@ -93,6 +93,12 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 -- name: ListAlbumTracks :many
 SELECT id, disc, no, title, artist, genre FROM tracks WHERE album_id = $1 ORDER BY disc, no, id;
 
+-- The audio formats of an album's tracks, for the per-format rules of a
+-- change (N-162).
+-- name: ListAlbumAudioFormats :many
+SELECT DISTINCT b.format FROM tracks t JOIN blobs b ON b.hash = t.blob_hash
+WHERE t.album_id = $1 AND b.format IS NOT NULL ORDER BY b.format;
+
 -- The (album_id, disc, no) constraint is deferred to the commit, so a swap
 -- of numbers needs no temporary values (§4.2, §12.2).
 -- name: UpdateTrack :execrows

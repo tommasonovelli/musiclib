@@ -74,7 +74,7 @@ func newEnvAt(t *testing.T, db *pgxpool.Pool, dir string) *env {
 	if e.blobs, err = blobstore.New(originals, e.work); err != nil {
 		t.Fatal(err)
 	}
-	if e.cat, err = catalog.New(db, nil, CoverFits); err != nil {
+	if e.cat, err = catalog.New(db, nil, CoverFits, GenreFits); err != nil {
 		t.Fatal(err)
 	}
 	e.im, err = New(Config{Catalog: e.cat, Tools: tools(t), Blobs: e.blobs, Source: src, Work: e.work,

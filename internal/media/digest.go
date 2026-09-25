@@ -86,7 +86,9 @@ func decodeArgs(demuxer string) []string {
 //  2. Decode with ffmpeg to pcm_f64le, streaming the output into SHA-256
 //     and a byte count; nothing is held in memory. For a FLAC with a
 //     trailing ID3v1 tag, the decoder reads only the bytes before the tag
-//     (flacAudioEnd, NOTES.md N-128); every other file is read whole.
+//     (flacAudioEnd, NOTES.md N-128); for an MP3 with trailing ID3v1 or
+//     APE tags, only the bytes before them, probed again for the declared
+//     length (mp3AudioEnd, N-154); every other file is read whole.
 //  3. The byte count must be a positive multiple of 8 × channels, and, when
 //     the container declares an exact length, equal to it.
 //
@@ -113,9 +115,19 @@ func (t *Tools) AudioDigest(ctx context.Context, f *os.File) (Digest, error) {
 		return Digest{}, newErr(CodeNotSupported, "audio digest", msg, nil)
 	}
 	limit := int64(wholeFile)
-	if p.Format == FormatFLAC {
+	switch p.Format {
+	case FormatFLAC:
 		if limit, err = flacAudioEnd(f); err != nil {
 			return Digest{}, err
+		}
+	case FormatMP3:
+		if limit, err = mp3AudioEnd(f); err != nil {
+			return Digest{}, err
+		}
+		if limit != wholeFile {
+			if p, err = t.probeWindow(ctx, f, p, limit); err != nil {
+				return Digest{}, err
+			}
 		}
 	}
 	return t.decode(ctx, f, p, limit)
@@ -178,15 +190,22 @@ func hasTrailingID3v1(tail []byte, size int64) bool {
 // ClassAudio. limit is wholeFile, or the number of leading bytes of f the
 // decoder gets.
 //
-// The whole file reaches ffmpeg as descriptor 3 itself. A limited one
+// The whole file reaches ffmpeg as descriptor 3 itself. A limited FLAC
 // reaches it as the read end of a pipe on descriptor 3, which a goroutine
 // fills with exactly the first limit bytes of f (N-075: a descriptor, never
-// a path). The command line is the same.
+// a path), with the same command line. A limited MP3 is descriptor 3 itself,
+// read through the subfile protocol up to limit (windowed, N-154): the mp3
+// demuxer trims the gapless padding only on a seekable input.
 func (t *Tools) decode(ctx context.Context, f *os.File, p ProbeResult, limit int64) (Digest, error) {
 	const op = "ffmpeg decode"
 	in := f
+	args := decodeArgs(demuxerOf[p.Format])
 	var fed chan feedResult
-	if limit == wholeFile {
+	if limit == wholeFile || p.Format == FormatMP3 {
+		// An MP3 is read through the subfile protocol, which seeks (N-154).
+		if limit != wholeFile {
+			args = windowed(args, limit)
+		}
 		if err := rewind(f, op); err != nil {
 			return Digest{}, err
 		}
@@ -201,7 +220,7 @@ func (t *Tools) decode(ctx context.Context, f *os.File, p ProbeResult, limit int
 	pcm := &pcmSink{h: sha256.New()}
 	_, err := t.run.Run(ctx, Command{
 		Path:    t.ffmpeg,
-		Args:    decodeArgs(demuxerOf[p.Format]),
+		Args:    args,
 		Files:   []*os.File{in},
 		Stdout:  pcm,
 		Timeout: DecodeTimeout,

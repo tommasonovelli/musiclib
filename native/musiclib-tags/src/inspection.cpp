@@ -1,5 +1,6 @@
 #include "inspection.h"
 
+#include "failure.h"
 #include "json.h"
 #include "sha256.h"
 
@@ -98,8 +99,26 @@ std::string renderInspection(const Inspection &in) {
   }
   w.endArray();
 
+  w.key("audio");
+  w.beginObject();
+  w.key("start");
+  w.uinteger(in.audio.start);
+  w.key("end");
+  w.uinteger(in.audio.end);
+  w.endObject();
+
   w.endObject();
   return w.take();
+}
+
+void refuseBlocking(const std::vector<Opaque> &opaque) {
+  std::string keys;
+  for (const auto &o : opaque) {
+    if (o.removed) continue;
+    if (!keys.empty()) keys += ", ";
+    keys += o.key + " (" + o.reason + ")";
+  }
+  if (!keys.empty()) throw Failure(code::kOpaqueField, "fields that cannot be saved back without loss: " + keys);
 }
 
 }  // namespace mltags

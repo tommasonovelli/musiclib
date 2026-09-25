@@ -88,6 +88,8 @@ struct RawFlac {
   std::uint64_t id3v2Size = 0;
   bool id3v1 = false;
   std::vector<Block> blocks;  // every block but PADDING, in file order
+  // The audio frames: after the metadata blocks, before an ID3v1 tag.
+  AudioRange audio;
 };
 
 // readRawFlac reads the metadata blocks. The stream must start with "fLaC",
@@ -154,6 +156,7 @@ RawFlac readRawFlac(int fd) {
   // A write truncates the file where the ID3v1 tag starts: it must start
   // after the metadata blocks.
   if (raw.id3v1 && size - 128 < pos) corrupt("an ID3v1 tag overlaps the metadata blocks");
+  raw.audio = AudioRange{pos, raw.id3v1 ? size - 128 : size};
   return raw;
 }
 
@@ -406,9 +409,10 @@ void resolveManaged(const FieldMap &fields, Inspection &in) {
   }
 }
 
-Inspection toInspection(const Analysis &a) {
+Inspection toInspection(const Analysis &a, const AudioRange &audio) {
   Inspection in;
   in.format = Format::FLAC;
+  in.audio = audio;
   resolveManaged(a.comment.fields, in);
   in.pictures = a.pictures;
   for (const auto &[key, values] : a.comment.fields) {
@@ -563,18 +567,6 @@ void verifyWritten(int fd, const Analysis &before, const FieldMap &want, const s
   }
 }
 
-void refuseOpaque(const Analysis &a) {
-  std::string keys;
-  for (const auto &o : a.opaque) {
-    if (o.removed) continue;
-    if (!keys.empty()) keys += ", ";
-    keys += o.key + " (" + o.reason + ")";
-  }
-  if (!keys.empty()) {
-    throw Failure(code::kOpaqueField, "fields that cannot be saved back without loss: " + keys);
-  }
-}
-
 }  // namespace
 
 Inspection inspectFlac(int fd) {
@@ -586,7 +578,7 @@ Inspection inspectFlac(int fd) {
   stream.check();
   if (!file.isValid()) corrupt("TagLib cannot read the FLAC metadata");
   checkTagLibAgrees(file, raw, a);
-  return toInspection(a);
+  return toInspection(a, raw.audio);
 }
 
 void writeFlac(int fd, const WriteRequest &req, const std::string &cover) {
@@ -594,7 +586,7 @@ void writeFlac(int fd, const WriteRequest &req, const std::string &cover) {
   //    if a field would be lost.
   const RawFlac raw = readRawFlac(fd);
   const Analysis before = analyze(raw);
-  refuseOpaque(before);
+  refuseBlocking(before.opaque);
   const FieldMap want = expectedFields(before, req.values);
   const std::string vendor = before.comment.vendor.value_or("");
   // TagLib keeps no field of a comment that has more than kMaxVorbisFields:

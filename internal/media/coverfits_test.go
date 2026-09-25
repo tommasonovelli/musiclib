@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -62,8 +63,8 @@ func TestMaxEmbeddedCoverIsTheHelpersLimit(t *testing.T) {
 // limit and are refused, never accepted by default.
 func TestEmbeddedCoverFitsUnknownFormats(t *testing.T) {
 	for _, tc := range []struct{ audio, cover string }{
-		{FormatMP3, FormatJPEG}, {FormatM4AAAC, FormatPNG}, {FormatM4AALAC, FormatJPEG},
-		{FormatFLAC, "gif"}, {"", FormatJPEG},
+		{FormatM4AAAC, FormatPNG}, {FormatM4AALAC, FormatJPEG},
+		{FormatFLAC, "gif"}, {FormatMP3, "gif"}, {"", FormatJPEG},
 	} {
 		if _, ok := MaxEmbeddedCover(tc.audio, tc.cover); ok {
 			t.Errorf("MaxEmbeddedCover(%q, %q) has a limit", tc.audio, tc.cover)
@@ -95,4 +96,47 @@ func TestCoverMIMEIsTheWritersMIME(t *testing.T) {
 			t.Errorf("CoverMIME(%q) = %q", format, mime)
 		}
 	}
+}
+
+// The MP3 limit is the helper's: an APIC frame body of 256 MiB - 1. A cover
+// one byte over it is refused by the helper before it is read (a sparse
+// file: nothing is allocated); a cover larger than FLAC's limit embeds.
+func TestMaxEmbeddedCoverMP3(t *testing.T) {
+	for format, mime := range map[string]string{FormatJPEG: "image/jpeg", FormatPNG: "image/png"} {
+		limit, ok := MaxEmbeddedCover(FormatMP3, format)
+		if !ok || limit != 1<<28-1-4-int64(len(mime)) {
+			t.Fatalf("MaxEmbeddedCover(mp3, %s) = %d, %v", format, limit, ok)
+		}
+		if EmbeddedCoverFits(FormatMP3, format, limit) != nil {
+			t.Fatal("the limit itself does not fit")
+		}
+		wantCode(t, EmbeddedCoverFits(FormatMP3, format, limit+1), CodeTagsTooLarge)
+	}
+	dir := t.TempDir()
+	src := mp3Source(t, dir)
+	png := pngImage(t, 4, 4, 1)
+	over := filepath.Join(dir, "over.png")
+	f, err := os.Create(over)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1 << 28); err != nil { // the helper's own bound plus one
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, tools := range helpers(t) {
+		t.Run(name, func(t *testing.T) {
+			p := mp3At(t, t.TempDir(), "f.mp3", src)
+			wantUnchanged(t, p, func() error {
+				return tools.WriteManagedTags(t.Context(), openRW(t, p), FormatMP3, fullValues, &Cover{File: open(t, over), Format: FormatPNG})
+			}, CodeTagsTooLarge)
+		})
+	}
+	big := &coverFile{writeFile(t, filepath.Join(dir, "big.png"), append(bytes.Clone(png), make([]byte, 17<<20)...)), FormatPNG}
+	writeMP3Checked(t, newTools(t), mp3At(t, t.TempDir(), "big.mp3", src), fullValues, big)
 }

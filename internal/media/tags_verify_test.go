@@ -363,3 +363,55 @@ func encodeJPEG(t testing.TB, m image.Image) []byte {
 	}
 	return b.Bytes()
 }
+
+// §8.3, MP3: the comparison of the unmanaged fields excludes the declared
+// ID3v1 migration, and nothing more (NOTES.md N-153).
+func TestVerifyTagsID3v1Migration(t *testing.T) {
+	v := TagValues{Title: "T"}
+	mp3 := func(unmanaged ...KeyValues) Inspection {
+		return Inspection{Format: FormatMP3, Unmanaged: unmanaged}
+	}
+	after := func(unmanaged ...KeyValues) Inspection {
+		in := mp3(unmanaged...)
+		in.Managed.Title = []string{"T"}
+		return in
+	}
+	audio := KeyValues{"mpeg.audio", []string{"abc"}}
+	comment := KeyValues{"id3v1:comment", []string{"old comment"}}
+	legacy := func(values ...string) KeyValues { return KeyValues{"id3v2:COMM:XXX:legacy-id3v1", values} }
+	existing := KeyValues{"id3v2:COMM:eng:", []string{"old comment"}}
+	other := KeyValues{"id3v2:COMM:eng:", []string{"something else"}}
+	for _, tc := range []struct {
+		name          string
+		before, after Inspection
+		ok            bool
+	}{
+		{"migrated", mp3(comment, audio), after(legacy("old comment"), audio), true},
+		{"already in a COMM", mp3(comment, existing, audio), after(existing, audio), true},
+		{"next to another COMM", mp3(comment, other, audio), after(legacy("old comment"), other, audio), true},
+		{"no ID3v1 comment", mp3(audio), after(audio), true},
+		{"not migrated", mp3(comment, audio), after(audio), false},
+		{"migrated with another text", mp3(comment, audio), after(legacy("other"), audio), false},
+		{"migrated twice", mp3(comment, audio), after(legacy("old comment", "old comment"), audio), false},
+		{"duplicated although a COMM holds it", mp3(comment, existing, audio), after(existing, legacy("old comment"), audio), false},
+		{"the ID3v1 comment kept", mp3(comment, audio), after(comment, legacy("old comment"), audio), false},
+		{"a legacy COMM appearing without ID3v1", mp3(audio), after(legacy("x"), audio), false},
+		{"another field lost with the migration", mp3(comment, other, audio), after(legacy("old comment"), audio), false},
+		{"the audio changed", mp3(comment, audio), after(legacy("old comment"), KeyValues{"mpeg.audio", []string{"abd"}}), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifyTags(v, nil, tc.before, tc.after)
+			if tc.ok && err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			if !tc.ok {
+				wantCode(t, err, CodeTagsVerification)
+			}
+		})
+	}
+	// The migration is an MP3 rule: a FLAC key of the same name is compared
+	// as it is.
+	flac := Inspection{Format: FormatFLAC, Unmanaged: []KeyValues{comment}}
+	flacAfter := Inspection{Format: FormatFLAC, Managed: ManagedTags{Title: []string{"T"}}, Unmanaged: []KeyValues{legacy("old comment")}}
+	wantCode(t, VerifyTags(v, nil, flac, flacAfter), CodeTagsVerification)
+}

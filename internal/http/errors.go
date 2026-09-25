@@ -109,6 +109,7 @@ var statusOf = map[string]int{
 	catalog.CodeTrackListMismatch:    nethttp.StatusUnprocessableEntity,
 	catalog.CodeNoTracks:             nethttp.StatusUnprocessableEntity,
 	catalog.CodeInvalidCover:         nethttp.StatusUnprocessableEntity,
+	catalog.CodeGenreNotWritable:     nethttp.StatusUnprocessableEntity,
 	catalog.CodeAttachmentCollision:  nethttp.StatusUnprocessableEntity,
 	catalog.CodeLyricsAssociation:    nethttp.StatusUnprocessableEntity,
 	catalog.CodeInvalidBlobFormat:    nethttp.StatusUnprocessableEntity,

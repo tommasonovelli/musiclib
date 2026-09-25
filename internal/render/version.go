@@ -16,7 +16,10 @@ import (
 // The helper's own field table and the bytes it writes are covered by its
 // version (media.PinnedTagsVersion, N-088); the names of the output by
 // names.AlgorithmVersion.
-const RendererRevision = "1"
+//
+// Revisions: 1, the first (round 8); 2, MP3 tracks planned and built
+// (".mp3", round 12, NOTES.md N-158).
+const RendererRevision = "2"
 
 // GoVersion is the Go toolchain the renderer is built with (the Dockerfile's
 // GO_IMAGE). The renderer's Go code, image/jpeg and image/png (the cover

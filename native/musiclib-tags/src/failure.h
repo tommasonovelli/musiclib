@@ -31,6 +31,11 @@ inline constexpr const char *kTooLarge = "too_large";
 inline constexpr const char *kPictureNotFound = "picture_not_found";
 // A read or write on a descriptor failed.
 inline constexpr const char *kIO = "io";
+// A write on a descriptor failed because the filesystem is full (ENOSPC) or
+// the quota is exhausted (EDQUOT): the caller reports it as a lack of space
+// (DESIGN.md §11.2), not as a generic I/O error (NOTES.md N-143). Since
+// helper version 3.
+inline constexpr const char *kNoSpace = "no_space";
 // An invariant of the helper broke: TagLib and the helper disagree, or the
 // written file does not read back as requested. Never expected.
 inline constexpr const char *kInternal = "internal";

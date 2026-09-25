@@ -87,7 +87,7 @@ func TestVersionInputs(t *testing.T) {
 // review, together with its consequence (§11.1 step 6: every album renders
 // again at the next boot).
 func TestVersionGolden(t *testing.T) {
-	const want = "musiclib-render/1 names/1 go1.25.14 ffmpeg/8.1.3-musiclib1 musiclib-tags/2 taglib/2.3.2-musiclib1"
+	const want = "musiclib-render/2 names/1 go1.25.14 ffmpeg/8.1.3-musiclib1 musiclib-tags/3 taglib/2.3.2-musiclib1"
 	if Version != want {
 		t.Fatalf("render_version is %q, pinned %q: update the pin knowing that every album will render again", Version, want)
 	}
@@ -113,7 +113,7 @@ func TestCheckTools(t *testing.T) {
 	for name, edit := range map[string]func(*media.Versions){
 		"ffmpeg":        func(v *media.Versions) { v.FFmpeg = "8.1.4-musiclib1" },
 		"ffprobe":       func(v *media.Versions) { v.FFprobe = "" },
-		"musiclib-tags": func(v *media.Versions) { v.Tags = "3" },
+		"musiclib-tags": func(v *media.Versions) { v.Tags = "4" },
 		"TagLib":        func(v *media.Versions) { v.TagLib = "2.3.2-musiclib2" },
 	} {
 		v := tools.Versions()
@@ -132,7 +132,7 @@ func TestCheckTools(t *testing.T) {
 var pinnedBinaries = map[string]string{
 	media.FFmpegPath:  "3d67d1c2fc18f34ca7bb5cbb08becef864994047a263d97f35117f42da50be10",
 	media.FFprobePath: "3f315e9f2ae071d5eceb147b201c9ae817dcc22cd974334e4f7ec0c230155c16",
-	media.TagsPath:    "a80552042e2ae4f158a403f9887ace816c46a026592921ef3bee51c711d14a32",
+	media.TagsPath:    "590e6c750c43c568f3f5fc1978c2e5ea8fce3c94cbb422251e4aac36812b14f4",
 }
 
 func TestToolBinariesPinned(t *testing.T) {
@@ -162,6 +162,7 @@ func TestToolBinariesPinned(t *testing.T) {
 // the SHA-256 of rendererTranscript.
 var rendererDigests = map[string]string{
 	"1": "01d38d79f5433acd1be4a0a21cb67a1b7520ecd0b2999949194981c60b006446",
+	"2": "698ef861981a333d3fe0505697ba60c626621b103fbe9987e7d67f42a41eaa71",
 }
 
 // TestRendererRevisionPinned fails when the planner's layout or tag mapping,
@@ -192,6 +193,7 @@ func rendererTranscript(t *testing.T, w io.Writer) {
 	multi.Tracks[3].Lyrics = jobs.SnapshotBlob{Hash: hashOf("l"), Size: 3}
 	multi.Album.Compilation, multi.Album.Year = true, 999
 	multi.Cover.Format = "png"
+	multi.Tracks[1].Blob.Format = "mp3" // since RendererRevision 2
 	bare := kindOfBlue()
 	bare.Cover, bare.Album.Genre, bare.Album.Year, bare.Attachments = jobs.SnapshotBlob{}, jobs.Text{}, 0, nil
 	long := kindOfBlue()

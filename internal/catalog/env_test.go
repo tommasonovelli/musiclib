@@ -16,6 +16,7 @@ import (
 
 	"musiclib/internal/catalog"
 	"musiclib/internal/jobs"
+	"musiclib/internal/media"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
 )
@@ -61,6 +62,12 @@ func (e *env) service(db *pgxpool.Pool) *catalog.Service {
 			return nil
 		}
 		return fits(cover, format)
+	}, func(genre, format string) error {
+		// The real rule of N-162, as importer.GenreFits applies it.
+		if format == catalog.FormatMP3 && !media.MP3GenreWritable(genre) {
+			return catalog.GenreNotWritable(genre, format)
+		}
+		return nil
 	})
 	if err != nil {
 		e.t.Fatal(err)

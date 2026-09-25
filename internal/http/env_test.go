@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"musiclib/internal/catalog"
+	"musiclib/internal/importer"
 	"musiclib/internal/jobs"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
@@ -70,7 +71,7 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool, enable bool) *env {
 		t.Fatal(err)
 	}
 	e.api = api
-	e.svc, err = catalog.New(db, nil, func(catalog.Blob, string) error { return nil })
+	e.svc, err = catalog.New(db, nil, func(catalog.Blob, string) error { return nil }, importer.GenreFits)
 	if err != nil {
 		t.Fatal(err)
 	}

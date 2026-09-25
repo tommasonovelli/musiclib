@@ -30,8 +30,10 @@
 #include "failure.h"
 #include "fdio.h"
 #include "flac.h"
+#include "id3v2.h"
 #include "inspection.h"
 #include "json.h"
+#include "mp3.h"
 #include "request.h"
 #include "sha256.h"
 #include "version.h"
@@ -76,13 +78,21 @@ void writeOut(int fd, const std::string &text) {
   }
 }
 
-// requireFormat refuses the formats an operation does not handle yet.
-void requireFLAC(Format f, std::string_view op) {
-  if (f != Format::FLAC) {
+// requireSupported refuses the formats the helper does not handle yet: M4A
+// (NOTES.md N-094).
+void requireSupported(Format f, std::string_view op) {
+  if (f != Format::FLAC && f != Format::MP3) {
     throw Failure(code::kUnsupportedFormat,
-                  std::string(op) + " of " + std::string(formatName(f)) + " is not implemented (Phase 4)");
+                  std::string(op) + " of " + std::string(formatName(f)) + " is not implemented yet");
   }
 }
+
+// inspectFile inspects the audio file on kAudioFD in its format.
+Inspection inspectFile(Format f) { return f == Format::MP3 ? inspectMp3(kAudioFD) : inspectFlac(kAudioFD); }
+
+// maxCoverBytes is the largest cover a write reads, refused before reading:
+// a FLAC metadata block is at most 16 MiB - 1, an ID3v2 frame 256 MiB - 1.
+std::uint64_t maxCoverBytes(Format f) { return f == Format::MP3 ? id3v2::kMaxSynchsafe : (1U << 24) - 1; }
 
 std::string version() {
   json::Writer w;
@@ -97,14 +107,14 @@ std::string version() {
 
 std::string inspect(std::string_view request) {
   const InspectRequest req = parseInspectRequest(request);
-  requireFLAC(req.format, "inspect");
+  requireSupported(req.format, "inspect");
   checkDescriptor(kAudioFD, Access::Read, "the audio file");
-  return renderInspection(inspectFlac(kAudioFD));
+  return renderInspection(inspectFile(req.format));
 }
 
 std::string extractImages(std::string_view request) {
   const ExtractRequest req = parseExtractRequest(request);
-  requireFLAC(req.format, "extract-images");
+  requireSupported(req.format, "extract-images");
   checkDescriptor(kAudioFD, Access::Read, "the audio file");
   // Every destination is checked before anything is read or written.
   for (std::size_t i = 0; i < req.pictures.size(); ++i) {
@@ -113,7 +123,7 @@ std::string extractImages(std::string_view request) {
       throw Failure(code::kBadDescriptor, "output " + std::to_string(i) + " is not empty");
     }
   }
-  const Inspection in = inspectFlac(kAudioFD);
+  const Inspection in = inspectFile(req.format);
   for (const std::uint32_t p : req.pictures) {
     if (p >= in.pictures.size()) {
       throw Failure(code::kPictureNotFound,
@@ -145,17 +155,23 @@ std::string extractImages(std::string_view request) {
 
 std::string writeManagedTags(std::string_view request) {
   const WriteRequest req = parseWriteRequest(request);
-  requireFLAC(req.format, "write-managed-tags");
+  requireSupported(req.format, "write-managed-tags");
   checkDescriptor(kAudioFD, Access::ReadWrite, "the audio file");
   std::string cover;
   if (req.cover) {
     const std::uint64_t size = checkDescriptor(kFirstExtraFD, Access::Read, "the cover");
-    // No format embeds a picture of 16 MiB or more in this helper (a FLAC
-    // metadata block is at most 16 MiB - 1): refuse before reading it.
-    if (size >= (1U << 24)) throw Failure(code::kTooLarge, "the cover is larger than 16 MiB");
+    // A cover that cannot fit the format is refused before it is read.
+    if (size > maxCoverBytes(req.format)) {
+      throw Failure(code::kTooLarge, "the cover (" + std::to_string(size) + " bytes) does not fit in a " +
+                                         std::string(formatName(req.format)) + " file");
+    }
     cover = readAt(kFirstExtraFD, 0, static_cast<std::size_t>(size), "the cover");
   }
-  writeFlac(kAudioFD, req, cover);
+  if (req.format == Format::MP3) {
+    writeMp3(kAudioFD, req, cover);
+  } else {
+    writeFlac(kAudioFD, req, cover);
+  }
   return "{}";
 }
 

@@ -23,8 +23,8 @@ import (
 // helper's standard input, the result JSON on its standard output; files
 // are descriptors 3, 4, ... and never paths (NOTES.md N-075, N-084).
 //
-// FLAC is implemented completely. MP3 and M4A are refused with
-// CodeTagsUnsupported until Phase 4 (PROGRESS.md).
+// FLAC and MP3 are implemented completely. M4A is refused with
+// CodeTagsUnsupported until its reader and writer exist (PROGRESS.md).
 
 // PictureFrontCover is the picture type of a front cover (FLAC PICTURE and
 // ID3v2 APIC type 3).
@@ -54,6 +54,7 @@ var tagsCodes = map[string]string{
 	"too_large":          CodeTagsTooLarge,
 	"picture_not_found":  CodeTagsNoPicture,
 	"io":                 CodeTagsIO,
+	"no_space":           CodeTagsNoSpace,
 	"internal":           CodeTagsInternal,
 }
 
@@ -64,7 +65,8 @@ type Inspection struct {
 	// Managed holds the managed fields, read with the rules of §8.1.
 	Managed ManagedTags `json:"managed"`
 	// Conflicts lists the managed fields whose sources disagree: for FLAC,
-	// the canonical key and its aliases (the canonical one wins).
+	// the canonical key and its aliases (the canonical one wins); for MP3,
+	// every non-empty source in ID3v2, APE and ID3v1 (the first wins, §8.1).
 	Conflicts []Conflict `json:"conflicts"`
 	// Pictures lists every embedded picture, in file order.
 	Pictures []Picture `json:"pictures"`
@@ -74,10 +76,26 @@ type Inspection struct {
 	// fields). For FLAC the keys are "vorbis:<KEY>" (the Vorbis field name in
 	// upper case, values in file order), "vorbis.vendor", and "flac.blocks"
 	// (type and SHA-256 of every metadata block that is not a tag, a
-	// picture or padding, in file order).
+	// picture or padding, in file order). For MP3 (NOTES.md N-153):
+	// "id3v2:<ID>", "id3v2:TXXX:<description>", "id3v2:COMM:<language>:<description>"
+	// (USLT the same), "id3v2:WXXX:<description>", "id3v2:UFID:<owner>",
+	// "id3v2:PRIV:<owner>" with the decoded values of the unmanaged frames
+	// (a frame with flags: its flags and the SHA-256 of its stored data);
+	// "ape:<KEY>" with the unmanaged APE items; "id3v1:comment"; and
+	// "mpeg.audio", the SHA-256 of the audio bytes between the tags.
 	Unmanaged []KeyValues `json:"unmanaged"`
 	// Opaque lists the fields the helper cannot save back without loss.
 	Opaque []OpaqueField `json:"opaque"`
+	// Audio is where the helper's reader finds the audio in the file: after
+	// the leading metadata, before the trailing tags. AudioDigest decodes
+	// exactly the bytes before Audio.End (NOTES.md N-128, N-154).
+	Audio AudioRange `json:"audio"`
+}
+
+// AudioRange is a byte range of a file: [Start, End).
+type AudioRange struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
 }
 
 // ManagedTags are the managed fields of §8.2 as read from a file: each one
@@ -132,8 +150,9 @@ type Picture struct {
 	// Index is its position in Inspection.Pictures, the number
 	// ExtractImages takes.
 	Index int `json:"index"`
-	// Location is "block" (a FLAC PICTURE block) or "comment" (a picture in
-	// a Vorbis comment).
+	// Location is "block" (a FLAC PICTURE block), "comment" (a picture in a
+	// Vorbis comment), "id3v2" (an APIC frame) or "ape" (a "Cover Art (...)"
+	// item). An APIC or APE picture has no width, height, depth or colors.
 	Location string `json:"location"`
 	// Type is the picture type (PictureFrontCover, ...).
 	Type   uint32 `json:"type"`
@@ -151,7 +170,10 @@ type OpaqueField struct {
 	Key string `json:"key"`
 	// Reason is a stable code: malformed_entry, invalid_key, invalid_utf8,
 	// nul_byte, duplicate_block, foreign_metadata, foreign_tag,
-	// invalid_picture (NOTES.md N-086).
+	// invalid_picture (NOTES.md N-086); for MP3 also invalid_text,
+	// malformed_frame, unknown_flags, unsupported_frame, empty_frame,
+	// compressed_frame, encrypted_frame, duplicate_tag, migration_conflict
+	// (N-153).
 	Reason string `json:"reason"`
 	// Removed is true when a write removes the field anyway (a managed key,
 	// an alias, a sort key, a picture, an ID3v2 or ID3v1 tag in a FLAC

@@ -20,7 +20,7 @@ func TestPinnedToolsInstalled(t *testing.T) {
 	if PinnedVersion != "8.1.3-musiclib1" {
 		t.Fatalf("PinnedVersion changed to %q: update NOTES.md N-073, docs/docker.md and the Dockerfile together", PinnedVersion)
 	}
-	if PinnedTagLibVersion != "2.3.2-musiclib1" || PinnedTagsVersion != "2" {
+	if PinnedTagLibVersion != "2.3.2-musiclib1" || PinnedTagsVersion != "3" {
 		t.Fatalf("the helper's pinned versions changed to %q / %q: update NOTES.md N-083, docs/docker.md, "+
 			"the Dockerfile and native/musiclib-tags/src/version.h together", PinnedTagsVersion, PinnedTagLibVersion)
 	}

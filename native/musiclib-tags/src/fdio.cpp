@@ -64,13 +64,18 @@ std::string readAt(int fd, std::uint64_t off, std::size_t n, const std::string &
   return buf;
 }
 
+const char *writeFailureCode(int err) noexcept {
+  return err == ENOSPC || err == EDQUOT ? code::kNoSpace : code::kIO;
+}
+
 void writeAt(int fd, std::uint64_t off, std::string_view data, const std::string &what) {
   std::size_t done = 0;
   while (done < data.size()) {
     const ssize_t w = pwrite(fd, data.data() + done, data.size() - done, static_cast<off_t>(off + done));
     if (w < 0) {
       if (errno == EINTR) continue;
-      throw Failure(code::kIO, "writing " + what + ": " + errnoText(errno));
+      const int err = errno;
+      throw Failure(writeFailureCode(err), "writing " + what + ": " + errnoText(err));
     }
     done += static_cast<std::size_t>(w);
   }
@@ -79,11 +84,14 @@ void writeAt(int fd, std::uint64_t off, std::string_view data, const std::string
 // ---------------------------------------------------------------------------
 
 void FdStream::fail(const std::string &op, int err) {
-  if (error_.empty()) error_ = op + ": " + errnoText(err);
+  if (error_.empty()) {
+    error_ = op + ": " + errnoText(err);
+    errno_ = err;
+  }
 }
 
 void FdStream::check() const {
-  if (!error_.empty()) throw Failure(code::kIO, error_);
+  if (!error_.empty()) throw Failure(writeFailureCode(errno_), error_);
 }
 
 bool FdStream::preadFull(char *p, std::size_t n, std::uint64_t off) {

@@ -390,7 +390,6 @@ func TestPlanRefusals(t *testing.T) {
 	}{
 		{"another render version", func(s *jobs.RenderSnapshot) { s.RenderVersion = "other" }, CodeVersionMismatch},
 		{"no tracks", func(s *jobs.RenderSnapshot) { s.Tracks = nil }, CodeInvalidSnapshot},
-		{"MP3", func(s *jobs.RenderSnapshot) { s.Tracks[0].Blob.Format = catalog.FormatMP3 }, CodeFormatNotSupportedYet},
 		{"ALAC", func(s *jobs.RenderSnapshot) { s.Tracks[0].Blob.Format = catalog.FormatM4AALAC }, CodeFormatNotSupportedYet},
 		{"not audio", func(s *jobs.RenderSnapshot) { s.Tracks[0].Blob.Format = "" }, CodeInvalidSnapshot},
 		{"a GIF cover", func(s *jobs.RenderSnapshot) { s.Cover.Format = "" }, CodeInvalidSnapshot},
@@ -472,3 +471,18 @@ func TestPlannerIsPure(t *testing.T) {
 // acute is U+0301 COMBINING ACUTE ACCENT: "Cafe"+acute is the NFD spelling
 // of "Café", built from its code point so that no editor can normalize it.
 var acute = string(rune(0x0301))
+
+// MP3 tracks (since RendererRevision 2): named with ".mp3", the same
+// expected tags as any track; an album may mix FLAC and MP3 (N-157).
+func TestPlanMP3(t *testing.T) {
+	s := kindOfBlue()
+	s.Tracks[1].Blob.Format = catalog.FormatMP3
+	p, err := NewPlan(s, Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(p.Tracks[0].Path, ".flac") || !strings.HasSuffix(p.Tracks[1].Path, ".mp3") ||
+		p.Tracks[1].Format != catalog.FormatMP3 || p.Tracks[1].Tags.Title != s.Tracks[1].Title {
+		t.Fatalf("tracks %+v", p.Tracks)
+	}
+}

@@ -1285,6 +1285,11 @@ Resolves N-025 for TagLib. Dockerfile stage `build-tags`.
     `5b1358dfd51c8654d030b85666788309e65f159f2862192d5b5f048465fb976f`
     (unchanged: TagLib's build did not change).
 
+  Helper version `3` (round 12, MP3, N-152), checked the same way:
+  release `590e6c750c43c568f3f5fc1978c2e5ea8fce3c94cbb422251e4aac36812b14f4`,
+  ASan `c6b476f84ffcad3b3043becb07178515ad2cb97182307a7490d5da3e714c613c`,
+  `libtag.a` unchanged.
+
   Version `1` was `1f390a3271bd38b0425ae5cc4c68f6f50f68384cab28c879a3eb422eec0cf4b2`
   (release) and `630c65c612a643e16042c8b4fad4705cce37e37f576d18acfccd0b9b1369f9cb`
   (ASan). The `runtime` image and the `test` and `dev` images hold the same
@@ -1638,6 +1643,9 @@ The earlier non-synchsafe case stays `corrupt`.
   file at import (`corrupt_audio`, N-128).
 
 ### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
+**Round 12:** MP3 has its limit too (N-155), so `EmbeddedCoverFits` accepts
+MP3 albums; only M4A is still refused (`media_tags_unsupported_format`).
+
 **Round 5 (done):** `media.MaxEmbeddedCover(audioFormat, coverFormat)` and
 `media.EmbeddedCoverFits` hold the limit: for FLAC `0xFFFFFF − 32 − len(MIME)`
 bytes (the description is always empty, N-087), that is 16,777,173 for JPEG and
@@ -1721,7 +1729,12 @@ tested with the audio frames compared byte for byte, since no digest is
 possible. A test pins the ffmpeg behaviour, so a bump that changes it
 fails the gate.
 
-### N-094 · MP3 and M4A: designed now, implemented in Phase 4 — DECIDED
+### N-094 · MP3 and M4A: designed now, implemented in Phase 4 — DECIDED (MP3 done in round 12: N-152 to N-160; M4A open)
+**Round 12:** MP3 is implemented as planned below, with one change of
+plan: the writer is the helper's own too, not TagLib (N-152). M4A still
+answers `unsupported_format` in the helper, `audio_format_not_supported_yet`
+at import and `render_format_not_supported_yet` at render.
+
 This round implements FLAC completely. For the other formats:
 - **Now:**
   - the request and response types, and the `Format` enum;
@@ -1737,8 +1750,9 @@ This round implements FLAC completely. For the other formats:
   - the writer: ID3v2.4, APE cleanup of managed keys, covers and sort keys
     only, ID3v1 removal with the comment moved to COMM `legacy-id3v1`
     (§8.3);
-  - its alias table: old ID3 year and date frames (TYER, TDAT, TIME, TRDA,
-    TORY), and the sort frames TSOT, TSOP, TSO2 and TSOA;
+  - its alias table: old ID3 year and date frames (TYER, TDAT, TIME, TRDA;
+    TORY was in this list, but it is kept: owner decision N-161), and the
+    sort frames TSOT, TSOP, TSO2 and TSOA;
   - the ID3v1-migration exclusion in `VerifyTags`.
 - **Phase 4, M4A:** the reader and the writer of the `©nam`, `©ART`,
   `aART`, `©alb`, `trkn`, `disk`, `©day`, `©gen`, `cpil` and `covr` atoms,
@@ -3170,8 +3184,17 @@ N-045 ask for a really full filesystem. The gate container has no
     positive sign that it is the filesystem mounted for these tests);
   - it is at most 2 GiB;
   - it is not TMPDIR's filesystem.
-- **ENOSPC inside the tag helper — TO CONFIRM (Phase 4, with the helper's
-  next protocol change).** Every write made in Go maps ENOSPC to
+- **ENOSPC inside the tag helper — RESOLVED (round 12, helper version 3).**
+  The helper now reports ENOSPC and EDQUOT of its own writes (`FdStream`,
+  `writeAt`) as the failure code `no_space`, with the strerror text;
+  the adapter maps it to `media_tags_no_space`, the renderer's track step to
+  `insufficient_space` ("the disk is full while writing the tags of ..."),
+  and the importer's picture extraction to `insufficient_space` too.
+  `media.TestTagsMP3NoSpace` and `publish.TestExecuteRenderMP3OnAReallyFullDisk`
+  (an MP3 album with a 50 KB cover, so that each tag write grows its file by
+  whole pages, swept block by block on the full tmpfs) hit it for real;
+  removing the renderer's mapping fails the latter (mutation-checked). What
+  follows is the original entry. Every write made in Go maps ENOSPC to
   `insufficient_space` with the errno (`render.writeErr`). The TagLib
   helper writes the tags itself. If a tag write grows the file past its
   padding on a full disk, the helper fails with its generic `io` code, and
@@ -3532,3 +3555,323 @@ under other typed errors. Otherwise it returns the message unchanged.
   - cover, attachments, lyrics and track deletion;
   - downloads;
   - `render-all`.
+
+---
+
+## Round 12: MP3 end to end (2026-09-24)
+
+N-083, N-091, N-094 and N-143 were updated; see those entries.
+
+### N-152 · The MP3 reader and writer are the helper's own; TagLib cross-checks them — DECIDED
+N-094 planned an independent ID3v2 reader; round 12 found that TagLib 2.3.2
+cannot be the writer either, and the helper writes the MP3 tags itself
+(`native/musiclib-tags/src/id3v2.cpp`, `ape.cpp`, `mp3.cpp`; the first two
+are pure C++ without TagLib, unit-tested under ASan/UBSan in
+`tests/unit_tests_mp3.inc`). What TagLib's writing would do, read in its
+source:
+- `Frame::Header::render` writes the flag bytes as zero: a compressed,
+  encrypted or grouped frame would be saved as plain data (corrupt), and the
+  status flags lost;
+- `ID3v2::Tag::render` discards every frame with the tag-alter-preservation
+  flag, and `FrameFactory::updateFrame` gives that flag to EQUA, RVAD, TIME,
+  TRDA, TSIZ and TDAT of ID3v2.3 and to CRM, EQU, LNK, RVA, TIM, TSI, TDA of
+  ID3v2.2: dropped on save;
+- it converts TYER to TDRC, TORY to TDOR, IPLS to TIPL, and re-renders every
+  text frame from its parsed strings;
+- without zlib (N-083) compressed frames are `UnknownFrame`s;
+- it folds a second ID3v2 tag into the first one and overwrites it.
+
+**What the writer does** (§8.2, §8.3): one ID3v2.4 tag, no flags, no
+extended header: the managed frames (UTF-8), then every unmanaged frame in
+its original order with its body byte for byte (de-unsynchronised) and its
+flags in their ID3v2.4 form, then the migrated ID3v1 comment, then the cover
+(APIC, Latin-1, empty description, type 3). The APE tag keeps its unmanaged
+items byte for byte and in order, with its version and header; the ID3v1 tag
+is truncated. The audio bytes do not change: the tag replaces the old one,
+moving the audio only when its size changes.
+- **Padding:** the old tag's room when the frames fit and leave at most
+  1 MiB, else 1,024 bytes (TagLib's own choice): a second write of the output
+  gives the same bytes (tested, with three copies for determinism).
+- **Flags kept** (N-153): ID3v2.3 compression (its decompressed size becomes
+  the data length indicator), encryption and grouping, and the status flags,
+  the tag-alter-preservation flag included: dropping such a frame would be a
+  loss §8.3 forbids, whatever the ID3 specification suggests for unknown
+  frames.
+- **No zlib, decided:** compressed and encrypted frames are kept as stored
+  bytes; their content is not needed. A compressed or encrypted *managed*
+  frame cannot be read: it is reported as a removed opaque field
+  (`compressed_frame`, `encrypted_frame`) and its value is not a source, like
+  a Latin-1 FLAC `TITLE` (N-092). A compressed TXXX cannot be recognized as
+  an alias and stays (rare; ACCEPTED).
+- **Frames of ID3v2.3 that ID3v2.4 dropped** (TSIZ, EQUA, RVAD, IPLS) and
+  unknown frames are kept under their identifiers inside the ID3v2.4 tag:
+  that is lossless; TagLib and other readers keep them as unknown frames.
+- **ID3v2.2** frames are mapped from the ID3v2.2 specification to ID3v2.3/2.4
+  identifiers (TOA is TOPE, not TagLib's TOAL); PIC is read as a picture;
+  CRM, LNK and unknown identifiers cannot be written: `unsupported_frame`,
+  blocking.
+- **The extended header, the experimental flag and a footer** of the old tag
+  are container details: not kept.
+- **An APE tag left without items** is removed: it holds nothing (§8.3 asks
+  not to remove the container "indiscriminatamente", that is with its
+  unmanaged items).
+- **Genres:** a genre that a reader would take for ID3v1 references cannot be
+  written unchanged: by this reader's rule (N-159), or by TagLib's, which
+  consumes every leading "(...)" and keeps nothing of "(Rock)" (found by the
+  TagLib cross-check of the output). Such a value is refused
+  (`media_tags_invalid_request`, "reads back as an ID3v1 genre reference")
+  before anything is written: a DB genre like "(Rock)" or "13" cannot be
+  rendered into an MP3. Since the owner's decision N-162 the API refuses
+  such a genre up front, and the importer warns about one.
+- **A total without its number** (TRCK and TPOS hold both) is refused the
+  same way; the renderer never asks for one.
+
+**Checks, as for FLAC (N-085):** before a write, TagLib (`MPEG::File`,
+`ReadStyle::Fast`) must find the same tags at the same extents; after it, the
+helper reads the file back with its own reader (exactly the frames written,
+the kept APE items, the same audio SHA-256, the managed values and cover as
+asked, nothing opaque) and TagLib reads it too (an ID3v2.4 tag of the
+written size and frame count, every managed frame's text and the cover as
+written, the APE extent, no ID3v1). Either failing is `internal`.
+
+### N-153 · MP3 in the inspection: canonical form, opaque reasons, the ID3v1 migration — DECIDED
+- **Unmanaged keys** (§8.3: "preservazione semantica per i campi
+  decodificati"): `id3v2:<ID>` (text frames: their decoded strings; URL
+  frames: the URL; other frames: `sha256:` of the body),
+  `id3v2:TXXX:<description>`, `id3v2:COMM:<language>:<description>` and
+  `id3v2:USLT:...` (the text), `id3v2:WXXX:<description>`,
+  `id3v2:UFID:<owner>` (`hex:` of the identifier), `id3v2:PRIV:<owner>`
+  (`sha256:`), a frame with flags as `flags=<status><format> [group=]
+  [method=] [length=] sha256:<stored bytes>`; `ape:<KEY>` (UTF-8 text items:
+  their NUL-separated values; other items: `flags=<hex> sha256:`);
+  `id3v1:comment`; and `mpeg.audio`, the SHA-256 of the audio bytes between
+  the tags, so that `VerifyTags` also sees any change of the audio bytes,
+  the LAME/Xing frame included.
+- **Text decoding (N-092 for MP3):** Latin-1 is decoded as ISO-8859-1 (every
+  byte valid), UTF-16 by its byte order marks (a string without one takes the
+  first string's order, TagLib's rule; a first string without one is
+  invalid), UTF-16BE, UTF-8 validated; encodings 2 and 3 are accepted in
+  ID3v2.3 as TagLib accepts them. Text that does not decode is `invalid_text`:
+  removed in a managed frame (the write replaces it), blocking in an
+  unmanaged one (the importer refuses the file, N-092). ID3v1 text is Latin-1
+  up to the first NUL, without surrounding white space (TagLib's
+  `stripWhiteSpace`).
+- **New opaque reasons:** `invalid_text`, `malformed_frame` (the frames after
+  it are not read, as TagLib does not read them), `unknown_flags`,
+  `unsupported_frame`, `empty_frame` (size 0: removed, it holds nothing, and
+  TagLib drops it), `compressed_frame`, `encrypted_frame`, `duplicate_tag` (a
+  second ID3v2 tag), `migration_conflict`, and `foreign_tag` for a Lyrics3
+  tag or an ID3v2 tag appended at the end (the decode refuses those files
+  anyway). Bytes after the frames that start with a zero byte are padding,
+  not a field, ignored as TagLib ignores them.
+- **The ID3v1 migration (§8.3):** a non-empty ID3v1 comment is kept when an
+  unmanaged COMM frame holds the same text (any language or description),
+  else written to a COMM frame with language `XXX` (ID3v2.4 frames §4.10:
+  unknown) and description `legacy-id3v1`. A `legacy-id3v1` COMM that holds
+  another text would make two such frames: `migration_conflict`, blocking.
+- **`VerifyTags`** excludes, for MP3, exactly that migration
+  (`migratedUnmanaged`): `id3v1:comment` leaves, and its text joins the
+  `legacy-id3v1` COMM unless a COMM holds it. Twelve cases pin that it is not
+  broader (a lost or duplicated comment, the comment kept, a legacy COMM
+  without ID3v1, another field lost with the migration).
+
+### N-154 · The MP3 decode window: FFmpeg's subfile protocol, not a pipe — DECIDED
+Measured on the pinned FFmpeg 8.1.3, and read in its source
+(`libavformat/mp3dec.c`, `libavcodec/mpegaudio_parser.c`):
+- the mp3 demuxer does not know the APE tag; the parser drops a trailing
+  "TAG" or "APETAGEX" only when it is the whole remainder at the end;
+- an APE tag larger than 1/16 of the file makes `mp3_parse_info_tag` discard
+  the Xing frame count ("invalid concatenated file"), and with it the gapless
+  trimming: 227 more frames on a 3 s file, a different digest, exit 0;
+- through a pipe (non-seekable) the gapless end trimming is not applied
+  either (2,116,800 bytes of PCM from the file, 2,120,432 from a pipe).
+
+So the FLAC way of N-128 (a pipe with the bytes before the tag) cannot be
+used. For an MP3 with a trailing ID3v1 or APE tag, the decoder and the probe
+read descriptor 3 through `subfile,,start,0,end,<end>,,:fd:` with the
+whitelist `subfile,fd` (still no `file` or other protocol, tested): a
+seekable view that ends where the tags start. The rest of the command line
+is §8.4's (N-074). The declared length comes from a probe of the same window
+(`probeWindow`), which must see the same stream.
+- **One rule:** `mp3AudioEnd` in Go is the helper's `readRawMp3`: the ID3v1
+  rule of N-128, then an APE footer in the 32 bytes before it (TagLib's
+  `Utils::findAPE`), its extent from the footer, the header included when
+  flagged. `TestMP3AudioEndIsTheHelpersRule` compares it file by file with
+  the helper's new `audio` range, on both helpers. The helper reports the
+  range for FLAC too.
+- **Evidence:** the digest of 10 tag layouts (ID3v2.3 unsynchronised, ID3v2.4
+  with padding, ID3v1, APE, APEv1, APE and ID3v1, an APE tag of half the file
+  with and without ID3v1, all together) equals the digest of the bare audio,
+  VBR and CBR, and the frame count is exactly the source WAV's; the same
+  after each write. Refused: an APE footer declaring under 32 bytes or more
+  than the file, junk after the audio, Lyrics3, and audio cut short before a
+  large APE tag (only the window's probe declares its length).
+- The leading ID3v2 tag stays in the window: FFmpeg skips it by its header,
+  whose extent is the one the helper and TagLib compute (checked before
+  every write), and a write keeps the audio bytes, so both digests skip the
+  same way.
+
+### N-155 · The embeddable cover limit of MP3 — DECIDED
+`MaxEmbeddedCover(mp3, f)` is the APIC frame's bound: a body of 4 +
+len(MIME) + len(data) bytes of at most 2^28 − 1 (268,435,441 for JPEG). The
+helper refuses a larger cover before reading it (tested with a sparse file
+of 2^28 bytes) and embeds a 17 MiB one, which FLAC cannot (tested). The whole
+tag has the same bound: a source tag already near 256 MiB plus a cover would
+still be refused at render (`media_tags_too_large`). ACCEPTED: §8.5 caps
+covers at 20 MiB.
+
+### N-156 · Fixtures and fuzzing of the MP3 readers — DECIDED
+- **Audio:** the pinned static FFmpeg has no MP3 encoder (N-073); the MP3
+  fixtures come from the pinned LAME 3.100 of the toolchain images, which
+  writes the LAME/Info header with the encoder delay and padding (gapless).
+  LAME's own ID3v2 and ID3v1 tagging is used as a real tag writer's output.
+- **Tags:** built byte by byte by independent codecs in the tests
+  (`internal/media/id3meta_test.go`, which also parses the written files,
+  and smaller ones in the importer, render and publish tests): ID3v2.2,
+  2.3 and 2.4, unsynchronisation of the tag and of frames, extended headers,
+  frame flags, UTF-16 in both orders, UTF-16BE, UTF-8, APEv1 and APEv2,
+  ID3v1 and 1.1. Nothing is committed.
+- **Fuzzing:** there is no fuzz harness for the native FLAC reader, so none
+  was added for MP3. Instead `TestTagsMP3MutationSweep` changes 1 to 4 random
+  bytes of the tags of a rich file (ID3v2.3 unsynchronised with every kind of
+  frame, APE, ID3v1) for 200 fixed seeds and runs inspect and write on the
+  ASan/UBSan helper: every outcome is a success that passes the §9.1 step 6
+  checks, or a typed refusal (`corrupt`, `format_mismatch`, `opaque_field`)
+  that leaves the file unchanged; no sanitizer finding and no `internal`
+  (86 written, 101 opaque, 13 corrupt, since TORY is kept). The parsers' unit tests cover the
+  edge cases one by one.
+
+### N-157 · FLAC and MP3 in one candidate — DECIDED
+§7.2 rule 1: "una directory con file audio diretti è un candidato album",
+without a condition on formats; §8.1 supports both per file; the catalog was
+designed for several formats per album (N-091: the cover must be embeddable
+"in every format of the album"). So a candidate may mix FLAC and MP3: each
+track keeps its format and its extension (`TestImportMixedFLACAndMP3`,
+`TestBuildMP3Album`). Refusing would be a restriction the design does not
+state; the design is not silent here, so no conservative fallback applies.
+
+### N-158 · `render_version` after round 12 — DECIDED
+`musiclib-render/2 names/1 go1.25.14 ffmpeg/8.1.3-musiclib1 musiclib-tags/3 taglib/2.3.2-musiclib1`.
+- `musiclib-tags/3`: the helper changed (N-152, N-143).
+- `RendererRevision` 2: the planner builds MP3 tracks (".mp3"). The
+  renderer transcript now includes an MP3 track; without it the transcript
+  still gives revision 1's digest, so the FLAC plans are unchanged
+  (checked).
+- The FLAC output of the helper is unchanged too (its FLAC code only gained
+  the audio range and the `no_space` code), but the version change makes
+  every album render again once at the next boot, as N-130 intends.
+- The helper binary pin (`TestToolBinariesPinned`) is the new sha256 of
+  N-083.
+
+### N-159 · Smaller readings of §8.1 and §8.2 for MP3 — DECIDED
+- **Sources, in order** (`fields.h`, the constant table): ID3v2: the §8.2
+  frame, then TYER for the date (ID3v2.3 has no TDRC), then TXXX frames named
+  like the FLAC aliases (`ALBUM ARTIST`, `ALBUMARTIST`, `ALBUM_ARTIST`,
+  `TRACKTOTAL`, `TOTALTRACKS`, `DISCTOTAL`, `TOTALDISCS`); the totals come
+  first from the "/M" of TRCK and TPOS. APE: `TITLE`, `ARTIST`, `ALBUM
+  ARTIST` and its two other spellings, `ALBUM`, `TRACK`/`TRACKNUMBER` (their
+  "/M" first for the total), `TRACKTOTAL`/`TOTALTRACKS`, `DISC`/`DISCNUMBER`,
+  `DISCTOTAL`/`TOTALDISCS`, `YEAR`/`DATE`, `GENRE`, `COMPILATION`. ID3v1:
+  title, artist, album, year, track (1.1), genre. The first non-empty source
+  wins; every other non-empty one that differs is a conflict (a
+  `tag_conflict` warning at import).
+- **Always removed:** the old date frames TDAT, TIME, TRDA (§8.2's "vecchi
+  campi ID3 anno/data"; TORY, the original release year, is kept: owner
+  decision N-161); the sort frames TSOT,
+  TSOP, TSO2, TSOA, XSOT, XSOP, XSOA and TXXX `TITLESORT`, `ARTISTSORT`,
+  `ALBUMARTISTSORT`, `ALBUMSORT`; the APE sort keys; every APIC and every
+  APE `Cover Art (...)` item (the cover is wholly managed, N-087). TSOC
+  (composer sort) is unmanaged.
+- **Genres (TCON):** leading ID3v2.3 references "(n)", "(RX)", "(CR)" are
+  read as ID3v1 genre n (TagLib's list), Remix and Cover, then the
+  refinement text; a reference whose name is the refinement is not repeated;
+  "((" escapes "("; a string of digits alone is genre n (ID3v2.4); an
+  out-of-list number stays text. The ID3v1 genre byte is read the same way,
+  255 and out-of-list values as none.
+- **MPEG check:** after the tags, two consecutive MPEG layer III frames of
+  the same version and sample rate within 64 KiB (FFmpeg's own test), else
+  `format_mismatch`. ACCEPTED: a free-format MP3 (bitrate index 0) is not
+  recognized; such files are practically nonexistent.
+- **TagLib's iTunes rules are mirrored**, so that both readers read the same
+  frames: an ID3v2.4 frame size that is not synchsafe is a plain integer, and
+  one whose next frame only lines up as a plain integer is read so; a
+  3-character identifier in an ID3v2.3 tag is ID3v2.2.
+
+### N-160 · Round 12 mutation checks — DECIDED
+Each of the following makes a test fail (checked one at a time, on the real
+tools): APE read before ID3v2; TSOP, then TDAT, missing from the removal
+tables; no ID3v1 migration; the migration duplicating a comment a COMM holds;
+the APE items dropped; the refusal of blocking fields removed from the MP3
+write; `VerifyTags` excluding every COMM, not applying the migration, or
+always taking the comment as held; the MP3 decode window off; the window's
+probe skipped; the APE header flag ignored in `mp3AudioEnd`; the renderer's
+`no_space` mapping removed; the importer refusing MP3 again. After the owner's decisions (N-161 to N-164): TORY back in the removal table; the catalog's genre check skipped, and `importer.GenreFits` accepting everything (both at the API); the predicate's list bound, and its parenthesis rule; the truncation rule off; the APE bound off.
+
+### N-161 · TORY is kept — DECIDED (owner, 2026-09-25)
+TORY is the original release year: the ID3v2.3 form of TDOR, which was
+already kept. It is not the recording date that TDRC holds, so under §8.3 it
+is an unmanaged field. It left the alias table (`kId3OldDateFrames` in
+`fields.h`): only TYER (read as the date's fallback), TDAT, TIME and TRDA, and
+the TXXX mirrors of the FLAC aliases, are still removed. TORY is kept
+verbatim inside the ID3v2.4 tag, like TSIZ and IPLS; ID3v2.2's TOR becomes
+TORY and is kept too.
+- **Tests:** in `TestTagsMP3RichTags` (ID3v2.3 and ID3v2.4, both helpers)
+  TORY is an expected unmanaged field before the write, and is still there
+  after it, byte for byte and through `VerifyTags`;
+  `TestTagsMP3FlaggedFrames` keeps an ID3v2.2 TOR as TORY. Mutation-checked:
+  putting TORY back in the table fails both.
+- **`render_version`:** the output changes only for MP3 files with TORY.
+  The helper version was already bumped to 3 in this uncommitted round, so
+  it stays 3; only the binary pin changed (N-083).
+
+### N-162 · Genres an MP3 cannot hold are refused earlier — DECIDED (owner, 2026-09-25)
+Values like "(Rock)", "(13)", "13" or "101" are read back by ID3v2.4 readers
+(TagLib's included) as ID3v1 genre references (N-152). The render keeps
+refusing them (`media_tags_invalid_request`). Earlier:
+- **One rule:** `media.MP3GenreWritable`, a pure predicate: false for a
+  leading "(" with a ")" after it, a leading "((", or one to three digits
+  naming a genre of the ID3v1 list (0 to 191, TagLib's). It is the helper's
+  rule: `TestMP3GenreWritableIsTheHelpersRule` writes 31 values through the
+  real helper and requires the helper to refuse exactly the ones the
+  predicate refuses, and to read the others back unchanged.
+- **The API:** `PUT /api/albums/{id}` answers **422 `genre_not_writable`**
+  (details `names`: the genre) when the album genre or any track genre is not
+  writable and the album has at least one MP3 track. The catalog asks its
+  `GenreFits` (a new argument of `catalog.New`, like `CoverFits`;
+  `importer.GenreFits` wires the media rule) for every genre of the change and
+  every audio format of the tracks (a new query, `ListAlbumAudioFormats`),
+  inside the change's transaction, after the no-op check, in this order on
+  purpose: an album that already holds such a genre (the import keeps it,
+  below) can be saved unchanged, a no-op; any real change, even of another
+  field, is refused until the same save fixes the genre, because it would
+  enqueue a render that fails (`http.TestUpdateAlbumStoredGenreNotWritable`;
+  mutation-checked: the check moved before the no-op return fails it). `http.TestUpdateAlbumGenreNotWritable`: the album
+  genre, a number, a FLAC track's genre and the MP3 track's genre refused on
+  an album with an MP3 track, nothing changed; the same saves accepted on a
+  FLAC-only album; writable genres accepted. Mutation-checked: the catalog's
+  check skipped, and the predicate's list bound changed.
+- **The import:** a genre read from an MP3 (ID3v2 or APE) that is not
+  writable is imported as read, never rewritten, with the new warning
+  `genre_not_writable` naming the file and the value
+  (`importer.TestImportMP3GenreWarning`: TCON "(Rock)" and APE "101" warned,
+  TCON "(17)" read as Rock and not warned).
+
+### N-163 · A bound on the APE tag — DECIDED
+The reader read an APE tag's items whole, up to the file size. It now refuses
+a footer declaring more than 256 MiB (items and footer), the bound of an
+ID3v2 tag, as `corrupt`, before reading anything; `mp3AudioEnd` applies the
+same bound (`apeMaxTag`), so the decode refuses such a file too
+(`media_decode`). `TestMP3APETagBound`: sparse files with a tag of 256 MiB +
+1 byte and of 2 GiB, both helpers and the digest.
+
+### N-164 · An ID3v1 value truncated to its field is not a conflict — DECIDED
+An ID3v1 title, artist or album holds 30 Latin-1 characters. When the value
+that wins (ID3v2 or APE) is longer, a tagger writes its first 30 characters
+there; reporting that as a `tag_conflict` warning was noise. The rule
+(`agrees` in `mp3.cpp`): an ID3v1 title, artist or album agrees with the
+winning value when it equals that value's first 30 characters, all of them
+Latin-1, without surrounding white space (as the ID3v1 field is read). Any
+other difference, a non-Latin-1 character in those 30, or a shorter prefix
+is still a conflict (`TestTagsMP3ID3v1Truncation`, 6 cases). The year and
+the other fields are compared as before, and the ID3v1-comment migration
+stays literal ("identico", §8.3).

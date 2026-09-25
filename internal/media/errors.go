@@ -59,7 +59,7 @@ const (
 	// write, a destination that is not empty).
 	CodeTagsBadDescriptor = "media_tags_bad_descriptor"
 	// CodeTagsUnsupported: the helper does not handle this format for this
-	// operation (MP3 and M4A: Phase 4).
+	// operation (M4A: not implemented yet).
 	CodeTagsUnsupported = "media_tags_unsupported_format"
 	// CodeTagsFormatMismatch: the content is not the declared format.
 	CodeTagsFormatMismatch = "media_tags_format_mismatch"
@@ -76,6 +76,10 @@ const (
 	CodeTagsNoPicture = "media_tags_picture_not_found"
 	// CodeTagsIO: a read or write of the helper on a descriptor failed.
 	CodeTagsIO = "media_tags_io"
+	// CodeTagsNoSpace: a write of the helper met ENOSPC or EDQUOT: the
+	// filesystem is full (§11.2). Callers report it as insufficient space
+	// (NOTES.md N-143).
+	CodeTagsNoSpace = "media_tags_no_space"
 	// CodeTagsInternal: an invariant of the helper broke (TagLib and the
 	// helper's reader disagree, or the written file does not read back as
 	// asked). Never expected; the file must not be used.

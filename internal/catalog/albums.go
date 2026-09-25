@@ -201,13 +201,13 @@ func (s *Service) UpdateAlbum(ctx context.Context, albumID uuid.UUID, ifMatch in
 		return 0, false, err
 	}
 	return s.changeAlbum(ctx, albumID, ifMatch, func(tx *store.CatalogTx, al store.Album) (bool, error) {
-		return applyUpdate(ctx, tx, al, u, fields, tracks)
+		return applyUpdate(ctx, tx, al, u, fields, tracks, s.genreFits)
 	})
 }
 
 // applyUpdate compares the update with the stored album and writes what
 // differs. It returns whether anything did.
-func applyUpdate(ctx context.Context, tx *store.CatalogTx, al store.Album, u AlbumUpdate, f albumFields, tracks []trackFields) (bool, error) {
+func applyUpdate(ctx context.Context, tx *store.CatalogTx, al store.Album, u AlbumUpdate, f albumFields, tracks []trackFields, genreFits GenreFits) (bool, error) {
 	if _, err := tx.GetArtist(ctx, u.ArtistID); errors.Is(err, pgx.ErrNoRows) {
 		return false, errorf(CodeArtistNotFound, "artist %s does not exist", u.ArtistID)
 	} else if err != nil {
@@ -241,6 +241,9 @@ func applyUpdate(ctx context.Context, tx *store.CatalogTx, al store.Album, u Alb
 		!eq(al.Genre, f.Genre) || al.Compilation != f.Compilation
 	if !albumChanged && len(changedTracks) == 0 {
 		return false, nil
+	}
+	if err := checkGenres(ctx, tx, al.ID, f, tracks, genreFits); err != nil {
+		return false, err
 	}
 	if albumChanged {
 		if al.DeletedAt == nil {
@@ -424,4 +427,32 @@ func eq[T comparable](a, b *T) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+// checkGenres asks genreFits about the album genre and every track genre
+// of a change, for every audio format of the album's tracks (owner decision
+// N-162): a genre an MP3 cannot hold is refused when the album has an MP3
+// track. An empty genre is written as none, and is always fine.
+func checkGenres(ctx context.Context, tx *store.CatalogTx, albumID uuid.UUID, f albumFields, tracks []trackFields, genreFits GenreFits) error {
+	formats, err := tx.ListAlbumAudioFormats(ctx, albumID)
+	if err != nil {
+		return dbErr("listing the audio formats of album "+albumID.String(), err)
+	}
+	var genres []string
+	if f.Genre != nil && *f.Genre != "" {
+		genres = append(genres, *f.Genre)
+	}
+	for _, t := range tracks {
+		if t.Genre != nil && *t.Genre != "" {
+			genres = append(genres, *t.Genre)
+		}
+	}
+	for _, format := range formats {
+		for _, g := range genres {
+			if err := genreFits(g, *format); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

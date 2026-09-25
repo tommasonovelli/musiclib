@@ -287,6 +287,10 @@ func (im *Importer) extractAndPin(ctx context.Context, e embeddedPicture, tmp st
 		return catalog.Blob{}, nil, made, errors.Join(err, dst.Close())
 	}
 	imgs, err := im.tools.ExtractImages(ctx, audio, e.track.Format, []media.ImageTarget{{Index: e.pic.Index, Dst: dst}})
+	if media.Code(err) == media.CodeTagsNoSpace {
+		// The helper met ENOSPC writing work/import (§11.2, N-143).
+		err = &Error{Code: CodeInsufficientSpace, Message: "the disk is full while extracting the " + where, Err: err}
+	}
 	err = errors.Join(err, closeErr(audio, "the audio blob"), closeErr(dst, "the extracted picture"))
 	if err != nil {
 		return catalog.Blob{}, nil, made, err

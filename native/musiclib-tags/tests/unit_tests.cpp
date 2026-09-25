@@ -1,5 +1,5 @@
 // Unit tests of the helper's own parsers: UTF-8 validation, base64, the
-// JSON reader and writer, SHA-256. They run at image build time
+// JSON reader and writer, SHA-256, and the ID3v2 and APE readers and writers. They run at image build time
 // (`make check`, under ASan/UBSan); the helper's contract on real files is
 // tested from Go, in internal/media.
 #include <cstdint>
@@ -9,7 +9,9 @@
 #include <string_view>
 #include <vector>
 
+#include "../src/ape.h"
 #include "../src/failure.h"
+#include "../src/id3v2.h"
 #include "../src/json.h"
 #include "../src/sha256.h"
 #include "../src/text.h"
@@ -215,6 +217,8 @@ void testSHA256() {
   }
 }
 
+#include "unit_tests_mp3.inc"
+
 }  // namespace
 
 int main() {
@@ -222,6 +226,10 @@ int main() {
   testBase64();
   testJSON();
   testSHA256();
+  testID3v2Primitives();
+  testID3v2Text();
+  testID3v2Tags();
+  testAPE();
   if (failures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", failures);
     return 1;

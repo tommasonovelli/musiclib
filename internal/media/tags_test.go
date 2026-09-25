@@ -598,13 +598,13 @@ func TestTagsInspectDoesNotWrite(t *testing.T) {
 	}
 }
 
-// MP3 and M4A are refused with a typed error until Phase 4.
+// M4A is refused with a typed error until its reader and writer exist.
 func TestTagsUnsupportedFormats(t *testing.T) {
 	dir := t.TempDir()
 	tools := newTools(t)
 	fx := fixtures(t, dir)
 	for _, tc := range []struct{ fixture, format string }{
-		{"mp3-cover", FormatMP3}, {"aac", FormatM4AAAC}, {"alac", FormatM4AALAC},
+		{"aac", FormatM4AAAC}, {"alac", FormatM4AALAC},
 	} {
 		_, err := tools.Inspect(t.Context(), open(t, fx[tc.fixture]), tc.format)
 		wantCode(t, err, CodeTagsUnsupported)
@@ -616,8 +616,12 @@ func TestTagsUnsupportedFormats(t *testing.T) {
 	}
 	_, err := tools.Inspect(t.Context(), open(t, fx["flac16"]), "ogg")
 	wantCode(t, err, CodeTagsUnsupported)
-	// A FLAC declared as MP3 is refused on the format, not read as MP3.
+	// An MP3 declared as FLAC, and the reverse, are refused on the format.
 	_, err = tools.Inspect(t.Context(), open(t, fx["mp3-cbr"]), FormatFLAC)
+	wantCode(t, err, CodeTagsFormatMismatch)
+	_, err = tools.Inspect(t.Context(), open(t, fx["flac16"]), FormatMP3)
+	wantCode(t, err, CodeTagsFormatMismatch)
+	err = tools.WriteManagedTags(t.Context(), openRW(t, fx["flac16"]), FormatMP3, fullValues, nil)
 	wantCode(t, err, CodeTagsFormatMismatch)
 }
 

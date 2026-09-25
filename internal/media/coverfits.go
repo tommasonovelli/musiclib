@@ -14,6 +14,15 @@ const flacMaxBlockLength = 1<<24 - 1
 // follow; the writer's description is always empty (N-087).
 const flacPictureHeader = 32
 
+// id3v2MaxFrameBody is the largest ID3v2.4 frame body, a 28-bit synchsafe
+// size (kMaxSynchsafe in the helper).
+const id3v2MaxFrameBody = 1<<28 - 1
+
+// apicOverhead is the fixed part of the APIC frame the writer makes: text
+// encoding, the MIME terminator, picture type and the empty description's
+// terminator (mp3.cpp, newFrames).
+const apicOverhead = 4
+
 // coverMIME is the MIME type WriteManagedTags embeds for each cover format
 // (describeCover).
 var coverMIME = map[string]string{FormatJPEG: "image/jpeg", FormatPNG: "image/png"}
@@ -28,18 +37,30 @@ func CoverMIME(coverFormat string) (mime string, ok bool) {
 
 // MaxEmbeddedCover returns the largest cover of format coverFormat ("jpeg"
 // or "png") that WriteManagedTags can embed in an audio file of format
-// audioFormat, in bytes. ok is false when the pair has no known limit: the
-// audio formats of Phase 4 (N-094), or another cover format.
+// audioFormat, in bytes. ok is false when the pair has no known limit: M4A,
+// whose writer does not exist yet (N-094), or another cover format.
 //
 // For FLAC it is the helper's own bound (flac.cpp, writeFlac): a PICTURE
 // block of 32 + len(MIME) + len(description) + len(data) bytes at most
 // 16,777,215, with an empty description.
+//
+// For MP3 it is the bound of the APIC frame (mp3.cpp): a body of 4 +
+// len(MIME) + len(data) bytes at most 268,435,455. The whole ID3v2 tag has
+// the same bound, so a source tag already close to 256 MiB could still
+// refuse the write (media_tags_too_large); §8.5 caps covers at 20 MiB, far
+// below (NOTES.md N-155).
 func MaxEmbeddedCover(audioFormat, coverFormat string) (int64, bool) {
 	mime, ok := coverMIME[coverFormat]
-	if !ok || audioFormat != FormatFLAC {
+	if !ok {
 		return 0, false
 	}
-	return flacMaxBlockLength - flacPictureHeader - int64(len(mime)), true
+	switch audioFormat {
+	case FormatFLAC:
+		return flacMaxBlockLength - flacPictureHeader - int64(len(mime)), true
+	case FormatMP3:
+		return id3v2MaxFrameBody - apicOverhead - int64(len(mime)), true
+	}
+	return 0, false
 }
 
 // EmbeddedCoverFits is the owner's rule N-091 for one audio format: nil if

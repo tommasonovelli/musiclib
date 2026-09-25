@@ -27,17 +27,24 @@ type ExpectedCover struct {
 //   - the unmanaged fields are exactly the same in both.
 //
 // The comparison excludes what a write may remove, and nothing else (§8.3):
+//
 //   - the managed fields, their aliases and the sort fields, which the
 //     canonical form of Inspection.Unmanaged leaves out;
+//
 //   - the pictures, which are the managed cover (Inspection.Pictures);
+//
 //   - the ID3v2 and ID3v1 tags of a FLAC file, which a write strips by the
 //     declared rule of NOTES.md N-090. They are never in Unmanaged: the
 //     inspection reports them as opaque fields, reason foreign_tag, with
 //     Removed set, so they are not Blocking; after must not have them, as
 //     it has no opaque field at all.
 //
-// The migration of an ID3v1 comment (§8.3) concerns MP3 only and comes with
-// the MP3 writer (Phase 4).
+//   - for MP3, the declared migration of §8.3 and nothing else: the key
+//     "id3v1:comment" (the ID3v1 tag is removed) becomes, when no COMM frame
+//     already holds that text, one more value of
+//     "id3v2:COMM:XXX:legacy-id3v1" (migratedUnmanaged). The other ID3v1
+//     fields and the APE items a write removes are managed fields, outside
+//     Unmanaged by construction.
 //
 // Any difference is CodeTagsVerification: the album must not be published
 // (§12.2, "Tag writer ... perde un tag non gestito").
@@ -69,7 +76,11 @@ func VerifyTags(want TagValues, cover *ExpectedCover, before, after Inspection) 
 	if err := verifyCover(cover, after.Pictures); err != "" {
 		return fail(err)
 	}
-	if msg := diffUnmanaged(before.Unmanaged, after.Unmanaged); msg != "" {
+	wantUnmanaged := before.Unmanaged
+	if before.Format == FormatMP3 {
+		wantUnmanaged = migratedUnmanaged(before.Unmanaged)
+	}
+	if msg := diffUnmanaged(wantUnmanaged, after.Unmanaged); msg != "" {
 		return fail(msg)
 	}
 	return nil
@@ -155,4 +166,48 @@ func opaqueKeys(o []OpaqueField) string {
 		keys[i] = f.Key + " (" + f.Reason + ")"
 	}
 	return strings.Join(keys, ", ")
+}
+
+// Keys of the ID3v1 migration of §8.3 (NOTES.md N-153): the comment of an
+// ID3v1 tag, and the COMM frame (language "XXX", unknown; description
+// "legacy-id3v1") the MP3 writer moves it to.
+const (
+	id3v1CommentKey = "id3v1:comment"
+	commentPrefix   = "id3v2:COMM:"
+	legacyComment   = commentPrefix + "XXX:legacy-id3v1"
+)
+
+// migratedUnmanaged is what the unmanaged fields of an MP3 must be after a
+// write: before, without "id3v1:comment", whose text is added to the
+// "legacy-id3v1" COMM frame unless a COMM frame already holds it (§8.3: "se
+// identico a uno già presente non si duplica"). Nothing else changes.
+func migratedUnmanaged(before []KeyValues) []KeyValues {
+	var comment []string
+	out := make([]KeyValues, 0, len(before)+1)
+	for _, kv := range before {
+		if kv.Key == id3v1CommentKey {
+			comment = kv.Values
+			continue
+		}
+		out = append(out, KeyValues{Key: kv.Key, Values: slices.Clone(kv.Values)})
+	}
+	for _, c := range comment {
+		kept := false
+		for _, kv := range out {
+			if strings.HasPrefix(kv.Key, commentPrefix) && slices.Contains(kv.Values, c) {
+				kept = true
+			}
+		}
+		if kept {
+			continue
+		}
+		i := slices.IndexFunc(out, func(kv KeyValues) bool { return kv.Key == legacyComment })
+		if i < 0 {
+			out = append(out, KeyValues{Key: legacyComment})
+			i = len(out) - 1
+		}
+		out[i].Values = append(out[i].Values, c)
+	}
+	slices.SortFunc(out, func(a, b KeyValues) int { return strings.Compare(a.Key, b.Key) })
+	return out
 }

@@ -26,6 +26,7 @@ import (
 	"musiclib/internal/failpoint"
 	"musiclib/internal/faulttest"
 	"musiclib/internal/fsops"
+	"musiclib/internal/importer"
 	"musiclib/internal/jobs"
 	"musiclib/internal/media"
 	"musiclib/internal/render"
@@ -100,7 +101,7 @@ func newEnvOn(t *testing.T, dbURL string, db *pgxpool.Pool, data string) *env {
 		t.Fatal(err)
 	}
 	e.p = e.publisher(db)
-	if e.cat, err = catalog.New(db, nil, func(catalog.Blob, string) error { return nil }); err != nil {
+	if e.cat, err = catalog.New(db, nil, func(catalog.Blob, string) error { return nil }, importer.GenreFits); err != nil {
 		t.Fatal(err)
 	}
 	e.batch = store.NewID()

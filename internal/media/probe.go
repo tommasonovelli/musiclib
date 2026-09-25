@@ -146,13 +146,18 @@ func probeArgs() []string {
 // failures of the tool or of the adapter: timeout, cancellation, a crash, an
 // I/O error on the input.
 func (t *Tools) Probe(ctx context.Context, f *os.File) (ProbeResult, error) {
+	return t.probe(ctx, f, probeArgs())
+}
+
+// probe runs ffprobe with args (probeArgs, or its windowed form) on f.
+func (t *Tools) probe(ctx context.Context, f *os.File, args []string) (ProbeResult, error) {
 	if err := rewind(f, "ffprobe"); err != nil {
 		return ProbeResult{}, err
 	}
 	var out bytes.Buffer
 	res, runErr := t.run.Run(ctx, Command{
 		Path:        t.ffprobe,
-		Args:        probeArgs(),
+		Args:        args,
 		Files:       []*os.File{f},
 		Stdout:      &out,
 		StdoutLimit: probeOutputLimit,

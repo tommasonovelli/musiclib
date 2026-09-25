@@ -48,7 +48,7 @@ func TestBuildFromCatalog(t *testing.T) {
 	write("Kind of Blue/Scans/Back cover.png", pngImage(t, 10, 10, 6))
 	write("Kind of Blue/rip.log", []byte("log\n"))
 
-	cat, err := catalog.New(db, nil, importer.CoverFits)
+	cat, err := catalog.New(db, nil, importer.CoverFits, importer.GenreFits)
 	if err != nil {
 		t.Fatal(err)
 	}

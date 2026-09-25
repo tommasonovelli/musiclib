@@ -97,6 +97,10 @@ const (
 	// WarnFLACID3: a FLAC file carries ID3 tags, which the output will not
 	// carry (N-090).
 	WarnFLACID3 WarningCode = "flac_id3_tag"
+	// WarnGenreNotWritable: an MP3 genre that an MP3 cannot hold as it is
+	// (media.MP3GenreWritable): it must be corrected in the editor before the
+	// album renders (owner decision N-162).
+	WarnGenreNotWritable WarningCode = "genre_not_writable"
 )
 
 var warningCodes = map[WarningCode]bool{
@@ -109,6 +113,7 @@ var warningCodes = map[WarningCode]bool{
 	WarnCoverNotEmbeddable: true,
 	WarnLyricsNotUTF8:      true,
 	WarnFLACID3:            true,
+	WarnGenreNotWritable:   true,
 }
 
 // maxWarningMessage bounds a warning's text, in bytes.

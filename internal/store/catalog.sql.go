@@ -466,6 +466,33 @@ func (q *Queries) ListAlbumAttachmentViews(ctx context.Context, albumID uuid.UUI
 	return items, nil
 }
 
+const listAlbumAudioFormats = `-- name: ListAlbumAudioFormats :many
+SELECT DISTINCT b.format FROM tracks t JOIN blobs b ON b.hash = t.blob_hash
+WHERE t.album_id = $1 AND b.format IS NOT NULL ORDER BY b.format
+`
+
+// The audio formats of an album's tracks, for the per-format rules of a
+// change (N-162).
+func (q *Queries) ListAlbumAudioFormats(ctx context.Context, albumID uuid.UUID) ([]*string, error) {
+	rows, err := q.db.Query(ctx, listAlbumAudioFormats, albumID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*string
+	for rows.Next() {
+		var format *string
+		if err := rows.Scan(&format); err != nil {
+			return nil, err
+		}
+		items = append(items, format)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAlbumClaims = `-- name: ListAlbumClaims :many
 SELECT path_key, path FROM path_claims WHERE album_id = $1 ORDER BY path_key
 `

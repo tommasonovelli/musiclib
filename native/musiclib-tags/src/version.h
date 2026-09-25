@@ -10,7 +10,10 @@ namespace mltags {
 //   1: the first release (round 3).
 //   2: ID3v2 and ID3v1 tags in a FLAC file are stripped by a write instead
 //      of refusing it (NOTES.md N-090).
-inline constexpr const char *kHelperVersion = "2";
+//   3: MP3 (ID3v2, APE, ID3v1) in the three operations (N-152); the
+//      inspection reports the audio range (N-154); ENOSPC and EDQUOT are
+//      the failure code no_space (N-143).
+inline constexpr const char *kHelperVersion = "3";
 
 // MUSICLIB_TAGLIB_BUILD is the revision of the TagLib build configuration,
 // passed by the Dockerfile (ARG TAGLIB_BUILD_REVISION). It is appended to the

@@ -14,9 +14,10 @@
 // import refuses it (§7.1). Every decision is deterministic: directories and
 // files are sorted explicitly, never in filesystem order (§7.3).
 //
-// This is Phase 2, the FLAC vertical slice (§13.1): MP3 and M4A are refused
-// with CodeFormatNotSupportedYet until Phase 4, and the multi-disc layouts
-// of §7.2 rules 2 and 3 with CodeMultiDiscNotSupported until Phase 5.
+// FLAC and MP3 are imported (Phase 4 added MP3); M4A is refused with
+// CodeFormatNotSupportedYet until its tag reader exists, and the multi-disc
+// layouts of §7.2 rules 2 and 3 with CodeMultiDiscNotSupported until
+// Phase 5.
 package importer
 
 import (
@@ -106,6 +107,17 @@ func CleanWork(ctx context.Context, work *fsops.Root) error {
 // are the tag adapter's (media.EmbeddedCoverFits).
 func CoverFits(cover catalog.Blob, audioFormat string) error {
 	return media.EmbeddedCoverFits(audioFormat, cover.Format, cover.Size)
+}
+
+// GenreFits is the owner's rule N-162 in the form catalog.New expects: nil
+// if an audio file of audioFormat can hold genre, a catalog error
+// CodeGenreNotWritable otherwise. Only MP3 has such genres
+// (media.MP3GenreWritable).
+func GenreFits(genre, audioFormat string) error {
+	if audioFormat == media.FormatMP3 && !media.MP3GenreWritable(genre) {
+		return catalog.GenreNotWritable(genre, audioFormat)
+	}
+	return nil
 }
 
 // ExecuteScan runs a claimed scan job (§7.2), in the form jobs.Pool

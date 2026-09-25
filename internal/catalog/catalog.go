@@ -32,6 +32,24 @@ type Service struct {
 	// coverFits is the owner's N-091 rule, asked wherever a cover is
 	// chosen.
 	coverFits CoverFits
+	// genreFits is the owner's N-162 rule, asked when an album is saved.
+	genreFits GenreFits
+}
+
+// GenreFits reports whether an audio file of format audioFormat can hold
+// genre as its genre (§8.2): nil if it can, an error (GenreNotWritable)
+// otherwise. Owner decision N-162: an MP3 genre that would read back as an
+// ID3v1 genre reference ("(Rock)", "13") is refused when the album is saved,
+// never discovered by a render. The rule belongs to the tag adapter
+// (media.MP3GenreWritable); the catalog asks the question for every genre
+// of the album and every audio format of its tracks.
+type GenreFits func(genre, audioFormat string) error
+
+// GenreNotWritable is the error of a GenreFits that refuses genre.
+func GenreNotWritable(genre, audioFormat string) error {
+	e := errorf(CodeGenreNotWritable, "the genre %q cannot be written to %s files: it reads back as an ID3v1 genre reference; choose another spelling", genre, audioFormat)
+	e.Details.Names = []string{genre}
+	return e
 }
 
 // CoverFits reports whether cover, a JPEG or PNG blob within §8.5's limits,
@@ -49,13 +67,14 @@ type Service struct {
 type CoverFits func(cover Blob, audioFormat string) error
 
 // New returns the catalog service over db. wake is the worker pool's
-// Pool.Wake, or nil where no pool runs (maintenance, tests). coverFits is
-// required: without it no cover could be accepted safely.
-func New(db *pgxpool.Pool, wake func(), coverFits CoverFits) (*Service, error) {
-	if db == nil || coverFits == nil {
-		return nil, errorf(CodeInvalidArgument, "the catalog needs a database and a cover check")
+// Pool.Wake, or nil where no pool runs (maintenance, tests). coverFits and
+// genreFits are required: without them no cover or genre could be accepted
+// safely.
+func New(db *pgxpool.Pool, wake func(), coverFits CoverFits, genreFits GenreFits) (*Service, error) {
+	if db == nil || coverFits == nil || genreFits == nil {
+		return nil, errorf(CodeInvalidArgument, "the catalog needs a database, a cover check and a genre check")
 	}
-	return &Service{db: db, wake: wake, coverFits: coverFits}, nil
+	return &Service{db: db, wake: wake, coverFits: coverFits, genreFits: genreFits}, nil
 }
 
 func (s *Service) notify() {
@@ -111,6 +130,10 @@ const (
 	CodeLyricsAssociation     = "lyrics_association"
 	CodeInvalidCover          = "invalid_cover"
 	CodeInvalidImportWarnings = "invalid_import_warnings"
+	// CodeGenreNotWritable: an album or track genre that an audio format of
+	// the album cannot hold as it is (owner decision N-162: an MP3 genre that
+	// reads back as an ID3v1 genre reference). Details.Names has the genre.
+	CodeGenreNotWritable = "genre_not_writable"
 
 	// CodeDB is an unexpected database failure; store.IsFatal tells
 	// whether it is one of §6.4's.

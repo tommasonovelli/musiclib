@@ -648,7 +648,7 @@ func TestCommitImportCoverFits(t *testing.T) {
 		t.Errorf("without a cover: %+v, asked %v", out, asked)
 	}
 
-	if _, err := catalog.New(e.db, nil, nil); catalog.Code(err) != catalog.CodeInvalidArgument {
+	if _, err := catalog.New(e.db, nil, nil, nil); catalog.Code(err) != catalog.CodeInvalidArgument {
 		t.Errorf("New without a cover check: %v", err)
 	}
 }

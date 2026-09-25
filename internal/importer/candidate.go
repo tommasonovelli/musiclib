@@ -201,7 +201,8 @@ func (im *Importer) checkUnchanged(ctx context.Context, r *fsops.Root, depth int
 
 // readFile classifies one verified copy by its content (§7.2) and, for a
 // track, decodes it completely (§7.6) and reads its tags (§7.3):
-//   - supported audio is a track; Phase 2 takes FLAC only, MP3 and M4A are
+//   - supported audio is a track: FLAC and MP3 (Phase 4 adds MP3; FLAC and
+//     MP3 may share a candidate, NOTES.md N-157); M4A is
 //     CodeFormatNotSupportedYet;
 //   - audio that is not supported is CodeUnsupportedAudio;
 //   - no audio or unreadable, with a known audio extension, is
@@ -233,9 +234,9 @@ func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warni
 		}
 		return nil, nil // an attachment
 	}
-	if p.Format != media.FormatFLAC {
+	if p.Format != media.FormatFLAC && p.Format != media.FormatMP3 {
 		return nil, &Error{Code: CodeFormatNotSupportedYet, Path: rel,
-			Message: fmt.Sprintf("%q is %s audio, which this version does not import yet (FLAC only)", rel, p.Format)}
+			Message: fmt.Sprintf("%q is %s audio, which this version does not import yet (FLAC and MP3 only)", rel, p.Format)}
 	}
 	if _, err := im.tools.AudioDigest(ctx, bf); err != nil {
 		return nil, corrupt(rel, err, decodeFailures...)
@@ -245,7 +246,11 @@ func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warni
 		return nil, corrupt(rel, err, readerFailures...)
 	}
 	f.audio, f.format, f.tags = true, p.Format, in
-	return tagWarnings(rel, in)
+	ws, err := tagWarnings(rel, in)
+	if p.Format == media.FormatMP3 {
+		ws = append(ws, genreWarnings(rel, in.Managed.Genre)...)
+	}
+	return ws, err
 }
 
 // corruptMessages are the messages of the failures of the decode and of the
@@ -256,7 +261,7 @@ var corruptMessages = map[string]string{
 		"or the file has bytes after its last frame that are not audio (an ID3v2 tag appended at the end is one)",
 	media.CodeNotSupported:       "%q is not supported audio",
 	media.CodeTagsCorrupt:        "%q has a damaged metadata structure",
-	media.CodeTagsFormatMismatch: "%q is not a FLAC stream the tag reader accepts",
+	media.CodeTagsFormatMismatch: "%q is not an audio stream of its format that the tag reader accepts",
 }
 
 // decodeFailures and readerFailures are the codes of the decode and of the
@@ -491,4 +496,20 @@ func assemble(c *jobs.Claim, meta albumMeta, tracks, others []*importFile, lyric
 	}
 	cand.Fingerprint = fp
 	return cand, nil
+}
+
+// genreWarnings reports each genre read from an MP3 that an MP3 cannot hold
+// as it is (media.MP3GenreWritable): "(Rock)", "13". It is imported as read,
+// never rewritten; the render refuses it and the editor refuses it for an
+// album with an MP3 track, so it must be corrected there (owner decision
+// N-162).
+func genreWarnings(rel string, genres []string) []jobs.Warning {
+	var ws []jobs.Warning
+	for _, g := range genres {
+		if !media.MP3GenreWritable(g) {
+			ws = append(ws, jobs.Warning{Code: jobs.WarnGenreNotWritable, Path: rel,
+				Message: fmt.Sprintf("%q has the genre %q, which an MP3 reads back as an ID3v1 genre reference: correct it in the editor before the album renders", rel, g)})
+		}
+	}
+	return ws
 }

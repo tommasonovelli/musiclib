@@ -75,7 +75,7 @@ func dbPool(t *testing.T, dbURL string) *pgxpool.Pool {
 
 func catalogOn(t *testing.T, db *pgxpool.Pool) *catalog.Service {
 	t.Helper()
-	c, err := catalog.New(db, nil, importer.CoverFits)
+	c, err := catalog.New(db, nil, importer.CoverFits, importer.GenreFits)
 	if err != nil {
 		t.Fatal(err)
 	}

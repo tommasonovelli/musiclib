@@ -56,7 +56,7 @@ const (
 	CodeCorruptAudio = "corrupt_audio"
 	// CodeUnsupportedAudio: audio the application does not support (§8.1).
 	CodeUnsupportedAudio = "unsupported_audio"
-	// CodeFormatNotSupportedYet: MP3 or M4A, supported from Phase 4.
+	// CodeFormatNotSupportedYet: M4A, whose tag reader is not written yet.
 	CodeFormatNotSupportedYet = "audio_format_not_supported_yet"
 	// CodeUnrenderableTag: a field that the tag writer cannot save back
 	// without loss, such as invalid UTF-8 in an unmanaged field (N-092).
