@@ -42,9 +42,9 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 ## Phase 2 — First vertical slice (one FLAC album)
 
 - [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
-- [~] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`, ID3 tags in a FLAC stripped by a declared rule (N-090); **MP3 complete since round 12** (helper version 3: its own ID3v2/APE/ID3v1 reader and writer, N-152); M4A answers a typed `unsupported_format` (N-094)
-- [~] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC and MP3 complete** (tables in `native/musiclib-tags/src/fields.h`, N-088, N-159); the M4A table comes with its writer (N-094)
-- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC or MP3 candidate, formats mixed or not (N-157) (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); M4A fails as `audio_format_not_supported_yet`. The executors (`ExecuteScan`, `ExecuteImport`) run in the pool of `cmd/musiclibd` since round 9; the space check reserves in the process budget (N-139)
+- [x] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`, ID3 tags in a FLAC stripped by a declared rule (N-090); **MP3 complete since round 12** (helper version 3: its own ID3v2/APE/ID3v1 reader and writer, N-152); **M4A (AAC and ALAC) complete since round 13** (helper version 4: its own box walker, ilst reader and writer, N-165)
+- [x] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC, MP3 and M4A complete** (tables in `native/musiclib-tags/src/fields.h`, N-088, N-159, N-166)
+- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC, MP3 or M4A candidate, formats mixed or not (N-157) (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); an M4A the tag reader refuses (fragmented, encrypted, several tracks) is `unsupported_audio` (N-165). The executors (`ExecuteScan`, `ExecuteImport`) run in the pool of `cmd/musiclibd` since round 9; the space check reserves in the process budget (N-139)
 - [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
 - [x] `internal/render`: snapshot → pure plan → build in staging (§9.1) — `render_version` (§2.1, N-010 resolved by N-130), the pure planner, the verified build in `work/render/<build_id>/album` with its failure cleanup; run by `publish.ExecuteRender` since round 9
 - [x] `.musiclib.json` receipt (§9.2) — canonical encoder, strict parser for recovery and doctor, `receipt_hash` (N-133)
@@ -65,11 +65,11 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 ## Phase 4 — Formats and content
 
 - [x] MP3 (ID3v2.4, APE, ID3v1 migration) (§8.1–8.3) — round 12: the helper's own ID3v2.2/2.3/2.4, APE and ID3v1 reader and ID3v2.4 writer (N-152), the alias and sort table (N-159), the ID3v1 exclusion in `VerifyTags` (N-153), the MP3 decode window (N-154), the cover limit (N-155); imported, rendered and published end to end (`publish.TestExecuteRenderMP3Album`)
-- [ ] M4A AAC/ALAC (§8.1–8.3) — the reader and writer of the `©nam`, `trkn`, `covr`... atoms (N-094); probe and `AudioDigest` already handle it; refused at import and render until then
-- [~] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits are done (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`, MP3 included since round 12, N-155); upload and removal come with the API
+- [x] M4A AAC/ALAC (§8.1–8.3) — round 13: the helper's own box walker, ilst reader and writer with chunk-offset fix-up (N-165), the atom, alias and sort table with the numeric `gnre` (N-166), the canonical form and `VerifyTags` without any extra exclusion (N-167), no decode window and cover stream ordering preserved (N-168), the cover limit (N-166); imported, rendered and published end to end (`publish.TestExecuteRenderM4AAlbum`)
+- [~] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits are done (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`, MP3 included since round 12, N-155, M4A since round 13, N-166); upload and removal come with the API
 - [~] LRC files associated with tracks (§7.4) — at import, done (N-117); assignment and upload with the API
 - [~] Attachments under `Extras/` (§5.1, §7.4) — collected at import and materialized by the build (`internal/render`, sanitized per segment, collisions refused); upload and removal with the API
-- [~] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086, the ID3-in-FLAC exclusion N-090); MP3 done (round 12: frames and APE items kept byte for byte, the declared ID3v1 migration, N-153); M4A with its reader (N-094)
+- [x] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086, the ID3-in-FLAC exclusion N-090); MP3 done (round 12: frames and APE items kept byte for byte, the declared ID3v1 migration, N-153); M4A done (round 13: items and boxes kept byte for byte, the samples checked through the sample table, N-167)
 
 ## Phase 5 — Full experience
 
@@ -730,11 +730,11 @@ scripts/dev.sh go test -race -count=10 -run 'ID3v1|FeedPrefix|LimitedInput|Feeds
 scripts/dev.sh go test -run '^$' -bench AudioDigest5Min -benchtime 10x ./internal/media/
 ```
 
-### `native/musiclib-tags` + the tag adapter (§2.1, §8.1–§8.3, §8.5, §9.1 step 6, §12.2) — FLAC ✔, MP3 ✔ (round 12, next section), M4A later
+### `native/musiclib-tags` + the tag adapter (§2.1, §8.1–§8.3, §8.5, §9.1 step 6, §12.2) — FLAC ✔, MP3 ✔ (round 12), M4A ✔ (round 13; the next two sections)
 
 The TagLib helper and its Go adapter in `internal/media`. **FLAC is
-complete**, and **MP3 since round 12** (next section). Every M4A operation
-answers a typed `unsupported_format` (N-094).
+complete**, **MP3 since round 12** and **M4A since round 13** (the next two
+sections).
 
 **The helper (C++20, `native/musiclib-tags/`).** It knows no domain (§13.2).
 It gets JSON on stdin and files as descriptors only: fd 3 the audio file,
@@ -910,8 +910,7 @@ docker build --target build-tags .           # the helper and its unit tests alo
 ### MP3 end to end: helper, media, importer, render, publish (§7.2–§7.4, §8.1–§8.5, §9.1, §12.1) ✔ (round 12)
 
 An MP3 album is imported, catalogued, rendered and published like a FLAC
-one. M4A stays refused (`media_tags_unsupported_format`,
-`audio_format_not_supported_yet`, `render_format_not_supported_yet`).
+one. (M4A followed in round 13, next section.)
 
 **The helper, version 3** (N-152 to N-159). TagLib is only a cross-check:
 
@@ -993,6 +992,95 @@ the window, the renderer's `no_space` mapping, the importer's MP3 acceptance.
 scripts/check.sh
 scripts/dev.sh go test -race -count=3 -run 'MP3|Mp3|TestVerifyTags|TestMaxEmbeddedCover|TestWindowed' \
   ./internal/media/ ./internal/importer/ ./internal/render/ ./internal/publish/
+docker build --target build-tags .           # the helper and its unit tests alone
+```
+
+### M4A end to end: helper, media, importer, render, publish (§7.2–§7.4, §8.1–§8.5, §9.1, §12.1) ✔ (round 13)
+
+An M4A album, AAC or ALAC, is imported, catalogued, rendered and published
+like a FLAC or MP3 one, and one candidate may mix the three formats (N-157).
+No audio format of §8.1 is refused any more: `audio_format_not_supported_yet`
+and `render_format_not_supported_yet` are gone.
+
+**The helper, version 4** (N-165 to N-168). TagLib is only a cross-check:
+
+| Source | Role |
+|---|---|
+| `src/mp4.{h,cpp}` | ISO BMFF primitives without TagLib: box headers (32/64-bit, size 0 at the top level only), children that must tile their container (at most 50,000), data atoms, freeform mean/name, UTF-16BE, the sample table (`chunks` from stsc/stsz/stco/co64, strictly checked), the chunk-offset fix-up (`patchOffsets`, 32-bit overflow refused) |
+| `src/m4a.{h,cpp}` | the bounded reader (top-level boxes, moov ≤ 256 MiB, the one `soun` track, the refusals of §8.1: fragments, DRM, other tracks, external data, `stz2`), the ilst analysis with §8.1 precedence and conflicts, the canonical unmanaged form, the samples hash, the write (managed atoms, kept items byte for byte, the cover in place, padding, offsets) and its read-backs by the helper and by TagLib |
+| `src/fields.h` | the M4A table: §8.2 atoms, freeform aliases, `gnre`, sort atoms and freeform sort names, `covr` |
+| `src/inspection.h` | the new opaque reason `unsupported_data` |
+| `tests/unit_tests_mp4.inc` | the primitives under ASan/UBSan at build time |
+
+**Go (`internal/media`):** `PinnedTagsVersion` 4; `MaxEmbeddedCover(m4a-*, ...)`
+268,435,432 bytes (N-166); `VerifyTags` unchanged, documented with no extra
+exclusion for M4A (N-167); `AudioDigest` reads an M4A whole (no window,
+N-168).
+
+**Importer:** M4A candidates, alone or mixed with FLAC and MP3; the iTunes
+atoms → §7.3 metadata; `covr` images are front covers for §7.4; an M4A the
+tag reader refuses (fragmented, encrypted, several tracks) is
+`unsupported_audio` with the helper's reason; a metadata structure the writer
+cannot keep is `unrenderable_tag` (N-092). The genre warning of N-162 stays
+MP3 only: every genre fits an M4A.
+
+**Render:** M4A tracks planned as `NN - Title.m4a` and built through the same
+§9.1 step 6; the helper's `no_space` is `insufficient_space` as for MP3;
+`RendererRevision` 3 (N-169).
+
+**Tests** (real FFmpeg AAC and ALAC, both helpers, PostgreSQL 17, ext4, the
+full tmpfs; metadata by the independent codec `mp4meta_test.go` and by
+FFmpeg's muxer, N-170):
+- **media, contract:** no metadata (AAC and ALAC, moov before and after the
+  media: exact items written, cover, idempotence, determinism over copies,
+  removal of everything); rich tags (managed, conflicting and agreeing
+  aliases, `gnre`, sort atoms, 20 unmanaged items of every kind — freeform
+  of several means, integers, a locale, UTF-16, invalid UTF-8, unparsable
+  children, a 64-bit item — kept byte for byte and in order, the cover where
+  the stream-creating covr was relative to iTunSMPB); §8.1 precedence (6 cases); unreadable managed atoms
+  (9 reasons, removed, the write succeeds); Unicode byte-exact and genres
+  like "(Rock)"; layouts (room kept, exact room, growth before the media in
+  stco and co64, no udta, growth after the media, shrink past the padding
+  bound, a QuickTime meta, extra and free boxes), each checked by an
+  independent reading of every box, chunk offset and sample, and written
+  twice; pictures (JPEG, PNG, untyped, BMP; extracted byte for byte);
+  invalid requests (numbers above 32,767, a GIF cover); the cover limit;
+- **media, hostile** (both helpers, 38 cases, the file unchanged on every
+  refusal: damaged structures, other formats and codecs, fragments, two
+  tracks, video, CENC, FairPlay, `sinf`, `pssh`, external data, `stz2`, the
+  blocking metadata structures), the moov bound on a sparse 300 MiB file,
+  and the 200-seed mutation sweep on the ASan helper;
+- **media, digest:** gapless AAC with an edit list, `iTunSMPB`, both and
+  neither, and ALAC, the same digest and frame count after a growth and a
+  shrink; the FFmpeg cover/`iTunSMPB` behaviour pinned including GIF and
+  implicit covers before iTunSMPB and separated covr items (N-168); the full
+  disk (`no_space` with the kernel's message);
+- **media, `VerifyTags`:** 14 M4A differences refused, the MP3 migration not
+  applied;
+- **importer:** an AAC + ALAC album (FFmpeg's tags, the covr cover, "(Rock)"
+  without a warning); FLAC + MP3 + M4A; a `gnre` conflict warned; a foreign
+  meta refused; a cut file corrupt; a fragmented M4A unsupported;
+- **render:** an AAC + ALAC + MP3 + FLAC album (planned tags, unmanaged items,
+  the cover, same audio, deterministic); a blocking structure fails the
+  build; the M4A plan;
+- **http:** an album of M4A tracks saves "(Rock)", one with an MP3 track
+  refuses it (N-162 unchanged);
+- **publish:** `TestExecuteRenderM4AAlbum` (FFmpeg-tagged AAC and ALAC, one
+  with moov first so that the media moves, imported, built and published by
+  two workers: managed tags, every unmanaged item and box of the original,
+  same samples); `TestExecuteRenderM4AOnAReallyFullDisk` (ENOSPC reaches the
+  helper's own write).
+
+**Mutation-checked** (N-171): canonical over aliases; sort atoms, `gnre` and
+freeform aliases removed; kept items; the cover's place; the chunk-offset
+fix-up (with and without the read-back); the refusal of blocking fields;
+two tracks, `enca`, `sinf`; `VerifyTags` for M4A; the importer's
+`unsupported_audio`; the renderer's `no_space`.
+
+```sh
+scripts/check.sh
+scripts/dev.sh go test -race -count=3 -run 'M4A|TestVerifyTags|TestMaxEmbeddedCover|TestUpdateAlbumGenre' \
+  ./internal/media/ ./internal/importer/ ./internal/render/ ./internal/publish/ ./internal/http/
 docker build --target build-tags .           # the helper and its unit tests alone
 ```
 
@@ -1173,7 +1261,7 @@ scripts/check.sh ./internal/catalog/...
 scripts/dev.sh go test -race -count=20 ./internal/store/... ./internal/jobs/ ./internal/catalog/
 ```
 
-### `internal/importer` — scan and import of one candidate (§7.1–§7.6, §8.5, §11.2) ✔ (FLAC; MP3 since round 12)
+### `internal/importer` — scan and import of one candidate (§7.1–§7.6, §8.5, §11.2) ✔ (FLAC; MP3 since round 12; M4A since round 13)
 
 This is Phase 2's FLAC slice. The scan groups a batch into candidates; the
 import turns one candidate into the closed input of `catalog.CommitImport`.
@@ -1228,7 +1316,8 @@ without one, and the job stays running until the boot recovers it.
   - Everything is read again from the copies.
   - The candidate is walked again before the commit (N-126).
 - **§7.2 classification, on the copies.**
-  - FLAC is a track. MP3 and M4A are `audio_format_not_supported_yet`.
+  - FLAC, MP3 (round 12) and M4A (round 13) are tracks; the code
+    `audio_format_not_supported_yet` of the first rounds is gone.
   - Other audio is `unsupported_audio`.
   - No audio with a known audio extension is `corrupt_audio`; without one,
     it is an attachment.
@@ -1263,7 +1352,7 @@ without one, and the job stays running until the boot recovers it.
 | `not_a_candidate` | no direct audio any more |
 | `no_valid_candidate` | a scan with nothing to import |
 | `insufficient_space` | §11.2 |
-| `corrupt_audio`, `unsupported_audio`, `audio_format_not_supported_yet` | §7.2, §8.1 |
+| `corrupt_audio`, `unsupported_audio` | §7.2, §8.1 |
 | `unrenderable_tag` | N-092 |
 | `mixed_album`, `ambiguous_album_artist`, `album_title_missing` | §7.3 (an override resolves each) |
 | `invalid_tag` | a tag that is not a valid text |
@@ -1349,7 +1438,7 @@ scripts/check.sh ./internal/importer/...
 scripts/dev.sh go test -race -count=10 ./internal/importer/
 ```
 
-### `internal/render` — `render_version`, pure plan, build in staging, receipt (§2.1, §5, §6.2, §8.2, §9.1, §9.2, §11.2) ✔ (FLAC; MP3 since round 12)
+### `internal/render` — `render_version`, pure plan, build in staging, receipt (§2.1, §5, §6.2, §8.2, §9.1, §9.2, §11.2) ✔ (FLAC; MP3 since round 12; M4A since round 13)
 
 From the claim's snapshot to a complete, verified album directory in
 `work/render/<build_id>/album`, ready for the publisher (§9.3, next round).
@@ -1399,8 +1488,8 @@ Also: `names.AlgorithmVersion` (the frozen algorithm's identifier, pinned by
 - **§11.2:** estimate and `statfs` with 1 GiB before anything is created;
   ENOSPC anywhere is `insufficient_space`. The process budget is N-114's.
 
-**Codes:** `render_invalid_snapshot`, `render_format_not_supported_yet`
-(MP3/M4A until Phase 4), `render_path_collision`, `render_path_invalid`,
+**Codes:** `render_invalid_snapshot` (`render_format_not_supported_yet`, for
+MP3 and M4A until Phase 4, is gone since round 13), `render_path_collision`, `render_path_invalid`,
 `render_version_mismatch`, `render_copy_mismatch`, `render_audio_changed`,
 `insufficient_space`, `render_io`, `render_canceled`,
 `render_receipt_invalid`, `render_invalid_argument`.

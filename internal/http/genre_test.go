@@ -84,3 +84,28 @@ func TestUpdateAlbumStoredGenreNotWritable(t *testing.T) {
 	body["genre"] = "Rock"
 	e.must(req{method: "PUT", path: path, body: body, ifMatch: tag}, nethttp.StatusOK)
 }
+
+// N-162 keys on MP3 tracks only: every genre is written as it is into an M4A
+// (©gen is free text, N-166), so an album of M4A tracks saves any genre, and
+// an album that mixes M4A and MP3 tracks is refused as any album with an MP3
+// track.
+func TestUpdateAlbumGenreM4A(t *testing.T) {
+	e := newEnv(t)
+	m4aOnly := e.seed("Wayne Shorter", "Speak No Evil")
+	mixed := e.seed("Wayne Shorter", "JuJu")
+	e.exec(`UPDATE blobs SET format = 'm4a-aac' WHERE hash = (SELECT blob_hash FROM tracks WHERE album_id = $1 AND no = 1)`, m4aOnly)
+	e.exec(`UPDATE blobs SET format = 'm4a-alac' WHERE hash = (SELECT blob_hash FROM tracks WHERE album_id = $1 AND no = 2)`, m4aOnly)
+	e.exec(`UPDATE blobs SET format = 'm4a-aac' WHERE hash = (SELECT blob_hash FROM tracks WHERE album_id = $1 AND no = 1)`, mixed)
+	e.exec(`UPDATE blobs SET format = 'mp3' WHERE hash = (SELECT blob_hash FROM tracks WHERE album_id = $1 AND no = 2)`, mixed)
+	for _, genre := range []string{"(Rock)", "13"} {
+		a, tag := e.album(mixed)
+		body := putBody(a)
+		body["genre"] = genre
+		e.wantError(req{method: "PUT", path: "/api/albums/" + mixed.String(), body: body, ifMatch: tag},
+			nethttp.StatusUnprocessableEntity, "genre_not_writable")
+		a, tag = e.album(m4aOnly)
+		body = putBody(a)
+		body["genre"] = genre
+		e.must(req{method: "PUT", path: "/api/albums/" + m4aOnly.String(), body: body, ifMatch: tag}, nethttp.StatusOK)
+	}
+}

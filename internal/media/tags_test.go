@@ -598,21 +598,20 @@ func TestTagsInspectDoesNotWrite(t *testing.T) {
 	}
 }
 
-// M4A is refused with a typed error until its reader and writer exist.
+// An unknown format is refused with a typed error; a file of another format
+// than the one declared is refused on the format, M4A included (the codec of
+// an M4A is part of its format, N-165).
 func TestTagsUnsupportedFormats(t *testing.T) {
 	dir := t.TempDir()
 	tools := newTools(t)
 	fx := fixtures(t, dir)
 	for _, tc := range []struct{ fixture, format string }{
-		{"aac", FormatM4AAAC}, {"alac", FormatM4AALAC},
+		{"aac", FormatM4AALAC}, {"alac", FormatM4AAAC}, {"flac16", FormatM4AAAC}, {"mp3-cbr", FormatM4AALAC}, {"aac", FormatFLAC}, {"alac", FormatMP3},
 	} {
 		_, err := tools.Inspect(t.Context(), open(t, fx[tc.fixture]), tc.format)
-		wantCode(t, err, CodeTagsUnsupported)
-		err = tools.WriteManagedTags(t.Context(), openRW(t, fx[tc.fixture]), tc.format, fullValues, nil)
-		wantCode(t, err, CodeTagsUnsupported)
-		_, err = tools.ExtractImages(t.Context(), open(t, fx[tc.fixture]), tc.format,
-			[]ImageTarget{{0, createEmpty(t, t.TempDir(), "x")}})
-		wantCode(t, err, CodeTagsUnsupported)
+		wantCode(t, err, CodeTagsFormatMismatch)
+		p := writeFile(t, filepath.Join(t.TempDir(), "f"), readFile(t, fx[tc.fixture]))
+		wantUnchanged(t, p, func() error { return tools.WriteManagedTags(t.Context(), openRW(t, p), tc.format, fullValues, nil) }, CodeTagsFormatMismatch)
 	}
 	_, err := tools.Inspect(t.Context(), open(t, fx["flac16"]), "ogg")
 	wantCode(t, err, CodeTagsUnsupported)

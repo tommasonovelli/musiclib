@@ -33,6 +33,7 @@
 #include "id3v2.h"
 #include "inspection.h"
 #include "json.h"
+#include "m4a.h"
 #include "mp3.h"
 #include "request.h"
 #include "sha256.h"
@@ -78,21 +79,35 @@ void writeOut(int fd, const std::string &text) {
   }
 }
 
-// requireSupported refuses the formats the helper does not handle yet: M4A
-// (NOTES.md N-094).
-void requireSupported(Format f, std::string_view op) {
-  if (f != Format::FLAC && f != Format::MP3) {
-    throw Failure(code::kUnsupportedFormat,
-                  std::string(op) + " of " + std::string(formatName(f)) + " is not implemented yet");
+// inspectFile inspects the audio file on kAudioFD in its format.
+Inspection inspectFile(Format f) {
+  switch (f) {
+    case Format::FLAC:
+      return inspectFlac(kAudioFD);
+    case Format::MP3:
+      return inspectMp3(kAudioFD);
+    case Format::M4A_AAC:
+    case Format::M4A_ALAC:
+      return inspectM4a(kAudioFD, f);
   }
+  throw Failure(code::kInternal, "unknown format");
 }
 
-// inspectFile inspects the audio file on kAudioFD in its format.
-Inspection inspectFile(Format f) { return f == Format::MP3 ? inspectMp3(kAudioFD) : inspectFlac(kAudioFD); }
-
 // maxCoverBytes is the largest cover a write reads, refused before reading:
-// a FLAC metadata block is at most 16 MiB - 1, an ID3v2 frame 256 MiB - 1.
-std::uint64_t maxCoverBytes(Format f) { return f == Format::MP3 ? id3v2::kMaxSynchsafe : (1U << 24) - 1; }
+// a FLAC metadata block is at most 16 MiB - 1, an ID3v2 frame 256 MiB - 1,
+// an M4A cover the moov bound less the covr headers (kM4aMaxCover).
+std::uint64_t maxCoverBytes(Format f) {
+  switch (f) {
+    case Format::FLAC:
+      return (1U << 24) - 1;
+    case Format::MP3:
+      return id3v2::kMaxSynchsafe;
+    case Format::M4A_AAC:
+    case Format::M4A_ALAC:
+      return kM4aMaxCover;
+  }
+  return 0;
+}
 
 std::string version() {
   json::Writer w;
@@ -107,14 +122,12 @@ std::string version() {
 
 std::string inspect(std::string_view request) {
   const InspectRequest req = parseInspectRequest(request);
-  requireSupported(req.format, "inspect");
   checkDescriptor(kAudioFD, Access::Read, "the audio file");
   return renderInspection(inspectFile(req.format));
 }
 
 std::string extractImages(std::string_view request) {
   const ExtractRequest req = parseExtractRequest(request);
-  requireSupported(req.format, "extract-images");
   checkDescriptor(kAudioFD, Access::Read, "the audio file");
   // Every destination is checked before anything is read or written.
   for (std::size_t i = 0; i < req.pictures.size(); ++i) {
@@ -155,7 +168,6 @@ std::string extractImages(std::string_view request) {
 
 std::string writeManagedTags(std::string_view request) {
   const WriteRequest req = parseWriteRequest(request);
-  requireSupported(req.format, "write-managed-tags");
   checkDescriptor(kAudioFD, Access::ReadWrite, "the audio file");
   std::string cover;
   if (req.cover) {
@@ -167,10 +179,17 @@ std::string writeManagedTags(std::string_view request) {
     }
     cover = readAt(kFirstExtraFD, 0, static_cast<std::size_t>(size), "the cover");
   }
-  if (req.format == Format::MP3) {
-    writeMp3(kAudioFD, req, cover);
-  } else {
-    writeFlac(kAudioFD, req, cover);
+  switch (req.format) {
+    case Format::FLAC:
+      writeFlac(kAudioFD, req, cover);
+      break;
+    case Format::MP3:
+      writeMp3(kAudioFD, req, cover);
+      break;
+    case Format::M4A_AAC:
+    case Format::M4A_ALAC:
+      writeM4a(kAudioFD, req, cover);
+      break;
   }
   return "{}";
 }

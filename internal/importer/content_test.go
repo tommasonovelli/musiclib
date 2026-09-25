@@ -174,10 +174,10 @@ func TestImportUnrenderableTagsAndID3(t *testing.T) {
 	}
 }
 
-// Content decides (§7.2): a corrupt .flac is an album error, M4A is not
-// supported yet (Phase 4), WAV is not supported, a FLAC without the
-// extension is a track, and a non-audio file with an audio extension is
-// corrupt audio.
+// Content decides (§7.2): a corrupt .flac is an album error, M4A imports
+// (Phase 4) but a fragmented one is not supported (N-165), WAV is not
+// supported, a FLAC without the extension is a track, and a non-audio file
+// with an audio extension is corrupt audio.
 func TestImportFormats(t *testing.T) {
 	e := newEnv(t)
 	good := track{tags: []string{"TITLE=x"}}.flac(t)
@@ -186,7 +186,9 @@ func TestImportFormats(t *testing.T) {
 	dir := t.TempDir()
 	ffmpeg(t, "-f", "lavfi", "-i", "sine=duration=0.2", "-c:a", "aac", dir+"/a.m4a")
 	ffmpeg(t, "-f", "lavfi", "-i", "sine=duration=0.2", "-c:a", "pcm_s16le", dir+"/a.wav")
+	ffmpeg(t, "-f", "lavfi", "-i", "sine=duration=0.2", "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov", dir+"/frag.m4a")
 	e.put("M4A/1.m4a", readFile(t, dir+"/a.m4a"))
+	e.put("Fragmented/1.m4a", readFile(t, dir+"/frag.m4a"))
 	e.put("WAV/1.wav", readFile(t, dir+"/a.wav"))
 	e.put("NoExt/track01", good)
 	b := e.importDir("")
@@ -194,7 +196,12 @@ func TestImportFormats(t *testing.T) {
 		t.Errorf("message %q", j.Message)
 	}
 	e.failed(b, "Text", CodeCorruptAudio)
-	e.failed(b, "M4A", CodeFormatNotSupportedYet)
+	if a := e.done(b, "M4A"); len(a.Tracks) != 1 || a.Tracks[0].Title != "1" {
+		t.Errorf("M4A tracks %+v", a.Tracks)
+	}
+	if j := e.failed(b, "Fragmented", CodeUnsupportedAudio); !strings.Contains(j.Message, "fragmented MP4") {
+		t.Errorf("message %q", j.Message)
+	}
 	e.failed(b, "WAV", CodeUnsupportedAudio)
 	a := e.done(b, "NoExt")
 	if len(a.Tracks) != 1 || a.Tracks[0].Title != "x" {

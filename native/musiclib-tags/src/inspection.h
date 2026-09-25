@@ -72,6 +72,8 @@ inline constexpr const char *kCompressedFrame = "compressed_frame";    // a mana
 inline constexpr const char *kEncryptedFrame = "encrypted_frame";      // a managed frame the reader cannot read
 inline constexpr const char *kDuplicateTag = "duplicate_tag";          // a second ID3v2 tag after the first
 inline constexpr const char *kMigrationConflict = "migration_conflict";  // the ID3v1 comment's COMM is taken
+// M4A (since helper version 4, NOTES.md N-167):
+inline constexpr const char *kUnsupportedData = "unsupported_data";  // a managed item of a data type the reader does not read
 }  // namespace reason
 
 // AudioRange is where the reader finds the audio in the file: from the end

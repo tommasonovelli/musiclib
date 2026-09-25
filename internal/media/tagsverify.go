@@ -46,6 +46,14 @@ type ExpectedCover struct {
 //     fields and the APE items a write removes are managed fields, outside
 //     Unmanaged by construction.
 //
+//   - for M4A, nothing beyond the first two points (NOTES.md N-167): the
+//     numeric genre "gnre" and the freeform aliases are managed fields,
+//     outside Unmanaged. What a write changes in the container (the free
+//     padding next to the ilst, the size of moov, the position of the media
+//     data after it, the chunk offsets) is outside the canonical form by
+//     construction, and the audio stays covered by "mp4.samples", which is
+//     read through the new offsets.
+//
 // Any difference is CodeTagsVerification: the album must not be published
 // (§12.2, "Tag writer ... perde un tag non gestito").
 func VerifyTags(want TagValues, cover *ExpectedCover, before, after Inspection) error {

@@ -14,10 +14,9 @@
 // import refuses it (§7.1). Every decision is deterministic: directories and
 // files are sorted explicitly, never in filesystem order (§7.3).
 //
-// FLAC and MP3 are imported (Phase 4 added MP3); M4A is refused with
-// CodeFormatNotSupportedYet until its tag reader exists, and the multi-disc
-// layouts of §7.2 rules 2 and 3 with CodeMultiDiscNotSupported until
-// Phase 5.
+// FLAC, MP3 and M4A (AAC or ALAC) are imported (Phase 4 added MP3 and M4A);
+// the multi-disc layouts of §7.2 rules 2 and 3 fail with
+// CodeMultiDiscNotSupported until Phase 5.
 package importer
 
 import (

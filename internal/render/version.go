@@ -18,8 +18,9 @@ import (
 // names.AlgorithmVersion.
 //
 // Revisions: 1, the first (round 8); 2, MP3 tracks planned and built
-// (".mp3", round 12, NOTES.md N-158).
-const RendererRevision = "2"
+// (".mp3", round 12, NOTES.md N-158); 3, M4A tracks planned and built
+// (".m4a", round 13, N-169).
+const RendererRevision = "3"
 
 // GoVersion is the Go toolchain the renderer is built with (the Dockerfile's
 // GO_IMAGE). The renderer's Go code, image/jpeg and image/png (the cover

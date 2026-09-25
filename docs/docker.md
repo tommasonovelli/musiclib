@@ -454,7 +454,7 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
   takes about 80 s without cache; a change under `native/musiclib-tags/`
   rebuilds only the helper.
 - **The helper's version** is two strings: `musiclib-tags version` prints
-  `{"helper":"3","taglib":"2.3.2-musiclib1"}`. `helper` is
+  `{"helper":"4","taglib":"2.3.2-musiclib1"}`. `helper` is
   `kHelperVersion` in `native/musiclib-tags/src/version.h`; `taglib` is the
   linked TagLib's own version plus `TAGLIB_BUILD_REVISION`, the revision of
   the cmake line. `musiclibd` refuses to boot with anything else
@@ -464,8 +464,15 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
   `kHelperVersion` and `media.PinnedTagsVersion` together, then re-pin the
   binary's sha256 in `render.TestToolBinariesPinned` and the value in
   `TestVersionGolden` (every album renders again, NOTES.md N-130). The MP3
-  reader and writer (`src/id3v2.cpp`, `src/ape.cpp`, `src/mp3.cpp`) are the
-  helper's own; TagLib only cross-checks them (N-152).
+  reader and writer (`src/id3v2.cpp`, `src/ape.cpp`, `src/mp3.cpp`) and the
+  M4A ones (`src/mp4.cpp`, `src/m4a.cpp`) are the helper's own; TagLib only
+  cross-checks them (N-152, N-165). The re-pin, step by step:
+  1. `docker build --target build-tags .` (runs the unit tests);
+  2. `scripts/dev.sh sha256sum /usr/local/bin/musiclib-tags /usr/local/bin/musiclib-tags-asan`;
+  3. the release sha256 into `pinnedBinaries` (`internal/render/version_test.go`),
+     both into NOTES.md N-083;
+  4. confirm with `docker build --no-cache --target build-tags .` that the
+     bytes do not change, then `scripts/check.sh`.
 - **Bumping TagLib:**
   1. Download the new release tarball, compute its sha256 and compare it
      with GitHub's asset digest and an independent pin (Homebrew's formula).
@@ -474,7 +481,9 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
      `ogg/xiphcomment.cpp` and `flac/flacpicture.cpp`, and for MP3
      `mpeg/mpegfile.cpp`, `mpeg/id3v2/id3v2framefactory.cpp`,
      `mpeg/id3v2/id3v2frame.cpp`, `ape/apetag.cpp` and `tagutils.cpp`
-     (`Utils::findID3v1`, `findAPE`). The helper's readers mirror where
+     (`Utils::findID3v1`, `findAPE`). For M4A, `mp4/mp4atom.cpp`,
+     `mp4/mp4tag.cpp`, `mp4/mp4itemfactory.cpp` and `mp4/mp4properties.cpp`
+     (N-165). The helper's readers mirror where
      TagLib finds tags and what it drops or alters (NOTES.md N-085, N-152,
      N-154): a change there can require a change of a reader.
   3. Update `TAGLIB_VERSION` and `TAGLIB_SHA256`; reset

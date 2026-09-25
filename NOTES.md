@@ -1290,6 +1290,11 @@ Resolves N-025 for TagLib. Dockerfile stage `build-tags`.
   ASan `c6b476f84ffcad3b3043becb07178515ad2cb97182307a7490d5da3e714c613c`,
   `libtag.a` unchanged.
 
+  Helper version `4` (round 13, M4A, N-165), checked the same way:
+  release `96df005c7e176389a0854497af8ee02bf7ca038d613cf85f5b79f29125fbf182`,
+  ASan `bca865cd1a76a86f70b859d0d5be9972572754cdf18a9a7f84c454fd46323564`,
+  `libtag.a` unchanged.
+
   Version `1` was `1f390a3271bd38b0425ae5cc4c68f6f50f68384cab28c879a3eb422eec0cf4b2`
   (release) and `630c65c612a643e16042c8b4fad4705cce37e37f576d18acfccd0b9b1369f9cb`
   (ASan). The `runtime` image and the `test` and `dev` images hold the same
@@ -1643,6 +1648,9 @@ The earlier non-synchsafe case stays `corrupt`.
   file at import (`corrupt_audio`, N-128).
 
 ### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
+**Round 13:** M4A has its limit (N-166): every audio format has one now, so
+`EmbeddedCoverFits` refuses only an unknown audio or cover format.
+
 **Round 12:** MP3 has its limit too (N-155), so `EmbeddedCoverFits` accepts
 MP3 albums; only M4A is still refused (`media_tags_unsupported_format`).
 
@@ -1690,7 +1698,7 @@ drop the block). The owner decides whether:
 - such a cover should stay external only;
 - or the error should stay.
 
-### N-092 · Invalid UTF-8 in unmanaged Vorbis fields — DECIDED (owner, 2026-09-23); implementation in the importer round
+### N-092 · Unmanaged values that a writer would re-encode — DECIDED (owners, 2026-09-23 and 2026-09-25)
 **Round 5 (done):** every track is inspected on its verified copy, and any
 field of `Inspection.Blocking()` other than the N-090 ID3 tags fails the import
 with `unrenderable_tag`, whose message names the file, the field key (for
@@ -1698,11 +1706,14 @@ example `vorbis:COMMENT`) and the reason (`invalid_utf8`, `nul_byte`,
 `malformed_entry`, `invalid_key`, `duplicate_block`, `foreign_metadata`).
 Tested with a Latin-1 COMMENT; mutation-checked.
 
-**Owner decision (2026-09-23):** the importer refuses such a file up front,
-with a typed error that names the file and the field, using
-`Inspection.Blocking()`. The render keeps refusing (`opaque_field`) as a
-second line; nothing is dropped silently. The import commit is compatible:
-it receives only files the importer accepted (N-106).
+**Owner decision (2026-09-23; scope clarified 2026-09-25):** for FLAC and
+MP3, whose writers re-encode values, the importer refuses unmanaged values
+it cannot preserve (including invalid UTF-8) up front, with a typed error
+naming the file and field via `Inspection.Blocking()`. The render also refuses
+(`opaque_field`); nothing is dropped silently (N-106). **M4A unmanaged
+items with invalid UTF-8 or binary data are kept, not refused at import:**
+the M4A writer copies their bytes unchanged. An M4A metadata *structure*
+that the writer cannot keep still blocks import (N-167).
 
 A FLAC whose unmanaged field is not valid UTF-8 (Latin-1 tags from old
 tools) imports: the file and its audio are fine. It cannot be rendered,
@@ -1729,7 +1740,14 @@ tested with the audio frames compared byte for byte, since no digest is
 possible. A test pins the ffmpeg behaviour, so a bump that changes it
 fails the gate.
 
-### N-094 · MP3 and M4A: designed now, implemented in Phase 4 — DECIDED (MP3 done in round 12: N-152 to N-160; M4A open)
+### N-094 · MP3 and M4A: designed now, implemented in Phase 4 — DECIDED (MP3 done in round 12: N-152 to N-160; M4A done in round 13: N-165 to N-171)
+**Round 13:** M4A is implemented, with the same change of plan as MP3: the
+reader and the writer are the helper's own, TagLib only cross-checks them
+(N-165). The atoms planned below are the table of `fields.h` (N-166), with the
+freeform aliases and the numeric `gnre` read as fallbacks and always removed.
+No format is refused any more: `audio_format_not_supported_yet` and
+`render_format_not_supported_yet` are gone.
+
 **Round 12:** MP3 is implemented as planned below, with one change of
 plan: the writer is the helper's own too, not TagLib (N-152). M4A still
 answers `unsupported_format` in the helper, `audio_format_not_supported_yet`
@@ -3875,3 +3893,249 @@ other difference, a non-Latin-1 character in those 30, or a shorter prefix
 is still a conflict (`TestTagsMP3ID3v1Truncation`, 6 cases). The year and
 the other fields are compared as before, and the ID3v1-comment migration
 stays literal ("identico", §8.3).
+
+---
+
+## Round 13: M4A end to end (2026-09-25)
+
+N-083, N-091 and N-094 were updated; see those entries.
+
+### N-165 · The M4A reader and writer are the helper's own; TagLib cross-checks them — DECIDED (owner confirmed 2026-09-25)
+As for MP3 (N-152), TagLib 2.3.2 cannot be the writer. What its MP4 save would
+do, read in its source (`taglib/mp4/mp4tag.cpp`, `mp4itemfactory.cpp`,
+`mp4atom.cpp`):
+- **Order:** `Tag::save` renders the ilst from its `ItemMap`, a map sorted by
+  name: the order of the items is lost (and with it the order of `covr`
+  against `----:iTunSMPB`, which changes FFmpeg's decode, N-168).
+- **Duplicates:** `Tag::addItem` ignores a second atom of a name (a second
+  `©cmt`, a second freeform of one mean and name): dropped on save.
+- **Data types:** `parseText` keeps only data atoms of type 1, so an unknown
+  atom (TagLib handles any 4-byte name it does not know as text) holding
+  integers, UTF-16 or binary data is dropped; `parseInt` reads 2 bytes
+  whatever the width, `parseBool` the first byte; every rendered data atom
+  gets TagLib's type and a zero locale; a `covr` image of an unexpected type
+  is re-typed by sniffing (or to 255); a freeform item with values of several
+  types is re-typed to the first; a freeform item without data is dropped;
+  invalid UTF-8 becomes an empty string.
+- **Numeric genre:** `gnre` is read as the item `©gen` and saved as text.
+- **Offsets:** `updateOffsets` writes a shifted `stco` entry as a 32-bit value
+  with no overflow check (a silent wrap past 4 GiB), and fixes only the first
+  root `moov` and the first root `moof` (`tfhd`); `sidx` and `mfra`/`tfra`
+  are not updated.
+- **Padding:** only `free` boxes next to the ilst inside meta are reused
+  (filled with 0x01 bytes).
+
+**What the helper does** (`src/mp4.{h,cpp}`, pure and unit-tested under
+ASan/UBSan in `tests/unit_tests_mp4.inc`; `src/m4a.{h,cpp}`):
+- **Reader:** an independent, bounded walker of the top-level boxes, which
+  must tile the file (bytes after the last box, no moov or two moov:
+  `corrupt`; a first box that no ISO file starts with: `format_mismatch`),
+  moov in memory (at most 256 MiB, else `too_large`), then trak, mdia, hdlr,
+  minf, dinf/dref, stbl, stsd, stsc, stsz, stco/co64, and udta/meta/ilst.
+  The sample table gives every chunk, which must lie inside an mdat; the
+  samples are hashed in order through it (`mp4.samples`).
+- **What §8.1 does not support is `unsupported_format`**, which the importer
+  reports as `unsupported_audio` with the helper's reason: a fragmented file
+  (a top-level `moof`, `styp`, `sidx` or `mfra`, or `mvex` in moov);
+  encryption (`enca`, `drms`, `drmi` sample entries, a `sinf` in the sample
+  entry, a `pssh` in moov); any number of tracks but one, or a track whose
+  handler is not `soun` (a real video track, a text or chapter track, a
+  still-image "cover-art track": FFmpeg reports such a track as a video
+  stream and the probe already refuses it; the attached pictures of an M4A
+  are `covr` images, which FFmpeg reports as attached pictures); more than
+  one sample description; media data in another file (`dref` entry 1
+  without the self-contained flag); compact sample sizes (`stz2`). The
+  declared codec must be the sample entry: `mp4a` for `m4a-aac`, `alac` for
+  `m4a-alac` (`format_mismatch` otherwise).
+- **Writer:** the new ilst is the managed atoms (table order), then every
+  other item byte for byte in its order, with the cover positioned relative
+  to `iTunSMPB` to preserve the stream ordering (N-168); meta keeps its
+  children, drops its `free`/`skip` boxes and
+  gets one `free` right after the ilst; udta and meta are created (a full
+  meta, hdlr `mdir`/`appl`) when missing, at the end of their parent; a file
+  without metadata that gets nothing is left as it is. **Padding** follows
+  the MP3 rule: the old moov size is kept when the new metadata fits and
+  leaves 0 or 8 bytes to 1 MiB, else a 1,024-byte `free`; so an in-place
+  write moves nothing, and a second write of the output gives the same
+  bytes. When moov changes size, the new moov replaces the old one (the tail
+  moves, `FdStream::insert`), and every chunk offset at or past the old end
+  of moov moves by the difference, in `stco` or `co64`
+  (`mp4::patchOffsets`); a `stco` entry that would pass 32 bits is
+  `too_large` (a 4 GiB audio track: no conversion to `co64`). The header
+  form (32 or 64 bits) of each rebuilt box is kept.
+- **Checks, as for MP3:** before a write, TagLib must read the file (valid,
+  moov at the same offset and size, the ilst at the same offset, the track's
+  codec `codecId()`, not encrypted) and read every managed atom it can read
+  without loss as the helper does (one atom of the name, type 1 text, 16-bit
+  numbers under 32,768, a one-byte cpil, covr types it keeps; `©gen` only
+  without a `gnre`); after it, the helper reads the file back (the moov it
+  wrote, every other top-level box at its place moved by the difference,
+  the same samples and kept boxes, the managed values exactly with no alias
+  left, the kept items, the cover) and TagLib reads it again, with no
+  managed atom skipped. Either failing is `internal`.
+
+**Owner decision (2026-09-25):** fragmented M4A is refused (its offsets
+would need separate fix-ups). A still-image video track used as artwork is
+refused: M4A cover art is `covr`. Text and chapter tracks are also refused
+as multi-track under a stricter reading of §8.1: the probe already refuses
+them, and the writer fixes only one track's `stco`/`co64`.
+
+### N-166 · Smaller readings of §8.1, §8.2 and §8.5 for M4A — DECIDED (owner confirmed 2026-09-25)
+- **The table** (`fields.h`, `kMp4Fields`): `©nam`, `©ART`, `aART`, `©alb`,
+  `trkn` (number; its total is the canonical track total), `disk` (likewise),
+  `©day`, `©gen`, `cpil`, `covr`. Fallbacks, read in this order and always
+  removed: the iTunes freeform items (mean `com.apple.iTunes` only, name
+  compared in ASCII upper case) named like the FLAC aliases, as the TXXX
+  aliases of MP3 (N-159): `ALBUM ARTIST`, `ALBUMARTIST`, `ALBUM_ARTIST`,
+  `TRACKTOTAL`, `TOTALTRACKS`, `DISCTOTAL`, `TOTALDISCS`; and `gnre` after
+  `©gen`. Sort atoms, always removed: `sonm`, `soar`, `soaa`, `soal`, and the
+  freeform `TITLESORT`, `ARTISTSORT`, `ALBUMARTISTSORT`, `ALBUMSORT`. `soco`
+  and `sosn` are unmanaged.
+- **`gnre` is removed whatever the genre written** (owner, 2026-09-25): §8.2 says
+  "genere numerico MP4 quando si scrive quello testuale"; when the DB genre
+  is empty no `©gen` is written, and keeping a numeric genre would leave a
+  genre the catalog does not have (§8.2 "valore assente significa
+  rimozione"). `gnre` n is ID3v1 genre n−1 (TagLib's list); 0 and values past
+  the list are no source; another size is a removed opaque field.
+- **Values:** text of data type 1 (UTF-8) or 2 (UTF-16BE); empty values are
+  absent; several data atoms or several atoms of one name are several values
+  (§7.3 joins them). A managed atom the reader cannot read is a removed opaque
+  field (`invalid_utf8`, `invalid_text`, `nul_byte`, `unsupported_data`,
+  `malformed_entry`, `invalid_picture`), never a source, never blocking: the
+  write replaces it. `trkn`/`disk`: one data atom of type 0 or 21, of 6 or 8
+  bytes; a number of 0 is absent. `cpil`: one integer data atom of 1 to 8
+  bytes, reported as its decimal value.
+- **Written as iTunes writes them:** UTF-8 text; `trkn` of 8 bytes and `disk`
+  of 6, type 0; `cpil` one byte of type 21, only when true (N-089); a total
+  without its number is written (`trkn` 0/N, unlike MP3's TRCK). Numbers
+  above 32,767 are `invalid_request`: TagLib reads the 16 bits as signed; the
+  schema allows 999 tracks and 99 discs.
+- **Cover** (owner, 2026-09-25): every image of `covr` is reported as a front cover
+  (type 3). MP4 has no picture type; §8.2 maps "Cover" to `covr` as it maps
+  it to the front-cover PICTURE and APIC, and iTunes shows the first image as
+  the artwork. So the import's "front cover incorporata più frequente"
+  (§7.4) counts them. The MIME type comes from the data type (13 JPEG, 14
+  PNG, 27 BMP, 12 GIF, none for 0); the importer validates the bytes anyway.
+  The write embeds one image of type 13 or 14.
+- **Cover limit (N-091):** 268,435,432 bytes, the moov bound (256 MiB) minus
+  the covr and data headers, for JPEG and PNG alike; the helper refuses a
+  larger cover before reading it, and a moov already near the bound can
+  still make a smaller one `too_large` (as for MP3, N-155). §8.5 caps covers
+  at 20 MiB.
+- **No genre is unwritable in an M4A:** `©gen` is free text, read verbatim by
+  the helper, TagLib and FFmpeg ("(Rock)" and "13" round-trip, tested). N-162
+  keys on MP3 only: `importer.GenreFits` is unchanged, and the catalog asks it
+  for every format of the album, so an album with an MP3 and an M4A track
+  refuses such a genre and an album of M4A tracks accepts it
+  (`http.TestUpdateAlbumGenreM4A`). The importer warns only for MP3.
+- **Outside the ilst:** QuickTime text atoms directly in udta (`©nam`...) and
+  a moov-level `meta` (QuickTime `mdta` keys) are unmanaged boxes, kept byte
+  for byte: they are not the iTunes metadata §8.2 names, and TagLib, iTunes
+  and most players do not read them.
+
+### N-167 · M4A in the inspection: canonical form, opaque reasons, VerifyTags — DECIDED
+- **Unmanaged keys:** `ilst:<atom>` (the name as Latin-1) and
+  `ilst:----:<mean>:<name>` for the kept items: the text of a UTF-8 data
+  atom with locale 0, else `data type=<n> locale=<hex> sha256:<value>`, and
+  `<type> sha256:` for a child that is not a data atom; an item whose
+  children do not parse is `raw sha256:<payload>`. `mp4.box:<path>`: the
+  SHA-256 of every box the write keeps byte for byte (top level, moov, udta
+  and meta children other than those the writer manages), and `size=<n>` for
+  an mdat (the samples are covered by `mp4.samples`, so no inspection reads
+  the audio twice); `mp4.trak`: the SHA-256 of the track with its chunk
+  offsets zeroed; `mp4.samples`: the SHA-256 of the samples read through the
+  sample table.
+- **Nothing in an unmanaged item is opaque** (a difference from MP3 and
+  FLAC): the writer keeps items as they are stored, so invalid UTF-8, UTF-16
+  or any binary value is kept without loss, and is not refused at import
+  (N-092 is about what a write would lose). Only the metadata structure can
+  block a write: two udta, meta or ilst boxes (`duplicate_block`), a meta
+  without the iTunes handler `mdir` (`foreign_metadata`); the importer
+  refuses those (`unrenderable_tag`, N-092). **Owner decision (2026-09-25):**
+  a `udta` ending with a QuickTime four-byte zero terminator is refused as
+  corrupt for now; tolerating it is a possible follow-up. `free`/`skip`
+  boxes inside the ilst are padding: not a field, dropped by a write.
+- **`VerifyTags`** excludes nothing for M4A beyond the managed fields, their
+  aliases, sort atoms and numeric genre (outside `Unmanaged` by
+  construction) and the pictures. The MP3 migration does not apply. What a
+  write changes in the container (padding, moov size, position of the media,
+  chunk offsets) is outside the canonical form, and the audio stays covered
+  by `mp4.samples`. `TestVerifyTagsM4A`: 14 differences, each refused.
+
+### N-168 · M4A decoding: no window; cover stream ordering — DECIDED (owner accepted residual, 2026-09-25)
+Measured on the pinned FFmpeg 8.1.3 and read in `libavformat/mov.c`:
+- FFmpeg's AAC encoder writes an edit list with media time 1,024 (the
+  priming); FFmpeg's demuxer trims it and decodes the end padding: 133,120
+  frames for a 132,300-frame source. `iTunSMPB` (`mov_read_custom`) sets the
+  same priming when no edit list says otherwise; with both, the same trim
+  (tested: identical digests). ALAC decodes to the source's exact frames.
+- A write keeps the track byte for byte and `iTunSMPB` as an unmanaged item,
+  moves the media when moov grows before it, and fixes the offsets: the
+  digest and the frame count are the same after it, with the edit list,
+  `iTunSMPB`, both or neither, after a growth and after a shrink
+  (`TestAudioDigestM4AGapless`). **No decode window is needed**, unlike MP3
+  (N-154): nothing the writer changes is read by the decoder.
+- **FFmpeg stream ordering:** `mov_read_custom` gives the priming of
+  `iTunSMPB` to the stream created last. Only `covr` data types 13 (JPEG),
+  14 (PNG) and 27 (BMP) create an attached-picture stream; GIF (12) and
+  implicit (0) do not. When a stream-creating covr preceded `iTunSMPB`,
+  that stream takes the priming and the audio is not trimmed (1,024 frames
+  more, tested). **Owner decision (2026-09-25):** place the replacement cover
+  before `iTunSMPB` only in that situation, otherwise after it. Without
+  `iTunSMPB`, use the first covr's position (or the end when absent).
+  Digest tests cover GIF and implicit-type covr before `iTunSMPB`, and two
+  covr items separated by kept items; the replacement preserves the decode.
+  **ACCEPTED residual:** if a stream-creating covr preceded `iTunSMPB`,
+  there is no edit list, and the cover is *removed* with no replacement,
+  the render's §9.1 step 6 detects the changed decode and fails: the output
+  is never published and the album fails until a cover is set. The claim
+  that iTunes files carry an edit list with the same priming is unverified.
+
+### N-169 · `render_version` after round 13 — DECIDED
+`musiclib-render/3 names/1 go1.25.14 ffmpeg/8.1.3-musiclib1 musiclib-tags/4 taglib/2.3.2-musiclib1`.
+- `musiclib-tags/4`: the helper gained M4A (N-165); its FLAC and MP3 code did
+  not change. Binary pins in N-083.
+- `RendererRevision` 3: the planner builds M4A tracks (`.m4a` for AAC and ALAC
+  alike). The transcript adds an AAC and an ALAC track; without them it
+  still gives revision 2's digest (checked), so FLAC and MP3 plans are
+  unchanged. Every album renders again once at the next boot, as N-130
+  intends. `render_format_not_supported_yet` and the importer's
+  `audio_format_not_supported_yet` are removed: no audio format of §8.1 is
+  left unsupported.
+
+### N-170 · M4A fixtures and fuzzing — DECIDED
+- **Audio:** the pinned static FFmpeg 8.1.3 has the native `aac` encoder, the
+  `alac` encoder and the MP4 muxer (moov after the media, or before it with
+  `+faststart`; tags from `-metadata`; a JPEG attached picture as a `covr`
+  image of type 13). It writes the gapless priming as an edit list, not as
+  `iTunSMPB`.
+- **Metadata:** built by an independent Go codec of ISO BMFF and of the iTunes
+  list (`internal/media/mp4meta_test.go`, from the specification, sharing no
+  code with the helper): items of every kind, `iTunSMPB` (priming, padding,
+  samples in iTunes' format), freeform items, a QuickTime meta, 64-bit
+  sizes, `co64`, free boxes, the edit list removed; it also reads the written
+  files back (chunks and samples) independently. The importer, render and
+  publish tests use FFmpeg's own tagging. Nothing is committed.
+- **Fuzzing:** as for MP3 (N-156), `TestTagsM4AMutationSweep` changes 1 to 4
+  random bytes of the moov of a richly tagged file for 200 fixed seeds and
+  runs inspect and write on the ASan/UBSan helper; every outcome is a
+  success that passes `VerifyTags` or a typed refusal leaving the file
+  unchanged: 136 written, 57 corrupt, 4 unsupported, 3 opaque; no `internal`,
+  no sanitizer finding. The hostile table had 35 cases before review; it
+  has 38 with the 64-bit sample entry, non-1 data reference and QuickTime
+  `udta` terminator cases, on both helpers.
+
+### N-171 · Round 13 mutation checks — DECIDED
+Each of the following makes a test fail (checked one at a time, on the real
+tools, the helper rebuilt each time): aliases read before the canonical
+atom; sort atoms kept; `gnre` kept; freeform aliases kept; one kept item
+dropped; the cover moved to the end (the FFmpeg pin and the item order
+fail); the new `iTunSMPB` position rule inverted (stream-creating cover and
+separated covers fail), or applied to GIF/type-0 covr as if it created a
+stream (both digest tests fail); chunk offsets not fixed up (the helper's read-back fails), and the
+same with the read-back disabled (the independent layout check fails); the
+refusal of blocking fields removed; two tracks accepted; `enca` accepted,
+and separately the `sinf` check off; in Go, `VerifyTags` skipping the
+unmanaged comparison for M4A, the importer's `unsupported_audio` mapping
+removed, and the renderer's `no_space` mapping removed
+(`publish.TestExecuteRenderM4AOnAReallyFullDisk`).

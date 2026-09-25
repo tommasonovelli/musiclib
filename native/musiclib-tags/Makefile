@@ -21,9 +21,9 @@ TAGLIB_BUILD ?=
 CXX ?= g++
 OUT := build/$(MODE)
 
-SRCS := src/main.cpp src/ape.cpp src/fdio.cpp src/flac.cpp src/id3v2.cpp src/inspection.cpp src/json.cpp src/mp3.cpp \
+SRCS := src/main.cpp src/ape.cpp src/fdio.cpp src/flac.cpp src/id3v2.cpp src/inspection.cpp src/json.cpp src/m4a.cpp src/mp3.cpp src/mp4.cpp \
         src/request.cpp src/sha256.cpp src/text.cpp
-UNIT_SRCS := tests/unit_tests.cpp src/ape.cpp src/id3v2.cpp src/json.cpp src/sha256.cpp src/text.cpp
+UNIT_SRCS := tests/unit_tests.cpp src/ape.cpp src/id3v2.cpp src/json.cpp src/mp4.cpp src/sha256.cpp src/text.cpp
 
 WARNINGS := -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
             -Wnon-virtual-dtor -Woverloaded-virtual -Werror

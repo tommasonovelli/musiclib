@@ -20,9 +20,6 @@ const (
 	// guarantees (an invalid hash, a disc or number out of range, a cover
 	// that is not JPEG or PNG, no track). Never expected; nothing is built.
 	CodeInvalidSnapshot = "render_invalid_snapshot"
-	// CodeFormatNotSupportedYet: a track whose blob is M4A, which the
-	// renderer does not build until its tag writer exists.
-	CodeFormatNotSupportedYet = "render_format_not_supported_yet"
 	// CodePathCollision: two entries of the album have the same path after
 	// normalization, or a file has the path of a directory of another
 	// (§5.2). The message and Names give both; the user corrects them.

@@ -23,8 +23,7 @@ import (
 // helper's standard input, the result JSON on its standard output; files
 // are descriptors 3, 4, ... and never paths (NOTES.md N-075, N-084).
 //
-// FLAC and MP3 are implemented completely. M4A is refused with
-// CodeTagsUnsupported until its reader and writer exist (PROGRESS.md).
+// FLAC, MP3 and M4A (AAC and ALAC) are implemented completely.
 
 // PictureFrontCover is the picture type of a front cover (FLAC PICTURE and
 // ID3v2 APIC type 3).
@@ -83,6 +82,13 @@ type Inspection struct {
 	// (a frame with flags: its flags and the SHA-256 of its stored data);
 	// "ape:<KEY>" with the unmanaged APE items; "id3v1:comment"; and
 	// "mpeg.audio", the SHA-256 of the audio bytes between the tags.
+	// For M4A (NOTES.md N-167): "ilst:<atom>" and
+	// "ilst:----:<mean>:<name>" with the values of the unmanaged items (the
+	// text of a UTF-8 data atom, else its type, locale and SHA-256);
+	// "mp4.box:<path>" with the SHA-256 of every box a write keeps byte for
+	// byte (the size of an mdat); "mp4.trak", the SHA-256 of the track with
+	// its chunk offsets zeroed; and "mp4.samples", the SHA-256 of the audio
+	// samples read through the sample table.
 	Unmanaged []KeyValues `json:"unmanaged"`
 	// Opaque lists the fields the helper cannot save back without loss.
 	Opaque []OpaqueField `json:"opaque"`
@@ -151,8 +157,10 @@ type Picture struct {
 	// ExtractImages takes.
 	Index int `json:"index"`
 	// Location is "block" (a FLAC PICTURE block), "comment" (a picture in a
-	// Vorbis comment), "id3v2" (an APIC frame) or "ape" (a "Cover Art (...)"
-	// item). An APIC or APE picture has no width, height, depth or colors.
+	// Vorbis comment), "id3v2" (an APIC frame), "ape" (a "Cover Art (...)"
+	// item) or "covr" (an image of an M4A covr atom, always a front cover,
+	// NOTES.md N-166). An APIC, APE or covr picture has no width, height,
+	// depth or colors.
 	Location string `json:"location"`
 	// Type is the picture type (PictureFrontCover, ...).
 	Type   uint32 `json:"type"`
@@ -173,7 +181,7 @@ type OpaqueField struct {
 	// invalid_picture (NOTES.md N-086); for MP3 also invalid_text,
 	// malformed_frame, unknown_flags, unsupported_frame, empty_frame,
 	// compressed_frame, encrypted_frame, duplicate_tag, migration_conflict
-	// (N-153).
+	// (N-153); for M4A also unsupported_data (N-167).
 	Reason string `json:"reason"`
 	// Removed is true when a write removes the field anyway (a managed key,
 	// an alias, a sort key, a picture, an ID3v2 or ID3v1 tag in a FLAC

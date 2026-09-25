@@ -23,6 +23,11 @@ const id3v2MaxFrameBody = 1<<28 - 1
 // terminator (mp3.cpp, newFrames).
 const apicOverhead = 4
 
+// m4aMaxCover is the largest cover the M4A writer embeds: the bound of the
+// whole moov box, 256 MiB (mp4::kMaxMoov), minus the headers of the covr item
+// and of its data atom (kM4aMaxCover in m4a.h).
+const m4aMaxCover = 1<<28 - 24
+
 // coverMIME is the MIME type WriteManagedTags embeds for each cover format
 // (describeCover).
 var coverMIME = map[string]string{FormatJPEG: "image/jpeg", FormatPNG: "image/png"}
@@ -37,8 +42,8 @@ func CoverMIME(coverFormat string) (mime string, ok bool) {
 
 // MaxEmbeddedCover returns the largest cover of format coverFormat ("jpeg"
 // or "png") that WriteManagedTags can embed in an audio file of format
-// audioFormat, in bytes. ok is false when the pair has no known limit: M4A,
-// whose writer does not exist yet (N-094), or another cover format.
+// audioFormat, in bytes. ok is false when the pair has no known limit: an
+// audio format without a writer, or another cover format.
 //
 // For FLAC it is the helper's own bound (flac.cpp, writeFlac): a PICTURE
 // block of 32 + len(MIME) + len(description) + len(data) bytes at most
@@ -49,6 +54,10 @@ func CoverMIME(coverFormat string) (mime string, ok bool) {
 // the same bound, so a source tag already close to 256 MiB could still
 // refuse the write (media_tags_too_large); §8.5 caps covers at 20 MiB, far
 // below (NOTES.md N-155).
+//
+// For M4A it is the bound of the helper's moov (m4a.h): 268,435,432 bytes
+// whatever the image format; as for MP3, a moov already near 256 MiB could
+// still refuse the write (N-166).
 func MaxEmbeddedCover(audioFormat, coverFormat string) (int64, bool) {
 	mime, ok := coverMIME[coverFormat]
 	if !ok {
@@ -59,6 +68,8 @@ func MaxEmbeddedCover(audioFormat, coverFormat string) (int64, bool) {
 		return flacMaxBlockLength - flacPictureHeader - int64(len(mime)), true
 	case FormatMP3:
 		return id3v2MaxFrameBody - apicOverhead - int64(len(mime)), true
+	case FormatM4AAAC, FormatM4AALAC:
+		return m4aMaxCover, true
 	}
 	return 0, false
 }

@@ -63,7 +63,7 @@ func TestMaxEmbeddedCoverIsTheHelpersLimit(t *testing.T) {
 // limit and are refused, never accepted by default.
 func TestEmbeddedCoverFitsUnknownFormats(t *testing.T) {
 	for _, tc := range []struct{ audio, cover string }{
-		{FormatM4AAAC, FormatPNG}, {FormatM4AALAC, FormatJPEG},
+		{FormatM4AAAC, "gif"}, {FormatM4AALAC, "bmp"},
 		{FormatFLAC, "gif"}, {FormatMP3, "gif"}, {"", FormatJPEG},
 	} {
 		if _, ok := MaxEmbeddedCover(tc.audio, tc.cover); ok {

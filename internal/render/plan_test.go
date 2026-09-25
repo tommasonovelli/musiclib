@@ -390,7 +390,6 @@ func TestPlanRefusals(t *testing.T) {
 	}{
 		{"another render version", func(s *jobs.RenderSnapshot) { s.RenderVersion = "other" }, CodeVersionMismatch},
 		{"no tracks", func(s *jobs.RenderSnapshot) { s.Tracks = nil }, CodeInvalidSnapshot},
-		{"ALAC", func(s *jobs.RenderSnapshot) { s.Tracks[0].Blob.Format = catalog.FormatM4AALAC }, CodeFormatNotSupportedYet},
 		{"not audio", func(s *jobs.RenderSnapshot) { s.Tracks[0].Blob.Format = "" }, CodeInvalidSnapshot},
 		{"a GIF cover", func(s *jobs.RenderSnapshot) { s.Cover.Format = "" }, CodeInvalidSnapshot},
 		{"an invalid hash", func(s *jobs.RenderSnapshot) { s.Tracks[1].Blob.Hash = strings.ToUpper(s.Tracks[1].Blob.Hash) }, CodeInvalidSnapshot},
@@ -484,5 +483,27 @@ func TestPlanMP3(t *testing.T) {
 	if !strings.HasSuffix(p.Tracks[0].Path, ".flac") || !strings.HasSuffix(p.Tracks[1].Path, ".mp3") ||
 		p.Tracks[1].Format != catalog.FormatMP3 || p.Tracks[1].Tags.Title != s.Tracks[1].Title {
 		t.Fatalf("tracks %+v", p.Tracks)
+	}
+}
+
+// M4A tracks (since RendererRevision 3): AAC and ALAC alike are named with
+// ".m4a", with the same expected tags as any track; an album may mix every
+// format (N-157). Two tracks whose names differ only by the codec collide.
+func TestPlanM4A(t *testing.T) {
+	s := kindOfBlue()
+	s.Tracks[0].Blob.Format = catalog.FormatM4AAAC
+	s.Tracks[1].Blob.Format = catalog.FormatM4AALAC
+	p, err := NewPlan(s, Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tr := range p.Tracks {
+		if !strings.HasSuffix(tr.Path, ".m4a") || tr.Format != s.Tracks[i].Blob.Format || tr.Tags.Title != s.Tracks[i].Title {
+			t.Fatalf("track %d: %+v", i, tr)
+		}
+	}
+	s.Tracks[1].Title, s.Tracks[1].No = s.Tracks[0].Title, s.Tracks[0].No
+	if _, err := NewPlan(s, Version); Code(err) != CodePathCollision && Code(err) != CodeInvalidSnapshot {
+		t.Fatalf("two tracks of one name: %v", err)
 	}
 }

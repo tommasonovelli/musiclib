@@ -13,7 +13,9 @@ namespace mltags {
 //   3: MP3 (ID3v2, APE, ID3v1) in the three operations (N-152); the
 //      inspection reports the audio range (N-154); ENOSPC and EDQUOT are
 //      the failure code no_space (N-143).
-inline constexpr const char *kHelperVersion = "3";
+//   4: M4A (AAC and ALAC) in the three operations: the helper's own box
+//      walker, ilst reader and writer (N-165 to N-168).
+inline constexpr const char *kHelperVersion = "4";
 
 // MUSICLIB_TAGLIB_BUILD is the revision of the TagLib build configuration,
 // passed by the Dockerfile (ARG TAGLIB_BUILD_REVISION). It is appended to the

@@ -2,6 +2,7 @@
 // JSON reader and writer, SHA-256, and the ID3v2 and APE readers and writers. They run at image build time
 // (`make check`, under ASan/UBSan); the helper's contract on real files is
 // tested from Go, in internal/media.
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +14,7 @@
 #include "../src/failure.h"
 #include "../src/id3v2.h"
 #include "../src/json.h"
+#include "../src/mp4.h"
 #include "../src/sha256.h"
 #include "../src/text.h"
 
@@ -218,6 +220,7 @@ void testSHA256() {
 }
 
 #include "unit_tests_mp3.inc"
+#include "unit_tests_mp4.inc"
 
 }  // namespace
 
@@ -230,6 +233,10 @@ int main() {
   testID3v2Text();
   testID3v2Tags();
   testAPE();
+  testMP4Boxes();
+  testMP4Data();
+  testMP4SampleTable();
+  testMP4PatchOffsets();
   if (failures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", failures);
     return 1;

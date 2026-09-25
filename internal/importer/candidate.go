@@ -201,9 +201,11 @@ func (im *Importer) checkUnchanged(ctx context.Context, r *fsops.Root, depth int
 
 // readFile classifies one verified copy by its content (§7.2) and, for a
 // track, decodes it completely (§7.6) and reads its tags (§7.3):
-//   - supported audio is a track: FLAC and MP3 (Phase 4 adds MP3; FLAC and
-//     MP3 may share a candidate, NOTES.md N-157); M4A is
-//     CodeFormatNotSupportedYet;
+//   - supported audio is a track: FLAC, MP3 and M4A (AAC or ALAC), which
+//     may share a candidate (NOTES.md N-157);
+//   - an M4A the tag reader does not handle (fragmented, encrypted, more
+//     than one track: N-165) is CodeUnsupportedAudio, like audio the probe
+//     refuses;
 //   - audio that is not supported is CodeUnsupportedAudio;
 //   - no audio or unreadable, with a known audio extension, is
 //     CodeCorruptAudio; without one, an attachment;
@@ -234,14 +236,15 @@ func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warni
 		}
 		return nil, nil // an attachment
 	}
-	if p.Format != media.FormatFLAC && p.Format != media.FormatMP3 {
-		return nil, &Error{Code: CodeFormatNotSupportedYet, Path: rel,
-			Message: fmt.Sprintf("%q is %s audio, which this version does not import yet (FLAC and MP3 only)", rel, p.Format)}
-	}
 	if _, err := im.tools.AudioDigest(ctx, bf); err != nil {
 		return nil, corrupt(rel, err, decodeFailures...)
 	}
 	in, err := im.tools.Inspect(ctx, bf, p.Format)
+	var me *media.Error
+	if media.Code(err) == media.CodeTagsUnsupported && errors.As(err, &me) {
+		return nil, &Error{Code: CodeUnsupportedAudio, Path: rel, Err: err,
+			Message: fmt.Sprintf("%q is audio that is not supported: %s", rel, me.Msg)}
+	}
 	if err != nil {
 		return nil, corrupt(rel, err, readerFailures...)
 	}

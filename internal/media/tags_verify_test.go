@@ -415,3 +415,62 @@ func TestVerifyTagsID3v1Migration(t *testing.T) {
 	flacAfter := Inspection{Format: FormatFLAC, Managed: ManagedTags{Title: []string{"T"}}, Unmanaged: []KeyValues{legacy("old comment")}}
 	wantCode(t, VerifyTags(v, nil, flac, flacAfter), CodeTagsVerification)
 }
+
+// For M4A, VerifyTags excludes nothing beyond the managed fields and the
+// pictures (N-167): every unmanaged item, kept box, the track and the
+// samples must be the same, and the MP3 migration does not apply.
+func TestVerifyTagsM4A(t *testing.T) {
+	unmanaged := func() []KeyValues {
+		return []KeyValues{
+			{"ilst:----:com.apple.iTunes:iTunSMPB", []string{" 00000000 00000840"}},
+			{"ilst:©cmt", []string{"a", "b"}},
+			{"ilst:tmpo", []string{"data type=21 locale=00000000 sha256:" + strings.Repeat("01", 32)}},
+			{"id3v1:comment", []string{"not an M4A key, but it must not be migrated"}},
+			{"mp4.box:ftyp", []string{"sha256:" + strings.Repeat("02", 32)}},
+			{"mp4.box:mdat", []string{"size=100"}},
+			{"mp4.samples", []string{"sha256:" + strings.Repeat("03", 32)}},
+			{"mp4.trak", []string{"sha256:" + strings.Repeat("04", 32)}},
+		}
+	}
+	v := TagValues{Title: "T", Genre: "Rock"}
+	cover := &ExpectedCover{MIME: "image/jpeg", Size: 5, SHA256: strings.Repeat("ab", 32)}
+	before := Inspection{Format: FormatM4AAAC, Managed: ManagedTags{Genre: []string{"Jazz"}}, Unmanaged: unmanaged(),
+		Pictures: []Picture{{Location: "covr", Type: 3}, {Index: 1, Location: "covr", Type: 3}},
+		Opaque:   []OpaqueField{{Key: "ilst:gnre", Reason: "malformed_entry", Removed: true}}}
+	after := Inspection{Format: FormatM4AAAC, Managed: ManagedTags{Title: []string{"T"}, Genre: []string{"Rock"}}, Unmanaged: unmanaged(),
+		Pictures: []Picture{{Location: "covr", Type: 3, MIME: "image/jpeg", Size: 5, SHA256: strings.Repeat("ab", 32)}}}
+	if err := VerifyTags(v, cover, before, after); err != nil {
+		t.Fatalf("a correct write: %v", err)
+	}
+	for name, edit := range map[string]func(*Inspection){
+		"an item lost":           func(in *Inspection) { in.Unmanaged = slices.Delete(in.Unmanaged, 1, 2) },
+		"iTunSMPB changed":       func(in *Inspection) { in.Unmanaged[0].Values = []string{" 00000000 00000400"} },
+		"values reordered":       func(in *Inspection) { in.Unmanaged[1].Values = []string{"b", "a"} },
+		"a data type changed":    func(in *Inspection) { in.Unmanaged[2].Values = []string{"data type=1 locale=00000000 sha256:x"} },
+		"the ID3v1 key lost":     func(in *Inspection) { in.Unmanaged = slices.Delete(in.Unmanaged, 3, 4) },
+		"the ftyp changed":       func(in *Inspection) { in.Unmanaged[4].Values = []string{"sha256:" + strings.Repeat("05", 32)} },
+		"the media data resized": func(in *Inspection) { in.Unmanaged[5].Values = []string{"size=101"} },
+		"the samples changed":    func(in *Inspection) { in.Unmanaged[6].Values = []string{"sha256:" + strings.Repeat("06", 32)} },
+		"the track changed":      func(in *Inspection) { in.Unmanaged[7].Values = []string{"sha256:" + strings.Repeat("07", 32)} },
+		"an item appeared":       func(in *Inspection) { in.Unmanaged = append(in.Unmanaged, KeyValues{"ilst:xid ", []string{"x"}}) },
+		"an alias left":          func(in *Inspection) { in.Conflicts = []Conflict{{Field: "genre"}} },
+		"the genre not written":  func(in *Inspection) { in.Managed.Genre = []string{"Jazz"} },
+		"two covers":             func(in *Inspection) { in.Pictures = append(in.Pictures, in.Pictures[0]) },
+		"an opaque field after": func(in *Inspection) {
+			in.Opaque = []OpaqueField{{Key: "ilst:gnre", Reason: "malformed_entry", Removed: true}}
+		},
+	} {
+		a := after
+		a.Unmanaged = unmanaged()
+		a.Pictures = slices.Clone(after.Pictures)
+		edit(&a)
+		if err := VerifyTags(v, cover, before, a); Code(err) != CodeTagsVerification {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	b := before
+	b.Opaque = []OpaqueField{{Key: "mp4:moov/udta/meta", Reason: "foreign_metadata"}}
+	if err := VerifyTags(v, cover, b, after); Code(err) != CodeTagsVerification {
+		t.Errorf("a blocking field before the write: %v", err)
+	}
+}

@@ -7,13 +7,13 @@
 // write), the sort keys of the four managed names (removed by a write), and
 // the keys that carry pictures (managed as the cover).
 //
-// FLAC (Vorbis comments) and MP3 (ID3v2, APE, ID3v1) are implemented and
-// covered by the fixtures of internal/media. Besides this table, a FLAC
-// write has one declared removal (NOTES.md N-090): ID3v2 and ID3v1 tags,
-// which are not part of the format, are stripped whole (writeFlac in
-// flac.cpp); an MP3 write has the declared rules of §8.3 (mp3.cpp): the ID3v1
-// tag is removed and its comment migrated. The M4A table comes with its
-// reader and writer (PROGRESS.md).
+// FLAC (Vorbis comments), MP3 (ID3v2, APE, ID3v1) and M4A (iTunes ilst
+// atoms) are implemented and covered by the fixtures of internal/media.
+// Besides this table, a FLAC write has one declared removal (NOTES.md N-090):
+// ID3v2 and ID3v1 tags, which are not part of the format, are stripped whole
+// (writeFlac in flac.cpp); an MP3 write has the declared rules of §8.3
+// (mp3.cpp): the ID3v1 tag is removed and its comment migrated. An M4A write
+// has no declared rule beyond this table (m4a.cpp, NOTES.md N-165).
 #pragma once
 
 #include <array>
@@ -219,5 +219,63 @@ constexpr bool isApeManagedKey(std::string_view key) noexcept {
   }
   return key.starts_with(kApePicturePrefix);
 }
+
+// ---------------------------------------------------------------------------
+// M4A: the items of the iTunes metadata list, moov/udta/meta/ilst (NOTES.md
+// N-094, N-166). An item is an atom named by four bytes (0xA9 is the "©" of
+// "©nam") whose "data" atoms hold its values; a freeform item "----" names
+// itself with a "mean" and a "name" atom. Reading follows DESIGN.md §8.1 for
+// formats other than MP3: the canonical atom of the §8.2 table wins over its
+// aliases, which are read only as a fallback; every other non-empty source
+// that disagrees is a conflict. A write removes every atom of these tables
+// and writes only the canonical atoms.
+
+// The mean of the iTunes freeform items ("----:com.apple.iTunes:<name>"),
+// the only one whose names the table knows.
+inline constexpr std::string_view kMp4FreeformMean = "com.apple.iTunes";
+
+// Mp4Field is a managed field in an ilst. atom is the §8.2 atom (empty for
+// the totals, whose canonical source is the total of trkn and disk);
+// freeformAliases are the names of iTunes freeform items read as a fallback
+// (compared in ASCII upper case): the names the same field has as a Vorbis
+// comment, as the TXXX aliases of MP3 (N-159).
+struct Mp4Field {
+  Field field;
+  std::string_view atom;
+  std::array<std::string_view, 3> freeformAliases;
+};
+
+// The atoms with "©" are written as "\xA9" followed by a separate literal: a
+// hex escape would otherwise swallow the next letters ("\xA9ART").
+inline constexpr std::array<Mp4Field, kFieldCount> kMp4Fields = {{
+    {Field::Title, "\xA9" "nam", {}},
+    {Field::Artist, "\xA9" "ART", {}},
+    {Field::AlbumArtist, "aART", {"ALBUM ARTIST", "ALBUMARTIST", "ALBUM_ARTIST"}},
+    {Field::Album, "\xA9" "alb", {}},
+    {Field::Track, "trkn", {}},
+    {Field::TrackTotal, "", {"TRACKTOTAL", "TOTALTRACKS"}},
+    {Field::Disc, "disk", {}},
+    {Field::DiscTotal, "", {"DISCTOTAL", "TOTALDISCS"}},
+    {Field::Date, "\xA9" "day", {}},
+    // The numeric genre "gnre" is the alias (kMp4GenreNumber).
+    {Field::Genre, "\xA9" "gen", {}},
+    {Field::Compilation, "cpil", {}},
+}};
+
+// The numeric genre: an ID3v1 genre number plus one. Read as the fallback of
+// "©gen", always removed (§8.2: "genere numerico MP4 quando si scrive quello
+// testuale"; a genre the DB does not have is removed too, N-166).
+inline constexpr std::string_view kMp4GenreNumber = "gnre";
+
+// Sort atoms of title, artist, album artist and album (§8.2), and the
+// freeform items named like the Vorbis sort keys. Always removed. "soco"
+// (composer sort) and "sosn" (show sort) are unmanaged.
+inline constexpr std::array<std::string_view, 4> kMp4SortAtoms = {"sonm", "soar", "soaa", "soal"};
+inline constexpr std::array<std::string_view, 4> kMp4SortFreeform = {"TITLESORT", "ARTISTSORT", "ALBUMARTISTSORT",
+                                                                     "ALBUMSORT"};
+
+// The atom of pictures, managed as the cover: every image in it is cover art
+// (N-166); a write replaces it with at most one front cover.
+inline constexpr std::string_view kMp4PictureAtom = "covr";
 
 }  // namespace mltags

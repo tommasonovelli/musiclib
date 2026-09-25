@@ -115,11 +115,11 @@ func (p Plan) Files() []string {
 }
 
 // extensions are the file extensions of the formats this renderer builds:
-// FLAC and MP3 for tracks (M4A comes with its tag writer), JPEG and PNG
-// for the cover.
+// FLAC, MP3 and M4A (AAC and ALAC alike) for tracks, JPEG and PNG for the
+// cover.
 var (
-	trackExtensions = map[string]string{catalog.FormatFLAC: "flac", catalog.FormatMP3: "mp3"}
-	laterFormats    = map[string]bool{catalog.FormatM4AAAC: true, catalog.FormatM4AALAC: true}
+	trackExtensions = map[string]string{catalog.FormatFLAC: "flac", catalog.FormatMP3: "mp3",
+		catalog.FormatM4AAAC: "m4a", catalog.FormatM4AALAC: "m4a"}
 	coverExtensions = map[string]string{catalog.FormatJPEG: "jpg", catalog.FormatPNG: "png"}
 )
 
@@ -219,11 +219,7 @@ func planTracks(s *jobs.RenderSnapshot, cover *Cover, ns *namespace) ([]Track, [
 			return nil, nil, err
 		}
 		ext, ok := trackExtensions[t.Blob.Format]
-		switch {
-		case !ok && laterFormats[t.Blob.Format]:
-			return nil, nil, &Error{Code: CodeFormatNotSupportedYet, Names: []string{name},
-				Message: fmt.Sprintf("%s is %s audio, which this version does not render yet (FLAC and MP3 only)", name, t.Blob.Format)}
-		case !ok:
+		if !ok {
 			return nil, nil, errorf(CodeInvalidSnapshot, "%s has blob format %q, not audio", name, t.Blob.Format)
 		}
 		dir := ""
