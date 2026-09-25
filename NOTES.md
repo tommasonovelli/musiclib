@@ -1648,6 +1648,11 @@ The earlier non-synchsafe case stays `corrupt`.
   file at import (`corrupt_audio`, N-128).
 
 ### N-091 · A cover larger than about 16 MiB cannot go into a FLAC — DECIDED (owner, 2026-09-23)
+**Round 14:** the cover endpoints of §10.2 enforce it: `catalog.SetCover`
+asks `CoverFits` for every audio format of the album in its transaction
+(422 `cover_not_embeddable`), and the upload asks it on a snapshot before
+the put (N-173, N-174). A refused attachment stays an attachment.
+
 **Round 13:** M4A has its limit (N-166): every audio format has one now, so
 `EmbeddedCoverFits` refuses only an unknown audio or cover format.
 
@@ -2142,6 +2147,10 @@ The warning `year_discordant` is given when the valid values differ. Pinned
 by `TestInferMetadata`.
 
 ### N-117 · An imported LRC file that is not UTF-8 stays an attachment — DECIDED
+**Round 14:** the lyrics endpoints check UTF-8 on an upload (2 MiB at
+most) and on an assigned `.lrc` attachment (no size limit, as here); see
+N-177.
+
 §10.2 requires UTF-8 text for LRC uploads. §7.4 only says when an imported
 LRC is associated.
 
@@ -2158,6 +2167,11 @@ Ambiguity is an explicit error (§7.4), `lyrics_association`: several tracks
 with the stem, or several LRC files for one track.
 
 ### N-118 · Content-derived blob formats at import — DECIDED
+**Round 14:** confirmed by the cover endpoints (N-174): an attachment
+chosen as the cover is validated then, and its blob learns `jpeg` or
+`png`; an uploaded attachment keeps NULL. Only a blob whose format says it
+was validated is downloaded inline (N-175).
+
 `blobs.format` comes from the content only (§4.2):
 - `flac` for the tracks, from the probe;
 - `jpeg` or `png` for the chosen cover, from the Go decode of §8.5;
@@ -3437,6 +3451,14 @@ album's (§10.2).
   accepted; the surrogate check removed; a duplicate track id accepted.
 
 ### N-149 · Error codes and statuses — DECIDED
+**Round 14:** `attachment_path_collision` moves to 409, and the codes of
+the content endpoints are added (N-172, N-179): 404 `attachment_not_found`,
+`track_not_found`, `cover_not_found`, `lyrics_not_found`; 422
+`cover_not_embeddable`, `invalid_lyrics` and the path codes of `names`; 400
+`upload_incomplete`; 507 `insufficient_space`. The 409 for
+`attachment_path_collision` and the 507 for `insufficient_space` were
+confirmed by the owner on 2026-09-25 (N-172).
+
 - **The body** is always `{code, message, details}`: `details` is an
   object, `{}` when empty.
 - **Codes** are the stable codes of the typed errors (catalog, names,
@@ -3538,6 +3560,9 @@ under other typed errors. Otherwise it returns the message unchanged.
   mutation-checked.
 
 ### N-151 · Where the round-11 pieces live — DECIDED
+**Round 14:** cover, attachments, lyrics, track deletion and the downloads
+are registered (N-172 to N-180); `Enable` takes a `Backend`.
+
 - **The package.** `internal/http` (§2.3) is package `http`. It imports
   the standard library as `nethttp`, and `cmd/musiclibd` imports it as
   `apihttp`. It uses only the standard library's `ServeMux` (Go 1.22
@@ -4139,3 +4164,342 @@ and separately the `sinf` check off; in Go, `VerifyTags` skipping the
 unmanaged comparison for M4A, the importer's `unsupported_audio` mapping
 removed, and the renderer's `no_space` mapping removed
 (`publish.TestExecuteRenderM4AOnAReallyFullDisk`).
+
+---
+
+## Round 14: the editor's content over the API (2026-09-25)
+
+N-091, N-117, N-118, N-149 and N-151 were updated; see those entries.
+
+### N-172 · The upload protocol: raw bodies, one query parameter — DECIDED
+§10.2 leaves the form of an upload open. The simplest robust choice:
+- **The body is the file**, `Content-Type: application/octet-stream`,
+  exactly that type with no parameter; anything else is 415. No multipart:
+  no boundary parsing, no second name for the file, no form a cross-site
+  page could post (the §10.4 header already refuses those). The format is
+  always read from the content (§4.2), never from a declared type or a
+  name: a declared `image/png` would be one more thing to disagree with.
+- **The attachment's relative path** is the one query parameter `path`
+  of `POST /api/albums/{id}/attachments?path=<percent-encoded path>`:
+  UTF-8 through percent-encoding, which a header cannot carry. The query is
+  parsed strictly (`url.ParseQuery`, so `;` and bad escapes are refused):
+  exactly one `path` (422 `missing_field` / `invalid_field`), no other
+  parameter (422 `unknown_field`), as N-148 treats JSON keys. The path is
+  validated by `catalog.AttachmentPath`, the one rule of §5.2
+  (`names.SanitizeRelFilePath`): absolute, `.`, `..`, empty segments,
+  invalid UTF-8, NUL, over 16 levels or 1,024 bytes are 422 with the names
+  code, before any byte of the body is read (tested with a request head
+  that declares a body and never sends it). **A `+` is a space**, as
+  `url.ParseQuery` and every HTML form decode a query: `?path=a+b.pdf`
+  stores `a b.pdf`, and a literal plus must be sent as `%2B`
+  (`TestAttachmentPathPlus` pins both; `docs/docker.md` says so).
+- **Choosing an attachment** (cover, lyrics) is a JSON body
+  `{"attachment_id": "<id>"}` under N-148's strict rules. `PUT .../cover`
+  and `PUT .../lyrics` dispatch on the Content-Type: JSON is a choice,
+  `application/octet-stream` an upload.
+- **Limits** (§10.2, §8.5): cover 20 MiB (`media.MaxCoverBytes`), LRC 2 MiB,
+  attachment 256 MiB. A `Content-Length` over the limit is 413
+  `body_too_large` (`details.limit`) before anything is read; without one
+  (chunked), 413 as soon as the limit is passed (`http.MaxBytesReader`),
+  and the put's temporary is removed. The tests use the real limits, 256
+  MiB included (streamed from a generator, about 2 s): no configurable test
+  limit was needed.
+- **Buffering:** a cover and an LRC file are read whole (at most 20 and 2
+  MiB) and checked **before** they are pinned, so an invalid file never
+  becomes a blob; the importer decodes covers in memory anyway (N-124). An
+  attachment is streamed from the socket into `blobstore.Put`, never held
+  in memory. **ACCEPTED:** nothing limits concurrent uploads, so each
+  concurrent cover upload holds up to 20 MiB and may decode up to 40
+  Mpixel (about 320 MB at 16-bit RGBA); acceptable for the single trusted
+  user of §10.4.
+- **Space (§11.2):** every put reserves its size (the Content-Length, or
+  the limit without one) in the process's `jobs.Budget` against `statfs` of
+  `/data/work` minus the 1 GiB margin, and releases it when the put is
+  over, whatever its outcome. No room is **507 `insufficient_space`**, as
+  is ENOSPC during the put (`blobstore.CodeNoSpace`). §10.1 lists no status
+  for it; 507 (RFC 4918, "Insufficient Storage") says what happened, and
+  the retry is the same request later. **Confirmed by the owner on
+  2026-09-25.** Tested deterministically (`TestUploadInsufficientSpace`):
+  the test holds a reservation made against an inflated free space
+  (`Reserve(1<<62, 1<<61)`), so every real `statfs` of the shared ext4
+  TMPDIR leaves a negative remainder whatever other packages' tests free
+  meanwhile; an earlier version filled the budget to 100 bytes of one
+  `statfs` reading and was flaky. That an upload reserves exactly its
+  Content-Length while the body is received, and releases it after, is
+  `TestUploadReservesItsLength` (a 5 MiB body through a pipe, the budget
+  observed while the server waits for the rest).
+- **A body that cannot be read to its end** (the client went away, a
+  malformed chunked body) is 400 `upload_incomplete`.
+- **ACCEPTED:** the 507 of an ENOSPC met *during* the put
+  (`blobstore.CodeNoSpace`) is not exercised on a really full disk: on any
+  filesystem small enough to fill in a test, the 1 GiB margin makes the
+  budget refuse first (tested, `TestUploadInsufficientSpace`). The put's own
+  ENOSPC handling is tested by `blobstore.TestPutOnAReallyFullFilesystem`.
+- **Deviation from N-149's table:** `attachment_path_collision` is now 409,
+  not 422. §10.1: "409 per conflitti di nomi"; the code was only produced
+  by the import commit, which stores it in a failed job, and never reached
+  the API before. **Confirmed by the owner on 2026-09-25.**
+
+### N-173 · The order of an upload's checks, and the snapshot precheck — DECIDED
+§10.2: "il blob viene fissato prima della transazione con If-Match. Se il
+salvataggio fallisce resta un blob non referenziato". Pinning first is the
+rule; pinning what is certain to be refused is waste that no GC ever
+reclaims (§7.5). The order:
+1. the ids of the path (404), If-Match presence and syntax (428, 400), the
+   media type (415), the query (422), a declared length over the limit
+   (413): no database, no body (N-147's "validation first");
+2. **a snapshot of the album** (`catalog.GetAlbum`) compared with If-Match
+   (`catalog.CheckRevision`): 404 and 412 at once; for an attachment, the
+   collision rule `catalog.AttachmentConflict` on the snapshot's paths
+   (409); for lyrics, the track (404); for a cover, after its validation,
+   N-091 on the snapshot's audio formats (`Service.CheckCoverFits`, 422);
+3. the body: 413, 422 (§8.5 image check, UTF-8);
+4. the space (507) and the put;
+5. the failpoint `upload_pinned` (`http.Config.Failpoints`, N-142);
+6. the catalog transaction, which alone decides: 404, 412, 409, 422 again
+   under the lock.
+
+The precheck is an optimization only: a change that commits between 2 and
+6 still makes the transaction refuse, and the blob stays pinned and
+unreferenced. `http.TestUploadFailsAfterThePut` does exactly that with the
+failpoint (the album trashed between the put and the transaction) for a
+cover, an attachment and lyrics: 412, the blob on disk with no `blobs`
+row and no reference, the album as the other change left it. A failure
+injected at the failpoint is 500 with nothing referenced.
+`http.TestConcurrentCoverUploads`: 15 rounds of two uploads on one
+revision, exactly one 200 and one 412 naming the winner's revision; the
+loser's blob is absent (refused on the snapshot) or pinned and
+unreferenced (refused in the transaction), never recorded. Mutation-checked: the precheck off
+(the refused uploads leave blobs: three tests fail), and the
+transaction's revision check off (the concurrent and failpoint tests
+fail).
+
+For a JSON choice of an attachment the body is read first (N-147's
+order), then the snapshot; nothing is pinned on that path. For lyrics, the
+track (404) and the attachment's `.lrc` name (422, the one rule
+`catalog.CheckLyricsAttachment` that `SetLyrics` applies again in the
+transaction) are checked on the snapshot before the attachment's blob is
+read for its UTF-8 check, which may be 256 MiB
+(`http.TestLyricsAttachmentPrecheck` removes the blobs from the store, so
+reading one would be 500; mutation-checked for both refusals).
+
+### N-174 · The cover endpoints — DECIDED
+- `PUT /api/albums/{id}/cover` with a file: validated by
+  `media.ValidateCover` (moved from the importer, same rule: JPEG or PNG by
+  content, at most 20 MiB, at most 40 Mpixel checked on the header before
+  any decode, a complete decode), refused with 422 `invalid_cover` and the
+  reason. The bytes are pinned as they are (§8.5). **An uploaded cover is
+  only the cover, not an attachment**: §7.4 keeps an *external image
+  chosen as the cover* as an attachment because it came with the rip; an
+  upload came for the cover alone, and adding it under `Extras/` would
+  invent a file name.
+- With `{"attachment_id"}`: an attachment of the same album (404
+  otherwise, an id of another album's attachment included); its blob is
+  read and validated like an upload (422 `invalid_cover` with
+  `details.attachment_id`); it **stays an attachment** (§7.4). Its blob
+  learns its format (N-102: NULL becomes `jpeg`/`png`), so from then on it
+  is a validated image, downloaded inline (N-175).
+- **N-091** (owner): `catalog.SetCover` asks `CoverFits` for every audio
+  format of the album in the transaction: 422 **`cover_not_embeddable`**
+  with the format in `details.names` (a code of its own, the importer's
+  warning code, rather than `invalid_cover`: the image is valid). The
+  upload path asks the same question on the snapshot first (N-173). The
+  per-format limits are the tag adapter's (`media.MaxEmbeddedCover`):
+  tested at the boundary, a PNG of exactly 20 MiB is refused on a FLAC
+  album and accepted on an MP3 and an M4A album; 16,777,174 bytes is
+  accepted on FLAC and one more refused. A refused attachment stays an
+  attachment.
+- `DELETE /api/albums/{id}/cover`: `cover_hash = NULL`. The next render
+  writes no `cover.*` and embeds no picture: the tag writer's absent cover
+  removes every picture (N-087), in FLAC, MP3 and M4A alike
+  (`TestEndToEndEditorContent` reads the published files back with the
+  helper). The blob stays; an attachment with the same image stays. For an
+  M4A, N-168's accepted residual applies (N-181).
+- `GET /api/albums/{id}/cover`: the download (N-175); 404
+  `cover_not_found` without a cover.
+
+### N-175 · Downloads by entity id — DECIDED
+§10.2: "endpoint per ID dell'entità, mai un endpoint che legge un
+pathname ricevuto dal client". The routes:
+- `GET /api/albums/{id}/tracks/{track}/original`
+- `GET /api/albums/{id}/tracks/{track}/lyrics`
+- `GET /api/albums/{id}/cover`
+- `GET /api/albums/{id}/attachments/{attachment}/content`
+
+**Ownership is structural:** the album is read in one snapshot and the
+entity is looked up among *its* tracks and attachments; the blob's hash
+comes from the catalog, never from the request. An id of another album's
+entity is 404 exactly like an unknown id (mutation-checked: any id
+accepted fails `TestDownloads`). A malformed id is 404; a path that is not
+clean is the router's 404.
+
+**Headers:** `Content-Type` is always set (so `http.ServeContent` never
+sniffs), from the blob's content format: `audio/flac`, `audio/mpeg`,
+`audio/mp4`, `image/jpeg`, `image/png`; lyrics `text/plain;
+charset=utf-8` (UTF-8 is checked at import, N-117, and at upload); a blob
+without a known format is `application/pdf` when it starts with `%PDF-`,
+otherwise `application/octet-stream`. **Only a JPEG or PNG whose blob
+format says it was validated** (the cover; an attachment chosen as the
+cover, N-118) is `inline`; everything else, PDFs included, is
+`attachment` ("PDF scaricabile e apribile nel browser": the browser opens
+the downloaded `application/pdf` with its own viewer; no inline PDF in the
+app's origin). `nosniff` and `no-store` as on every `/api` answer. Ranges
+and HEAD work (`http.ServeContent`, no ETag, no Last-Modified).
+**ACCEPTED:** an unsatisfiable range is `http.ServeContent`'s own 416,
+whose body is `text/plain`, not §10.1's JSON `{code, message, details}`;
+harmless (`nosniff`, `no-store`, and the status says it all).
+
+**Content-Disposition** (RFC 6266, RFC 8187): `filename="<fallback>";
+filename*=UTF-8''<percent-encoded>`. The fallback replaces every byte that
+is not printable ASCII, and `"`, `\` and `%`, with `_`; `filename*`
+percent-encodes everything but the attr-chars. No byte of a name reaches
+the header unescaped, so CR/LF cannot end the field and `;` cannot add a
+parameter (tested with a track imported as `01 "So" What\ \r\nX-Evil: 1;
+%41 é ☃.flac`, which Go's `mime.ParseMediaType` decodes back exactly).
+The names: the original's base name as imported, the attachment's base
+name, `cover.jpg`/`cover.png`, and the track's stem plus `.lrc`.
+
+A blob the catalog references but the store does not hold, or of another
+size, is the store's damage (§11.3): 500 `internal`, logged, nothing of the
+cause in the answer. The lyrics' size is not in the album view, so only
+their existence is checked.
+
+### N-176 · Deleting the attachment that holds the cover's image — DECIDED
+`albums.cover_hash` references a blob, not an attachment (§4.2), and §7.4
+keeps a chosen external image both as the cover and as an attachment. So
+`DELETE .../attachments/{attachment}` removes only the attachment row: the
+cover stays, `cover.jpg` and the embedded pictures stay, `Extras/<path>`
+goes. Confirmed against the code (`catalog.DeleteAttachment` touches only
+`attachments`) and tested in the catalog and over HTTP. To remove the
+cover too, `DELETE .../cover`. **Lyrics likewise:** deleting an `.lrc`
+attachment that was assigned to a track (N-177) keeps the track's lyrics,
+because `tracks.lyrics_hash` references the blob, not the attachment; the
+file next to the track stays and `Extras/<path>` goes (catalog
+`TestSetLyrics`). To remove the lyrics too, `DELETE .../lyrics`.
+
+### N-177 · Assigning an .lrc attachment keeps the attachment — DECIDED (owner, 2026-09-25)
+At import, an associated LRC is *not* an attachment (§7.4: "Ogni file non
+audio, eccetto un LRC associato, diventa un allegato"). Through the editor,
+`PUT .../lyrics {"attachment_id"}` **keeps the attachment**, and the output
+then holds the file twice (`NN - Title.lrc` next to the track, and
+`Extras/<path>`). Why the conservative reading:
+- the assignment is a reference to a blob, like the cover; removing the
+  attachment would be an implicit deletion, and §10.3 wants every removal
+  of an attachment confirmed, with its lack of undo stated;
+- §7.4 already accepts the same duplication for a chosen cover;
+- the user removes the attachment with one explicit, confirmed request.
+
+Rules of the assignment: the attachment's name must end in `.lrc` (ASCII
+case-insensitive; 422 `invalid_lyrics`), its content valid UTF-8 (checked
+while streaming, 422 `invalid_lyrics`), and its blob not known as audio or
+an image (422 `invalid_blob_format`, the import's role rule). The 2 MiB
+limit is an upload's (§10.2) and is not applied to an existing
+attachment, as N-117 does not apply it to an imported LRC.
+
+**Owner decision (2026-09-25): keep the attachment**, as implemented. The
+alternative was to move the attachment into the track's lyrics (the
+importer's result, one file less in the output, but an implicit
+deletion). The rationale:
+- §4.3 and §10.3 require every removal of an attachment to be explicit
+  and confirmed;
+- §7.4 accepts the same duplication for a cover;
+- the UI may later offer "also remove the attachment" as a separate
+  confirmed action.
+
+Deleting the attachment afterwards keeps the lyrics (N-176).
+
+### N-178 · Content operations on an album in the trash — DECIDED
+§4.3 allows renaming an album in the trash, and `UpdateAlbum` accepts any
+change of a trashed album (N-104: each bumps and enqueues, and the render
+of a trashed album is its removal, idempotent). For consistency every
+content operation is allowed in the trash too: what it changes comes back
+with the restore. The minimum of one track holds in the trash as well
+(`no_tracks`): a restore must give an active album with tracks (§4.3).
+Downloads work for a trashed album: its blobs are still there.
+
+### N-179 · Effective changes, no-ops, and the codes — DECIDED
+Each operation is one `changeAlbum` (the album read, the revision
+compared, then the change and `outputChanged`: bump, claims, the single
+enqueue, §4.3). **No-ops** (200, same revision, no render, no wake-up):
+- the cover already set to the same blob (upload or attachment);
+- `DELETE .../cover` without a cover;
+- the same lyrics blob already assigned to the track;
+- `DELETE .../lyrics` without lyrics.
+
+Adding an attachment, removing one and removing a track always change the
+output. A no-op is detected before the N-091 and blob checks, so an album
+can be given its current cover again whatever the rules say today (as
+N-162 does for genres).
+
+**Codes and statuses** (added to `statusOf`, pinned by `TestStatusTable`):
+
+| Status | Codes |
+|---|---|
+| 404 | `attachment_not_found`, `track_not_found` (the catalog's); `cover_not_found`, `lyrics_not_found` (downloads) |
+| 409 | `attachment_path_collision` (N-172) |
+| 413 | `body_too_large` with `details.limit` |
+| 415 | `unsupported_media_type` |
+| 422 | `invalid_cover`, `cover_not_embeddable`, `invalid_lyrics`, `no_tracks` (the last track), `invalid_blob_format`, and the names path codes `path_empty`, `path_absolute`, `path_dot_segment`, `path_empty_segment`, `path_nul_byte`, `path_too_deep`, `path_too_long`, `invalid_utf8` |
+| 400 | `upload_incomplete` |
+| 507 | `insufficient_space` |
+
+`blob_mismatch` (a hash recorded with another size: corruption or a bug)
+stays out of the table: 500, logged.
+
+### N-180 · Where the round-14 pieces live; `render_version` unchanged — DECIDED
+- **`internal/catalog/content.go`**: `SetCover`, `RemoveCover`,
+  `AddAttachment`, `DeleteAttachment`, `SetLyrics`, `RemoveLyrics`,
+  `DeleteTrack`, and the pure `AttachmentPath`, `AttachmentConflict`,
+  `CheckRevision` and `Service.CheckCoverFits` that the API's precheck
+  uses (one implementation each, §13.2). Nine sqlc queries in
+  `sql/catalog.sql`; no schema change.
+- **`internal/media/cover.go`**: `ValidateCover`, `MaxCoverBytes`,
+  `MaxCoverPixels`, `CodeInvalidImage`, moved from the importer so that the
+  importer and the API share the §8.5 rule; a read error is now `media_io`
+  and is no longer taken for an invalid image. `importer.MaxCoverPixels`
+  and the importer's warnings are unchanged.
+- **`internal/http`**: `upload.go` (the protocol), `content.go` (the
+  endpoints), `download.go`. `API.Enable` takes a `Backend{Catalog, Blobs,
+  Budget, Work}`: the blob store, the process's budget and the work root of
+  the boot. No SQL, no absolute path: blobs are opened by hash through the
+  blob store.
+- **`render_version`** stays `musiclib-render/3 ...`: the planner and the
+  builder did not change. The removal of a cover was already a plan
+  without a cover (the writer removes every picture); the round only adds
+  ways to change the catalog.
+
+### N-181 · N-168's residual, observed through the server — DECIDED
+`cmd/musiclibd.TestM4ACoverRemovalResidual` builds the file of N-168 (an
+FFmpeg AAC track written with `-use_editlist 0`, then a JPEG covr item and
+an `iTunSMPB` item with a priming of 1,024 appended to its ilst, moov after
+the media), imports it (its covr becomes the album's cover), and the
+server publishes it (the replacement cover kept before `iTunSMPB`). Then
+`DELETE .../cover`: the render fails with `render_audio_changed` (§9.1
+step 6), the job is `failed` and visible in the status, the published
+revision and build are the previous ones, `library/` byte for byte as
+before, `work/render` empty. `PUT .../cover` with another image renders
+and publishes. This is exactly the accepted residual: never published, the
+album failed until a cover is set.
+
+### N-182 · Round 14 mutation checks — DECIDED
+Each of the following makes a test fail (checked one at a time on the live
+tree, then restored): the transaction's If-Match comparison skipped in
+`changeAlbum` (`TestConcurrentCoverUploads`, `TestUploadFailsAfterThePut`,
+catalog `TestSetCover`, `TestAddAttachment`, `TestDeleteTrackConcurrent`);
+the snapshot precheck off; a declared length equal to the limit refused;
+the streamed attachment limit one byte larger; the LRC limit one byte
+larger; the one-track minimum as `n < 1` (catalog and HTTP); any attachment
+id accepted by the downloads; the album condition dropped from the SQL of
+`DeleteAttachment`, `GetAlbumTrack` and `GetAlbumAttachment`; N-091 off in
+`SetCover`, and separately in the precheck; the collision check off in the
+transaction, and separately in the precheck; the cover validation off; the
+LRC UTF-8 check off; the budget reservation never released; an upload
+reserving 0 bytes instead of its estimate (`TestUploadReservesItsLength`,
+since the review round: `TestUploadInsufficientSpace`'s hold now refuses
+even a zero estimate, by design); the lyrics attachment's track precheck
+off, and separately its `.lrc` precheck
+(`TestLyricsAttachmentPrecheck`: 500 from reading the removed blob); every format
+inline; the cover no-op off; the Content-Type left to `ServeContent`'s
+sniffing; the file-name fallback unescaped; `filename*` with more literal
+characters; in `media.ValidateCover`, a read error taken for an invalid
+image (`media.TestValidateCoverCodes`).

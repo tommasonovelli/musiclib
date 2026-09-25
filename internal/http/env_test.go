@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	nethttp "net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,7 +21,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/faulttest"
+	"musiclib/internal/fsops"
 	"musiclib/internal/importer"
 	"musiclib/internal/jobs"
 	"musiclib/internal/store"
@@ -43,6 +48,15 @@ type env struct {
 	srv *httptest.Server
 	svc *catalog.Service
 
+	// The blob store on the ext4 TMPDIR (§12.1), the process budget, and
+	// the failpoint of the uploads.
+	data      string
+	originals *fsops.Root
+	work      *fsops.Root
+	blobs     *blobstore.Store
+	budget    *jobs.Budget
+	hooks     faulttest.Switch
+
 	mu     sync.Mutex
 	fatals []error
 	logs   bytes.Buffer
@@ -65,18 +79,20 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool, enable bool) *env {
 			defer e.mu.Unlock()
 			e.fatals = append(e.fatals, err)
 		},
-		Log: slog.New(slog.NewJSONHandler(&lockedWriter{mu: &e.mu, w: &e.logs}, nil)),
+		Log:        slog.New(slog.NewJSONHandler(&lockedWriter{mu: &e.mu, w: &e.logs}, nil)),
+		Failpoints: e.hooks.Hook(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.api = api
-	e.svc, err = catalog.New(db, nil, func(catalog.Blob, string) error { return nil }, importer.GenreFits)
+	e.svc, err = catalog.New(db, nil, importer.CoverFits, importer.GenreFits)
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.openStore()
 	if enable {
-		api.Enable(e.svc)
+		api.Enable(e.backend())
 	}
 	e.srv = httptest.NewServer(api)
 	t.Cleanup(e.srv.Close)
@@ -124,7 +140,8 @@ func (r resp) details() map[string]any {
 type req struct {
 	method  string
 	path    string
-	body    any // string or []byte sent as is; anything else marshalled
+	body    any // string or []byte sent as is, an io.Reader streamed (chunked unless length is set); anything else marshalled
+	length  int64
 	ifMatch string
 	headers map[string][]string
 }
@@ -138,6 +155,8 @@ func (e *env) do(r req) resp {
 		body = bytes.NewReader([]byte(b))
 	case []byte:
 		body = bytes.NewReader(b)
+	case io.Reader:
+		body = b
 	default:
 		j, err := json.Marshal(b)
 		if err != nil {
@@ -148,6 +167,9 @@ func (e *env) do(r req) resp {
 	hr, err := nethttp.NewRequest(r.method, e.srv.URL+r.path, body)
 	if err != nil {
 		e.t.Fatal(err)
+	}
+	if r.length > 0 {
+		hr.ContentLength = r.length
 	}
 	hr.Host = testHost
 	if r.method != nethttp.MethodGet && r.method != nethttp.MethodHead {
@@ -331,4 +353,40 @@ func (e *env) artistOf(album uuid.UUID) uuid.UUID {
 		e.t.Fatal(err)
 	}
 	return id
+}
+
+// openStore makes originals/ and work/ on the ext4 TMPDIR, as the volume
+// lays them out (§3.1), and the blob store over them.
+func (e *env) openStore() {
+	e.t.Helper()
+	e.data = e.t.TempDir()
+	for _, d := range []string{"originals", "work"} {
+		if err := os.Mkdir(filepath.Join(e.data, d), 0o755); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	var err error
+	if e.originals, err = fsops.OpenRoot(filepath.Join(e.data, "originals")); err != nil {
+		e.t.Fatal(err)
+	}
+	if e.work, err = fsops.OpenRoot(filepath.Join(e.data, "work")); err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(func() {
+		for _, r := range []*fsops.Root{e.originals, e.work} {
+			if err := r.Close(); err != nil {
+				e.t.Error(err)
+			}
+		}
+	})
+	if e.blobs, err = blobstore.New(e.originals, e.work); err != nil {
+		e.t.Fatal(err)
+	}
+	e.budget = jobs.NewBudget()
+}
+
+// backend is what the API serves in the tests: the real catalog and the
+// real blob store.
+func (e *env) backend() Backend {
+	return Backend{Catalog: e.svc, Blobs: e.blobs, Budget: e.budget, Work: e.work}
 }

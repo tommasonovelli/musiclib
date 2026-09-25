@@ -66,9 +66,9 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
 - [x] MP3 (ID3v2.4, APE, ID3v1 migration) (§8.1–8.3) — round 12: the helper's own ID3v2.2/2.3/2.4, APE and ID3v1 reader and ID3v2.4 writer (N-152), the alias and sort table (N-159), the ID3v1 exclusion in `VerifyTags` (N-153), the MP3 decode window (N-154), the cover limit (N-155); imported, rendered and published end to end (`publish.TestExecuteRenderMP3Album`)
 - [x] M4A AAC/ALAC (§8.1–8.3) — round 13: the helper's own box walker, ilst reader and writer with chunk-offset fix-up (N-165), the atom, alias and sort table with the numeric `gnre` (N-166), the canonical form and `VerifyTags` without any extra exclusion (N-167), no decode window and cover stream ordering preserved (N-168), the cover limit (N-166); imported, rendered and published end to end (`publish.TestExecuteRenderM4AAlbum`)
-- [~] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits are done (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`, MP3 included since round 12, N-155, M4A since round 13, N-166); upload and removal come with the API
-- [~] LRC files associated with tracks (§7.4) — at import, done (N-117); assignment and upload with the API
-- [~] Attachments under `Extras/` (§5.1, §7.4) — collected at import and materialized by the build (`internal/render`, sanitized per segment, collisions refused); upload and removal with the API
+- [x] Covers: selection, limits, upload, removal (§7.4, §8.5) — the import selection and its limits (`internal/importer`, the N-091 limit in `media.EmbeddedCoverFits`, MP3 since round 12, N-155, M4A since round 13, N-166); round 14: `PUT /api/albums/{id}/cover` (an upload validated by `media.ValidateCover`, or an image attachment of the album, which stays an attachment; N-091 per format, 422 `cover_not_embeddable`) and `DELETE` (no `cover.*`, no embedded picture in FLAC, MP3 and M4A; N-168's residual observed as accepted), N-174, N-181
+- [x] LRC files associated with tracks (§7.4) — at import (N-117); round 14: `PUT` (an upload of at most 2 MiB of UTF-8, or an `.lrc` attachment of the album, which stays an attachment: N-177, owner decision 2026-09-25) and `DELETE /api/albums/{id}/tracks/{track}/lyrics`, the file next to its track
+- [x] Attachments under `Extras/` (§5.1, §7.4) — collected at import and materialized by the build (`internal/render`, sanitized per segment, collisions refused); round 14: `POST /api/albums/{id}/attachments?path=` (at most 256 MiB streamed into the put, the path through the one normalization of §5.2, 409 for a collision) and `DELETE .../attachments/{attachment}` (the blob and the cover stay, N-176)
 - [x] Verification and preservation of unmanaged tags (§8.3) — FLAC done (`media.VerifyTags`, N-086, the ID3-in-FLAC exclusion N-090); MP3 done (round 12: frames and APE items kept byte for byte, the declared ID3v1 migration, N-153); M4A done (round 13: items and boxes kept byte for byte, the samples checked through the sample table, N-167)
 
 ## Phase 5 — Full experience
@@ -76,7 +76,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [~] Recursive scan and multi-disc grouping (§7.2) — the recursive scan with rules 1, 4 and 5 and the unassigned-file report are done; rules 2 and 3 (multi-disc) fail explicitly until this phase (N-120)
 - [~] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer (tested through a retry done by SQL); disc directories come with rules 2 and 3, the retry endpoint with the API
 - [x] Fingerprinting and duplicate detection (§7.6) — the fingerprint in `internal/importer` (golden test), duplicates `skipped` by the import commit
-- [~] Complete HTTP APIs (§10.2) — round 11: `GET`/`POST /api/artists`, `GET`/`PUT /api/artists/{id}`, `GET`/`PUT`/`DELETE /api/albums/{id}`, `GET .../status`, `POST .../restore`, `POST .../render`. Still to come: `GET /api/albums` (search), imports, jobs and retries, cover, attachments, lyrics, track deletion, downloads, `render-all`
+- [~] Complete HTTP APIs (§10.2) — round 11: `GET`/`POST /api/artists`, `GET`/`PUT /api/artists/{id}`, `GET`/`PUT`/`DELETE /api/albums/{id}`, `GET .../status`, `POST .../restore`, `POST .../render`; round 14: cover, attachments, lyrics, track deletion and the downloads by entity id (N-172 to N-182). Still to come: `GET /api/albums` (search), imports, jobs and retries, `render-all`
 - [ ] UI: Library, Album, Import, Activity (§10.3)
 - [x] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4) — `internal/http` (round 11, N-145): Host and Origin against `PUBLIC_ORIGIN`, `X-Musiclib-Request: 1` on every mutation, no CORS ever, `nosniff` everywhere; the health endpoints exempt from the Host check. The UI side (fetch setting the header, template escaping) comes with the UI
 - [~] Trash, restore, retry (§4.3, §6.4) — trash and restore in the catalog and over HTTP (`DELETE /api/albums/{id}`, `POST .../restore`, round 11); retry with the jobs endpoints
@@ -103,7 +103,7 @@ named points; **later** = the phase that brings the feature.
 |---|---|---|---|
 | Due worker sullo stesso job | Uno solo ottiene il claim | crash + in-process | `jobs.TestCrashAroundTheClaim` (killed inside the claim transaction, after its commit, in the executor: exactly one execution after `RecoverRunning`); `jobs.TestOneClaimPerJob`, `TestEveryJobClaimedOnce`, `TestPoolExecutesEachJobOnce` |
 | Due import dello stesso candidato / commit dalla risposta persa | Un album e un esito durevole, non duplicati | crash + in-process | `importer.TestCrashAtTheImportCommit` (before, after), `TestImportCommitAnswerLost` (answer lost, connection cut before the COMMIT; the process stops and restarts), `TestTwoProcessesImportTheSameCandidate` (two processes committing at once); `importer.TestCrashAtTheScanCommit`; `catalog.TestCommitImportLostAck`, `TestCommitImportConcurrentSameFingerprint`, `TestCommitImportIdempotent` |
-| Stesso blob fissato contemporaneamente | Un file integro, nessun overwrite | crash + in-process | `blobstore.TestCrashDuringPut` (killed at `temp_synced`, `temp_verified`, `shards_synced`, `pinned`; `CleanTemps`; re-put idempotent, same inode); `blobstore.TestPutConcurrentSameContent` |
+| Stesso blob fissato contemporaneamente | Un file integro, nessun overwrite | crash + in-process | uploads go through the same put (round 14, §7.5); `blobstore.TestCrashDuringPut` (killed at `temp_synced`, `temp_verified`, `shards_synced`, `pinned`; `CleanTemps`; re-put idempotent, same inode); `blobstore.TestPutConcurrentSameContent` |
 | Blob esistente corrotto | Errore, nessuna fiducia nel solo nome | in-process | `blobstore.TestPutDoesNotTrustExisting`; `render.TestBuildCorruptOriginal` |
 | Modifica API durante un build | Build obsoleta scartata, nuova richiesta conservata | in-process | `publish.TestPublishSupersededBuild`, `TestExecuteRenderSupersededAndCancelled`; `jobs.TestCoalescing` |
 | Modifica fra PREPARE e FINALIZE | Revisioni distinte e secondo render ancora necessario | in-process | `publish.TestPublishChangeBetweenPrepareAndFinalize` |
@@ -116,8 +116,8 @@ named points; **later** = the phase that brings the feature.
 | Errore DB dopo rename | Journal completato al riavvio | in-process (real wire loss) + crash | `publish.TestRecoverDatabaseErrorAfterRename` (the FINALIZE commit cut, its answer lost, through `pgtest.Proxy`); `cmd/musiclibd.TestProcessDatabaseLossMidWork` |
 | Tag writer altera i campioni o perde un tag non gestito | Album non pubblicato | in-process | `render.TestBuildTagWriterAltersSamples`, `TestBuildTagWriterLosesUnmanagedField`, `TestBuildMP3OpaqueField`; `media.TestVerifyTags`, `TestVerifyTagsID3v1Migration`, `TestTagsMP3MutationSweep` |
 | Modifica dell'output con size/mtime invariati | Doctor deep la rileva e render/rebuild la ripara | **later: Phase 6** (doctor, rebuild) | render repairing damaged own output: `publish.TestPublishReplacesDamagedOwnOutput` |
-| Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
-| Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | in-process at the API (round 11); **the UI part: Phase 5** | `http.TestTwoClientsSaveDifferentRevisions` (20 rounds of two concurrent PUTs of one revision through a real server: exactly one 412 naming the winner's revision, the loser reloads and re-applies, both changes kept); `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
+| Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | `http.TestPostAttachment` (round 14: an uploaded attachment's absolute, `..`, empty-segment, NUL and too-deep paths refused before its body is read; file/directory, case, NFC and sanitization collisions 409, nothing pinned), `catalog.TestAddAttachment`; `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
+| Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | in-process at the API (round 11); **the UI part: Phase 5** | `http.TestConcurrentCoverUploads` (round 14: two cover uploads on one revision, exactly one 412, the loser's blob absent or pinned and unreferenced), `http.TestUploadFailsAfterThePut` (a change between the put and the transaction: 412, the blob unreferenced), `catalog.TestDeleteTrackConcurrent`; `http.TestTwoClientsSaveDifferentRevisions` (20 rounds of two concurrent PUTs of one revision through a real server: exactly one 412 naming the winner's revision, the loser reloads and re-applies, both changes kept); `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
 | SIGTERM/SIGKILL con più worker e helper attivi | Nessun helper del vecchio tentativo resta in attività | crash | `cmd/musiclibd.TestProcessSignalsWithHelpersActive`, `TestProcessDatabaseLossMidWork`; `media.TestRunToolDiesWithParent` (Pdeathsig), `TestRunCancelKillsAndReapsWholeGroup` |
 | Crash durante rebuild o restore | Marker impedisce il boot su una manutenzione incompleta | **later: Phase 6** (rebuild, restore); the marker's boot refusal is done | `volume.TestMaintenanceMarkerBlocksBoot`; the `cmd/musiclibd` maintenance refusals |
 | Backup, perdita DB/volume, restore su volumi nuovi | Catalogo e originali recuperati, output rigenerato verificabile | **later: Phase 6** | — |
@@ -1721,6 +1721,7 @@ Endpoints (§10.2); representations in N-150:
 | `DELETE /api/albums/{id}` + If-Match | trash; 200 with the album |
 | `POST /api/albums/{id}/restore` + If-Match | restore; 200 with the album |
 | `POST /api/albums/{id}/render` + If-Match | forced enqueue with no new revision (`catalog.RequestRender`, `jobs.EnqueueRender`); 202 with the status |
+| cover, attachments, lyrics, track deletion, downloads | round 14: the table of the next section |
 
 Tests: a real `httptest` server over the real handler, over the real
 catalog on real PostgreSQL 17. No mock.
@@ -1793,6 +1794,136 @@ Mutation-checked (each makes a test fail):
 scripts/check.sh ./internal/http/...
 scripts/dev.sh go test -race -count=3 ./internal/http/ ./internal/catalog/ ./cmd/musiclibd/
 scripts/fuzz.sh FuzzCheckJSON 90s ./internal/http
+```
+
+### The album editor's content: cover, attachments, lyrics, track deletion, downloads (§4.3, §5.1, §5.2, §7.4, §7.5, §8.5, §10.2, §11.2) ✔ (round 14)
+
+The Phase 4 content operations over the API. Handlers validate and
+translate; every change is a transaction of `internal/catalog`; every blob
+goes through the single put of `internal/blobstore`; no SQL and no absolute
+path in `internal/http` (N-180).
+
+| Endpoint | Answer |
+|---|---|
+| `PUT /api/albums/{id}/cover` + If-Match, a JPEG or PNG (`application/octet-stream`) | the cover (§8.5: 20 MiB, 40 Mpixel, a valid decode; N-091: 422 `cover_not_embeddable`); only the cover, not an attachment (N-174); 200 with the album |
+| `PUT /api/albums/{id}/cover` + If-Match, `{"attachment_id"}` | an image attachment of the album as the cover; it stays an attachment (§7.4) |
+| `DELETE /api/albums/{id}/cover` + If-Match | no cover: no `cover.*`, no embedded picture; a no-op without one |
+| `POST /api/albums/{id}/attachments?path=<relative path>` + If-Match, the file | 201 with the album and `Location` of the content; at most 256 MiB, streamed; 409 `attachment_path_collision` (N-172, confirmed by the owner) |
+| `DELETE /api/albums/{id}/attachments/{attachment}` + If-Match | the row goes, the blob stays; the cover and a track's lyrics stay even if they are the same blob (N-176) |
+| `PUT /api/albums/{id}/tracks/{track}/lyrics` + If-Match, the file or `{"attachment_id"}` | an LRC of at most 2 MiB of UTF-8, or an `.lrc` attachment, which stays (N-177, owner decision 2026-09-25) |
+| `DELETE /api/albums/{id}/tracks/{track}/lyrics` + If-Match | `lyrics_hash = NULL`; a no-op without lyrics |
+| `DELETE /api/albums/{id}/tracks/{track}` + If-Match | the track goes, the blob stays; the last one is 422 `no_tracks` (§4.3) |
+| `GET /api/albums/{id}/tracks/{track}/original` | the original audio, `attachment`, named as imported |
+| `GET /api/albums/{id}/tracks/{track}/lyrics` | the LRC, `text/plain; charset=utf-8`, `attachment` |
+| `GET /api/albums/{id}/cover` | the cover, `inline` |
+| `GET /api/albums/{id}/attachments/{attachment}/content` | the file: `inline` only for a validated JPEG or PNG, `application/pdf` for a PDF, otherwise `application/octet-stream`; always `attachment` but for images (N-175) |
+
+**Pieces:**
+- `internal/catalog/content.go`: `SetCover` (`CoverChoice`), `RemoveCover`,
+  `AddAttachment`, `DeleteAttachment`, `SetLyrics` (`LyricsChoice`),
+  `RemoveLyrics`, `DeleteTrack`, each one `changeAlbum` (the album's
+  revision compared in the transaction, the single bump and enqueue of
+  §4.3, no-ops without either, N-179); the blob recorded with the import's
+  rules (N-102); the pure `AttachmentPath`, `AttachmentConflict`,
+  `CheckLyricsAttachment`, `CheckRevision` and `Service.CheckCoverFits`; the codes
+  `attachment_not_found`, `track_not_found`, `cover_not_embeddable`,
+  `invalid_lyrics`. Nine queries in `sql/catalog.sql`, no schema change.
+- `internal/media/cover.go`: `ValidateCover`, the §8.5 rule moved from the
+  importer and shared with the API; a read error is `media_io`, never an
+  invalid image.
+- `internal/http`: `upload.go` (the protocol of N-172 and N-173: the media
+  types, the limits, the budget reservation and the put, the snapshot
+  precheck, the failpoint `upload_pinned`), `content.go`, `download.go`
+  (`http.ServeContent`, the RFC 6266 disposition); `API.Enable(Backend)`;
+  `Config.Failpoints`.
+- `cmd/musiclibd`: the API is enabled with the boot's blob store, budget
+  and work root.
+- `render_version` unchanged (N-180).
+
+**How it maps to DESIGN.md:**
+- **§10.2 conditional changes:** the album's ETag in If-Match (428, 400,
+  412 as N-147), compared in the transaction; §10.4's boundary on every
+  mutation.
+- **§10.2 uploads, §7.5:** the blob is pinned before the transaction; a
+  failed save leaves an unreferenced blob, never a reference (tested with
+  the failpoint). A snapshot precheck (404, 412, 409, N-091) refuses what
+  cannot be saved before anything is read or pinned (N-173); an
+  attachment chosen as lyrics is refused for an unknown track or a name
+  without `.lrc` before its blob is read.
+- **§11.2:** every put reserves its size in `jobs.Budget` against statfs
+  minus 1 GiB; 507 `insufficient_space` (confirmed by the owner, N-172).
+- **§5.2:** the attachment's path is validated by `names` before any byte
+  is read, kept as sent in `rel_path`, sanitized by the plan; collisions
+  after normalization (file, file/directory, directory spelling) are 409
+  naming both.
+- **§4.3:** removals without undo, blobs kept, at least one track, the
+  trash included (N-178).
+- **§10.2 downloads:** by entity id within the album's snapshot, never by a
+  client path; `nosniff`; only validated images inline (N-175).
+
+**Tests** (real PostgreSQL 17, the real blob store on ext4, the real
+tools; no mock):
+- **media** (`cover_test.go`): `ValidateCover`'s codes, a read error
+  (`media_io`) told from an invalid image.
+- **catalog** (`content_test.go`): every operation's 428, 412, 404
+  (another album's track and attachment included), bump and enqueue, no-op
+  and refusal without bump, render or wake-up; N-091 with a refusing
+  `CoverFits`; a blob known with another size or format; the attachment's
+  §5.2 refusals with their codes and seven collision kinds, NFC against
+  NFD; the cover kept when its attachment goes, and a track's lyrics kept
+  when their `.lrc` attachment goes; the last track, in the
+  trash too; ten rounds of two concurrent deletions of an album's two
+  tracks (one succeeds, one 412, one track left).
+- **http** (`content_test.go`, `download_test.go`): each endpoint's 428,
+  412, 404, 415, 422 and success; §8.5 refusals (text, a truncated JPEG,
+  a 40,005,000-pixel PNG header, a GIF, an empty body); 413 at exactly the
+  limit plus one for the cover (20 MiB), the LRC (2 MiB) and the attachment
+  (256 MiB), both declared (a request head whose body is never sent) and
+  streamed, and exactly the limit accepted (a 20 MiB PNG on MP3 and M4A
+  albums; 2 MiB of LRC; 256 MiB of attachment, streamed from a generator);
+  N-091 per format at its boundary (16,777,174 bytes on FLAC); invalid
+  UTF-8 LRC (Latin-1, a lone continuation byte, an encoded surrogate, a cut
+  rune); paths refused before the body is read; 409 collisions naming
+  both; 507 for both upload kinds with the budget held (deterministic:
+  a reservation against an inflated free space, N-172), then 201 and 200
+  once released; the declared Content-Length reserved while a 5 MiB body
+  is received through a pipe, and released after
+  (`TestUploadReservesItsLength`); a lyrics attachment refused on the
+  snapshot without reading its blob (`TestLyricsAttachmentPrecheck`);
+  `+` in `?path=` a space and `%2B` a plus (`TestAttachmentPathPlus`); a malformed chunked body 400
+  `upload_incomplete`; the failpoint between the put and the
+  transaction for the three uploads; 15 rounds of two concurrent cover
+  uploads; the boundary (header, Origin) on every mutation; 405 with
+  `Allow`; downloads: bytes, types, `inline` versus `attachment`,
+  `nosniff`, `no-store`, HEAD, a range, file names with quotes, a
+  backslash, CR/LF, `;`, `%` and non-ASCII decoded back by
+  `mime.ParseMediaType`, 404 for every id of another album, 500 for a
+  missing blob; `TestContentDisposition` (nine names); `TestStatusTable`.
+- **end to end** (`cmd/musiclibd/editor_test.go`, the real server with two
+  workers): `TestEndToEndEditorContent` imports a FLAC, an MP3 and an M4A
+  track, then through the API: the originals downloaded byte for byte; a
+  cover uploaded, published as `cover.jpg` and embedded in the three files
+  (read back by the helper); removed, gone from the files and from the
+  tags; an attachment published under `Extras/`, downloaded as a PDF,
+  removed; lyrics uploaded and an `.lrc` attachment assigned, each next to
+  its track (the attachment kept); lyrics removed; the M4A and MP3 tracks
+  removed, the last refused; after every change the receipt and the
+  directory agree exactly, and `work/` is empty.
+  `TestM4ACoverRemovalResidual`: N-168's residual as accepted (N-181).
+
+**Mutation-checked** (N-182): the If-Match comparison of the transaction;
+the snapshot precheck; each size limit by one byte; the one-track minimum;
+the ownership of the downloads' ids; the album condition in three
+queries; N-091 in the transaction and in the precheck; the collision check
+in both places; the cover validation; the LRC UTF-8 check; the budget
+release; an upload reserving 0 instead of its size; the lyrics
+attachment's track and `.lrc` prechecks; inline for every format; the cover no-op; Content-Type sniffing;
+the file-name escaping, twice; a read error taken for an invalid image.
+
+```sh
+scripts/check.sh
+scripts/dev.sh go test -race -count=2 -timeout=15m ./internal/http/ ./internal/catalog/ ./internal/media/ ./internal/importer/ ./cmd/musiclibd/
+scripts/dev.sh go test -race -count=2 -run 'TestEndToEndEditorContent|TestM4ACoverRemovalResidual' ./cmd/musiclibd/
 ```
 
 ## Decisions made during implementation

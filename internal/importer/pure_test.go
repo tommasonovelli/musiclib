@@ -173,7 +173,8 @@ func TestGroupLimits(t *testing.T) {
 	if b, _, _ := outcome(group(dirOf(append(tracks, "A/x.flac!")...), "")); b["A"] != catalog.CodeTooManyFiles {
 		t.Errorf("%d tracks: %v", MaxTracks+1, b)
 	}
-	if MaxFiles != 10000 || MaxTracks != 1000 || MaxCoverBytes != 20<<20 || MaxCoverPixels != 40_000_000 {
+	if MaxFiles != 10000 || MaxTracks != 1000 || MaxCoverBytes != 20<<20 || MaxCoverPixels != 40_000_000 ||
+		media.MaxCoverBytes != catalog.MaxCoverBytes {
 		t.Error("the limits of §7.2 and §8.5 changed")
 	}
 }

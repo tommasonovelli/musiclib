@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"musiclib/internal/catalog"
+	"musiclib/internal/names"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
 )
@@ -191,7 +192,7 @@ func TestAvailability(t *testing.T) {
 	e.wantError(req{method: "POST", path: "/api/artists", body: `{"name":"X"}`, headers: map[string][]string{RequestHeader: {""}}},
 		nethttp.StatusForbidden, CodeRequestHeaderRequired)
 
-	e.api.Enable(e.svc)
+	e.api.Enable(e.backend())
 	e.must(req{method: "POST", path: "/api/artists", body: `{"name":"X"}`}, created)
 	e.api.Disable(CodeShuttingDown, "the server is shutting down")
 	e.wantError(req{method: "POST", path: "/api/artists", body: `{"name":"Y"}`}, unavailable, CodeShuttingDown)
@@ -254,6 +255,13 @@ func TestStatusTable(t *testing.T) {
 		catalog.CodePathReserved: 409, catalog.CodeAlbumFolderConflict: 409, catalog.CodeArtistFolderConflict: 409,
 		catalog.CodeArtistExists: 409, catalog.CodeTrackListMismatch: 422, catalog.CodeInvalidYear: 422,
 		store.CodeConnectionLost: 503, store.CodeCommitUncertain: 503,
+		// Round 14 (N-172, N-179).
+		catalog.CodeAttachmentNotFound: 404, catalog.CodeTrackNotFound: 404, catalog.CodeAttachmentCollision: 409,
+		catalog.CodeCoverNotEmbeddable: 422, catalog.CodeInvalidCover: 422, catalog.CodeInvalidLyrics: 422,
+		catalog.CodeNoTracks: 422, names.CodePathAbsolute: 422, names.CodePathDotSegment: 422,
+		names.CodePathEmptySegment: 422, names.CodePathTooDeep: 422, names.CodePathTooLong: 422,
+		names.CodePathNulByte: 422, names.CodePathEmpty: 422,
+		catalog.CodeBlobMismatch: 0, catalog.CodeInvalidBlob: 0,
 	} {
 		if statusOf[code] != want {
 			t.Errorf("%s: %d, want %d", code, statusOf[code], want)

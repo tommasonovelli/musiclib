@@ -26,7 +26,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/failpoint"
+	"musiclib/internal/fsops"
+	"musiclib/internal/jobs"
 	"musiclib/internal/store"
 )
 
@@ -50,6 +54,21 @@ type Config struct {
 	// restarts.
 	Fatal func(error)
 	Log   *slog.Logger
+	// Failpoints is nil in production. Tests set it to act at the named
+	// point of an upload: upload_pinned, after the blob is pinned and before
+	// the catalog transaction (§12.2, NOTES.md N-142, N-173).
+	Failpoints failpoint.Hook
+}
+
+// Backend is what the API serves: the catalog, and for the uploads and
+// downloads of §10.2 the blob store (§7.5: the single put primitive), the
+// process's space budget and the work root whose free space the budget
+// compares (§11.2).
+type Backend struct {
+	Catalog *catalog.Service
+	Blobs   *blobstore.Store
+	Budget  *jobs.Budget
+	Work    *fsops.Root
 }
 
 // API serves /api. It is safe for concurrent use.
@@ -60,6 +79,7 @@ type API struct {
 	fatal         func(error)
 	fatalOnce     sync.Once
 	log           *slog.Logger
+	failpoints    failpoint.Hook
 
 	// state is what /api does now: serve with a catalog, or refuse with
 	// 503 and a code.
@@ -83,15 +103,15 @@ func New(cfg Config) (*API, error) {
 	if cfg.RenderVersion == "" || cfg.Fatal == nil || cfg.Log == nil {
 		return nil, newError(0, CodeInvalidConfig, "the API needs the render version, the fatal-error hook and a logger")
 	}
-	a := &API{origin: cfg.PublicOrigin, host: u.Host, renderVersion: cfg.RenderVersion, fatal: cfg.Fatal, log: cfg.Log}
+	a := &API{origin: cfg.PublicOrigin, host: u.Host, renderVersion: cfg.RenderVersion, fatal: cfg.Fatal, log: cfg.Log,
+		failpoints: cfg.Failpoints}
 	a.Disable(CodeNotReady, "boot or recovery in progress: try again shortly")
 	return a, nil
 }
 
-// Enable makes the API serve the catalog: the end of the boot (§11.1 step
-// 7).
-func (a *API) Enable(svc *catalog.Service) {
-	a.state.Store(&state{router: a.routes(svc)})
+// Enable makes the API serve b: the end of the boot (§11.1 step 7).
+func (a *API) Enable(b Backend) {
+	a.state.Store(&state{router: a.routes(b)})
 }
 
 // Disable makes every /api request answer 503 with code and message: at
@@ -193,8 +213,8 @@ func notFound() *Error {
 // routes is the router of the endpoints of this phase (§10.2). Every path
 // also has a pattern without a method, so that a wrong method is a JSON
 // 405 with Allow, and /api/ catches the rest as a JSON 404.
-func (a *API) routes(svc *catalog.Service) nethttp.Handler {
-	h := &handlers{api: a, catalog: svc}
+func (a *API) routes(b Backend) nethttp.Handler {
+	h := &handlers{api: a, catalog: b.Catalog, blobs: b.Blobs, budget: b.Budget, work: b.Work}
 	mux := nethttp.NewServeMux()
 	route := func(pattern string, methods map[string]nethttp.HandlerFunc) {
 		var allow []string
@@ -240,14 +260,44 @@ func (a *API) routes(svc *catalog.Service) nethttp.Handler {
 	route("/api/albums/{id}/render", map[string]nethttp.HandlerFunc{
 		nethttp.MethodPost: h.renderAlbum,
 	})
+	// The editor's content (§10.2, round 14): cover, attachments, lyrics,
+	// track deletion, and the downloads by entity id.
+	route("/api/albums/{id}/cover", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet:    h.downloadCover,
+		nethttp.MethodPut:    h.putCover,
+		nethttp.MethodDelete: h.deleteCover,
+	})
+	route("/api/albums/{id}/attachments", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.postAttachment,
+	})
+	route("/api/albums/{id}/attachments/{attachment}", map[string]nethttp.HandlerFunc{
+		nethttp.MethodDelete: h.deleteAttachment,
+	})
+	route("/api/albums/{id}/attachments/{attachment}/content", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet: h.downloadAttachment,
+	})
+	route("/api/albums/{id}/tracks/{track}", map[string]nethttp.HandlerFunc{
+		nethttp.MethodDelete: h.deleteTrack,
+	})
+	route("/api/albums/{id}/tracks/{track}/original", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet: h.downloadOriginal,
+	})
+	route("/api/albums/{id}/tracks/{track}/lyrics", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet:    h.downloadLyrics,
+		nethttp.MethodPut:    h.putLyrics,
+		nethttp.MethodDelete: h.deleteLyrics,
+	})
 	mux.HandleFunc("/api/", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		a.writeError(w, notFound())
 	})
 	return mux
 }
 
-// handlers are the endpoints over one catalog.
+// handlers are the endpoints over one backend.
 type handlers struct {
 	api     *API
 	catalog *catalog.Service
+	blobs   *blobstore.Store
+	budget  *jobs.Budget
+	work    *fsops.Root
 }

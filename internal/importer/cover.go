@@ -6,9 +6,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"image"
-	_ "image/jpeg" // the cover formats of §8.5, registered for image.Decode
-	_ "image/png"
 	"io"
 	"os"
 	"path"
@@ -23,11 +20,11 @@ import (
 	"musiclib/internal/names"
 )
 
-// Limits of a cover (§8.5). The size limit is the catalog's, which checks it
-// again at the commit.
+// Limits of a cover (§8.5): media.ValidateCover checks them; the size limit
+// is also the catalog's, which checks it again at the commit.
 const (
 	MaxCoverBytes  = catalog.MaxCoverBytes
-	MaxCoverPixels = 40_000_000
+	MaxCoverPixels = media.MaxCoverPixels
 )
 
 // coverNames are the external cover files of §7.4, in the order of
@@ -35,31 +32,15 @@ const (
 // candidate.
 var coverNames = [...]string{"cover", "folder", "front"}
 
-// validateCover is §8.5's check of an image, done in Go (N-073: the pinned
-// ffmpeg has no PNG decoder): JPEG or PNG by content, at most MaxCoverBytes,
-// at most MaxCoverPixels, and a complete decode. It returns the blobs.format
-// value, or why the image is not a valid cover.
+// validateCover is §8.5's check of an image (media.ValidateCover), with a
+// refusal turned into the plain reason the job's warning quotes.
 func validateCover(r io.ReadSeeker, size int64) (string, error) {
-	if size > MaxCoverBytes {
-		return "", fmt.Errorf("it takes %d bytes, the maximum is %d", size, MaxCoverBytes)
+	format, err := media.ValidateCover(r, size)
+	var me *media.Error
+	if errors.As(err, &me) && me.Code == media.CodeInvalidImage {
+		return "", errors.New(me.Msg)
 	}
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return "", err
-	}
-	cfg, format, err := image.DecodeConfig(r)
-	if err != nil || (format != media.FormatJPEG && format != media.FormatPNG) {
-		return "", errors.New("it is not a JPEG or PNG image")
-	}
-	if px := int64(cfg.Width) * int64(cfg.Height); px <= 0 || px > MaxCoverPixels {
-		return "", fmt.Errorf("it has %d×%d pixels, the maximum is %d", cfg.Width, cfg.Height, MaxCoverPixels)
-	}
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return "", err
-	}
-	if _, decoded, err := image.Decode(r); err != nil || decoded != format {
-		return "", fmt.Errorf("the %s image does not decode completely", format)
-	}
-	return format, nil
+	return format, err
 }
 
 // coverTrack is a track as the cover selection sees it: its path, its blob

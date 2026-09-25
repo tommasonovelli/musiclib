@@ -290,6 +290,30 @@ curl -s -X POST http://127.0.0.1:8080/api/albums/<id>/render   -H 'X-Musiclib-Re
 curl -s http://127.0.0.1:8080/api/albums/<id>/status
 ```
 
+The album editor's files (round 14; NOTES.md N-172 to N-181). An upload's
+body is the file itself, `Content-Type: application/octet-stream`; its
+format is read from the content. Limits: cover 20 MiB (JPEG or PNG, 40
+Mpixel, embeddable in every audio format of the album, N-091), attachment
+256 MiB, LRC 2 MiB of UTF-8 (413 one byte over; 507
+`insufficient_space` when `/data` has no room for it beyond the 1 GiB
+margin). An attachment's `path` is a percent-encoded query parameter: a
+`+` in it is read as a space, as in any query string, so a literal plus
+is sent as `%2B` (`?path=Side%20A%2BB.pdf` is `Side A+B.pdf`).
+Every change needs the album's `If-Match`. Downloads go by id, never by a
+path:
+
+```sh
+H='-H X-Musiclib-Request:1 -H If-Match:"album:<id>:<revision>"'
+curl -s -X PUT  $H -H 'Content-Type: application/octet-stream' --data-binary @front.jpg  http://127.0.0.1:8080/api/albums/<id>/cover
+curl -s -X PUT  $H -H 'Content-Type: application/json' -d '{"attachment_id":"<attachment>"}' http://127.0.0.1:8080/api/albums/<id>/cover
+curl -s -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/cover
+curl -s -X POST $H -H 'Content-Type: application/octet-stream' --data-binary @booklet.pdf 'http://127.0.0.1:8080/api/albums/<id>/attachments?path=Scans%2FBooklet.pdf'
+curl -s -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/attachments/<attachment>
+curl -s -X PUT  $H -H 'Content-Type: application/octet-stream' --data-binary @01.lrc http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/lyrics
+curl -s -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/tracks/<track>
+curl -sOJ http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/original     # also .../lyrics, .../cover, .../attachments/<attachment>/content
+```
+
 A database lost or a commit left without an answer during an API request
 stops the process like one in a worker (exit 1, then Docker restarts it,
 §6.4). The request got 503 `store_connection_lost` or

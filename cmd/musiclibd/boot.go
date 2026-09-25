@@ -201,7 +201,7 @@ func (d *daemon) boot(ctx context.Context) error {
 		return err
 	}
 	d.ready.Store(d.pool)
-	d.api.Enable(d.catalog)
+	d.api.Enable(apihttp.Backend{Catalog: d.catalog, Blobs: d.blobs, Budget: d.budget, Work: d.vol.Work()})
 	return nil
 }
 

@@ -172,3 +172,38 @@ SELECT al.id, al.revision, (al.deleted_at IS NOT NULL)::boolean AS trashed,
 FROM albums al
 LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
 WHERE al.id = $1;
+
+-- The editor's content operations (§4.3, §10.2): cover, attachments,
+-- lyrics and track deletion. Each runs in store.InCatalogTx with the
+-- album's revision compared first.
+
+-- name: SetAlbumCover :exec
+UPDATE albums SET cover_hash = @cover_hash WHERE id = @id;
+
+-- An attachment of an album: the album is part of the key, so an
+-- attachment of another album is not found (§10.2 downloads by id).
+-- name: GetAlbumAttachment :one
+SELECT a.id, a.rel_path, a.path_key, a.blob_hash FROM attachments a
+WHERE a.id = @id AND a.album_id = @album_id;
+
+-- name: ListAlbumAttachmentPaths :many
+SELECT id, rel_path FROM attachments WHERE album_id = $1 ORDER BY path_key COLLATE "C", id;
+
+-- name: InsertAttachment :exec
+INSERT INTO attachments (id, album_id, rel_path, path_key, blob_hash) VALUES (@id, @album_id, @rel_path, @path_key, @blob_hash);
+
+-- name: DeleteAttachment :execrows
+DELETE FROM attachments WHERE id = @id AND album_id = @album_id;
+
+-- A track of an album, with the same rule as GetAlbumAttachment.
+-- name: GetAlbumTrack :one
+SELECT id, lyrics_hash FROM tracks WHERE id = @id AND album_id = @album_id;
+
+-- name: SetTrackLyrics :execrows
+UPDATE tracks SET lyrics_hash = @lyrics_hash WHERE id = @id AND album_id = @album_id;
+
+-- name: CountAlbumTracks :one
+SELECT count(*) FROM tracks WHERE album_id = $1;
+
+-- name: DeleteTrack :execrows
+DELETE FROM tracks WHERE id = @id AND album_id = @album_id;

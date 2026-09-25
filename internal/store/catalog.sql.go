@@ -24,6 +24,34 @@ func (q *Queries) BumpAlbumRevision(ctx context.Context, id uuid.UUID) (int64, e
 	return revision, err
 }
 
+const countAlbumTracks = `-- name: CountAlbumTracks :one
+SELECT count(*) FROM tracks WHERE album_id = $1
+`
+
+func (q *Queries) CountAlbumTracks(ctx context.Context, albumID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAlbumTracks, albumID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteAttachment = `-- name: DeleteAttachment :execrows
+DELETE FROM attachments WHERE id = $1 AND album_id = $2
+`
+
+type DeleteAttachmentParams struct {
+	ID      uuid.UUID
+	AlbumID uuid.UUID
+}
+
+func (q *Queries) DeleteAttachment(ctx context.Context, arg DeleteAttachmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAttachment, arg.ID, arg.AlbumID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteClaim = `-- name: DeleteClaim :execrows
 DELETE FROM path_claims WHERE path_key = $1 AND album_id = $2
 `
@@ -35,6 +63,23 @@ type DeleteClaimParams struct {
 
 func (q *Queries) DeleteClaim(ctx context.Context, arg DeleteClaimParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteClaim, arg.PathKey, arg.AlbumID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteTrack = `-- name: DeleteTrack :execrows
+DELETE FROM tracks WHERE id = $1 AND album_id = $2
+`
+
+type DeleteTrackParams struct {
+	ID      uuid.UUID
+	AlbumID uuid.UUID
+}
+
+func (q *Queries) DeleteTrack(ctx context.Context, arg DeleteTrackParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteTrack, arg.ID, arg.AlbumID)
 	if err != nil {
 		return 0, err
 	}
@@ -91,6 +136,37 @@ func (q *Queries) GetAlbum(ctx context.Context, id uuid.UUID) (Album, error) {
 		&i.PublishedRenderer,
 		&i.PublishedBuild,
 		&i.PublishedReceiptHash,
+	)
+	return i, err
+}
+
+const getAlbumAttachment = `-- name: GetAlbumAttachment :one
+SELECT a.id, a.rel_path, a.path_key, a.blob_hash FROM attachments a
+WHERE a.id = $1 AND a.album_id = $2
+`
+
+type GetAlbumAttachmentParams struct {
+	ID      uuid.UUID
+	AlbumID uuid.UUID
+}
+
+type GetAlbumAttachmentRow struct {
+	ID       uuid.UUID
+	RelPath  string
+	PathKey  string
+	BlobHash string
+}
+
+// An attachment of an album: the album is part of the key, so an
+// attachment of another album is not found (§10.2 downloads by id).
+func (q *Queries) GetAlbumAttachment(ctx context.Context, arg GetAlbumAttachmentParams) (GetAlbumAttachmentRow, error) {
+	row := q.db.QueryRow(ctx, getAlbumAttachment, arg.ID, arg.AlbumID)
+	var i GetAlbumAttachmentRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.PathKey,
+		&i.BlobHash,
 	)
 	return i, err
 }
@@ -181,6 +257,28 @@ func (q *Queries) GetAlbumStatus(ctx context.Context, id uuid.UUID) (GetAlbumSta
 		&i.JobQueuedAt,
 		&i.JobUpdatedAt,
 	)
+	return i, err
+}
+
+const getAlbumTrack = `-- name: GetAlbumTrack :one
+SELECT id, lyrics_hash FROM tracks WHERE id = $1 AND album_id = $2
+`
+
+type GetAlbumTrackParams struct {
+	ID      uuid.UUID
+	AlbumID uuid.UUID
+}
+
+type GetAlbumTrackRow struct {
+	ID         uuid.UUID
+	LyricsHash *string
+}
+
+// A track of an album, with the same rule as GetAlbumAttachment.
+func (q *Queries) GetAlbumTrack(ctx context.Context, arg GetAlbumTrackParams) (GetAlbumTrackRow, error) {
+	row := q.db.QueryRow(ctx, getAlbumTrack, arg.ID, arg.AlbumID)
+	var i GetAlbumTrackRow
+	err := row.Scan(&i.ID, &i.LyricsHash)
 	return i, err
 }
 
@@ -382,6 +480,29 @@ func (q *Queries) InsertArtist(ctx context.Context, arg InsertArtistParams) erro
 	return err
 }
 
+const insertAttachment = `-- name: InsertAttachment :exec
+INSERT INTO attachments (id, album_id, rel_path, path_key, blob_hash) VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertAttachmentParams struct {
+	ID       uuid.UUID
+	AlbumID  uuid.UUID
+	RelPath  string
+	PathKey  string
+	BlobHash string
+}
+
+func (q *Queries) InsertAttachment(ctx context.Context, arg InsertAttachmentParams) error {
+	_, err := q.db.Exec(ctx, insertAttachment,
+		arg.ID,
+		arg.AlbumID,
+		arg.RelPath,
+		arg.PathKey,
+		arg.BlobHash,
+	)
+	return err
+}
+
 type InsertAttachmentsParams struct {
 	ID       uuid.UUID
 	AlbumID  uuid.UUID
@@ -422,6 +543,35 @@ type InsertTracksParams struct {
 	BlobHash   string
 	SourcePath string
 	LyricsHash *string
+}
+
+const listAlbumAttachmentPaths = `-- name: ListAlbumAttachmentPaths :many
+SELECT id, rel_path FROM attachments WHERE album_id = $1 ORDER BY path_key COLLATE "C", id
+`
+
+type ListAlbumAttachmentPathsRow struct {
+	ID      uuid.UUID
+	RelPath string
+}
+
+func (q *Queries) ListAlbumAttachmentPaths(ctx context.Context, albumID uuid.UUID) ([]ListAlbumAttachmentPathsRow, error) {
+	rows, err := q.db.Query(ctx, listAlbumAttachmentPaths, albumID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAlbumAttachmentPathsRow
+	for rows.Next() {
+		var i ListAlbumAttachmentPathsRow
+		if err := rows.Scan(&i.ID, &i.RelPath); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAlbumAttachmentViews = `-- name: ListAlbumAttachmentViews :many
@@ -715,6 +865,24 @@ func (q *Queries) RenameArtist(ctx context.Context, arg RenameArtistParams) (int
 	return revision, err
 }
 
+const setAlbumCover = `-- name: SetAlbumCover :exec
+
+UPDATE albums SET cover_hash = $1 WHERE id = $2
+`
+
+type SetAlbumCoverParams struct {
+	CoverHash *string
+	ID        uuid.UUID
+}
+
+// The editor's content operations (§4.3, §10.2): cover, attachments,
+// lyrics and track deletion. Each runs in store.InCatalogTx with the
+// album's revision compared first.
+func (q *Queries) SetAlbumCover(ctx context.Context, arg SetAlbumCoverParams) error {
+	_, err := q.db.Exec(ctx, setAlbumCover, arg.CoverHash, arg.ID)
+	return err
+}
+
 const setAlbumTrashed = `-- name: SetAlbumTrashed :exec
 UPDATE albums SET deleted_at = CASE WHEN $1::boolean THEN now() END WHERE id = $2
 `
@@ -742,6 +910,24 @@ type SetBlobFormatParams struct {
 // A content-derived format replaces "unknown", never another format.
 func (q *Queries) SetBlobFormat(ctx context.Context, arg SetBlobFormatParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setBlobFormat, arg.Format, arg.Hash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setTrackLyrics = `-- name: SetTrackLyrics :execrows
+UPDATE tracks SET lyrics_hash = $1 WHERE id = $2 AND album_id = $3
+`
+
+type SetTrackLyricsParams struct {
+	LyricsHash *string
+	ID         uuid.UUID
+	AlbumID    uuid.UUID
+}
+
+func (q *Queries) SetTrackLyrics(ctx context.Context, arg SetTrackLyricsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTrackLyrics, arg.LyricsHash, arg.ID, arg.AlbumID)
 	if err != nil {
 		return 0, err
 	}
