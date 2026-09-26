@@ -138,6 +138,8 @@ const (
 	codeRoot   = "run_as_root"
 	codeHTTP   = "http_listen"
 	codeImport = "import_unavailable"
+	// codeImportIsData: /import is /data or one of its directories (§7.1).
+	codeImportIsData = "import_is_data"
 	// codeWorkers: the worker pool stopped without an error of its own.
 	codeWorkers = "workers_stopped"
 )

@@ -331,33 +331,42 @@ Verified on Docker Desktop with a separate project (`-p musiclib-e2e`,
 - a rename answered 428 without `If-Match`, 200 with it, and 412 on the
   now stale ETag.
 
-### Importing an album before the imports API exists (Phase 2 check)
+### Importing, the queue and the library list (round 16)
 
-There is no import endpoint yet (`POST /api/imports`, a later round). To check the
-whole slice on a running Compose app, put an album directory under the
-import mount, then create an import batch and its scan job by hand: these
-are exactly the rows `catalog.CreateImportBatch` writes, and the 2 s poll
-of the workers finds them (NOTES.md N-141). This is a verification path,
-not a product feature.
+Put the albums under the import mount, then drive the import through the
+API (NOTES.md N-190 to N-201). The SQL path of Phase 2 (N-141) is no
+longer needed.
 
 ```sh
-docker compose exec -T postgres psql -U musiclib -v ON_ERROR_STOP=1 <<'SQL'
-BEGIN;
-INSERT INTO import_batches (id, root_rel, created_at) VALUES (gen_random_uuid(), '', now()) RETURNING id \gset
-INSERT INTO jobs (id, kind, batch_id, state, queued_at, updated_at) VALUES (gen_random_uuid(), 'scan', :'id', 'pending', now(), now());
-COMMIT;
-SQL
-docker compose exec -T postgres psql -U musiclib -c "SELECT kind, state, error_code FROM jobs" \
-  -c "SELECT title, published_path, published_revision FROM albums"
-docker compose exec app find /data/library
+B='http://127.0.0.1:8080/api'
+M='-H X-Musiclib-Request:1 -H Content-Type:application/json'
+curl -s "$B/import-source"                          # /import, sorted; symlinks listed, never followed
+curl -s "$B/import-source?path=Jazz"                # a directory under /import (relative, no ..)
+ID=$(cat /proc/sys/kernel/random/uuid)              # the request id: keep it to repeat the request
+curl -s -X POST $M -d "{\"id\":\"$ID\",\"path\":\"Jazz\"}" "$B/imports"   # 201; the same again: 200; another path: 409
+curl -s "$B/imports/$ID"                            # the report: scanning, importing, completed; each candidate
+curl -s "$B/jobs?state=failed"                      # pending, running, failed jobs (state=, kind=, limit=, after=)
+curl -s -X POST $M -d '{"artist":null,"title":"Kind of Blue"}' "$B/jobs/<job>/retry"   # a failed import, with §7.3 overrides
+curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/retry"                          # any failed job, overrides kept
+curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/retry-failed"
+curl -s -X POST -H X-Musiclib-Request:1 "$B/render-all"
+curl -s "$B/albums?q=miles&limit=50"                # search by title or artist; trash=true, artist=<id>, after=<next>
 ```
 
-`root_rel` `''` scans the whole of `/import`; a subdirectory scans only
-that. Verified with a three-track FLAC album on Docker Desktop (a separate
-project, `-p musiclib-e2e`, `MUSICLIB_PORT=18080`, `WORKERS=2`): scan,
-import, render and publication done, `library/Miles Davis/Kind of Blue/`
-with its tracks and a receipt whose SHA-256 is `published_receipt_hash`,
-`work/render` and `work/retired` empty; a restart logged steps 4 to 7.
+- `path` `""` imports the whole of `/import`. A batch with nothing to
+  import completes with the scan failed as `no_valid_candidate`; files
+  outside every album are the scan's `unassigned_file` warnings.
+- A retry needs no `If-Match` (it changes no album); it is idempotent while
+  the job is pending or running; a done or skipped job is 409.
+- The import reports are kept 90 days, then deleted at boot or by the daily
+  run of the server; batches with a job still to run are never deleted.
+- At most two uploads (cover, attachment, LRC) copy at once; a third waits
+  for its turn.
+- The boot refuses an `/import` that is `/data` or one of its directories
+  (`import_is_data`).
+
+Verified end to end by `cmd/musiclibd.TestEndToEndImportThroughAPI` (real
+server, two workers, real FLAC files).
 
 ### When the app refuses to start
 
@@ -380,6 +389,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `volume_permission` | `/data` or a media directory is not writable by `MUSICLIB_UID`, or read-only | `chown -R` the host path, or recreate the volume |
 | `volume_rename_exchange_unsupported` | the filesystem lacks `renameat2(RENAME_EXCHANGE)` | use ext4 (§3.1) |
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
+| `import_is_data` | `/import` is the data volume or one of its directories (§7.1) | point `MUSICLIB_IMPORT` at the collection to import, never at the data volume |
 | `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | rebuild the image from this repository (`docker compose --profile app build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
 | `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or `docker compose stop app` and run `rebuild` (Phase 6), which regenerates the whole library from the catalog |

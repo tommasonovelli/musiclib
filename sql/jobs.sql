@@ -145,3 +145,89 @@ SELECT id, state FROM jobs WHERE kind = 'scan' AND batch_id = $1;
 INSERT INTO jobs (id, kind, batch_id, source_rel, state, error_code, error_message, queued_at, updated_at)
 VALUES (@id, 'import', @batch_id, @source_rel, @state, @error_code, @error_message, now(), now())
 ON CONFLICT (batch_id, source_rel) WHERE kind = 'import' DO NOTHING;
+
+-- The API's reads of the queue (§10.2 GET /api/jobs, GET /api/imports/{id}).
+-- They run in one REPEATABLE READ snapshot (store.InSnapshotTx). Jobs are
+-- listed by id: a UUIDv7 never changes, so a page boundary never moves
+-- when a job changes state (NOTES.md N-194).
+-- name: ListJobs :many
+SELECT * FROM jobs
+WHERE state = ANY(@states::text[]) AND kind = ANY(@kinds::text[]) AND id > @after::uuid
+ORDER BY id
+LIMIT @lim::int;
+
+-- name: GetBatchScanJob :one
+SELECT * FROM jobs WHERE kind = 'scan' AND batch_id = $1;
+
+-- The candidates of a batch (§7.2), by the bytes of their path.
+-- name: ListBatchImportJobs :many
+SELECT * FROM jobs WHERE kind = 'import' AND batch_id = $1
+ORDER BY source_rel COLLATE "C", id;
+
+-- §10.2 retry of a failed scan or import: a new ticket, back to pending,
+-- the outcome of the failed attempt cleared; the overrides are the
+-- caller's (the stored ones, or new ones for an import, §7.3).
+-- name: RetryFailedJob :one
+UPDATE jobs SET
+    state = 'pending',
+    claimed = NULL,
+    requested = nextval('job_ticket'),
+    overrides = @overrides,
+    result_album_id = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    warnings = '[]',
+    queued_at = now(),
+    updated_at = now()
+WHERE id = @id AND kind IN ('scan', 'import') AND state = 'failed'
+RETURNING requested;
+
+-- §10.2 POST /api/jobs/retry-failed, the scans and imports: every failed
+-- one gets a new ticket and keeps its overrides; nothing else is touched,
+-- a running job least of all.
+-- name: RetryAllFailedJobs :execrows
+UPDATE jobs SET
+    state = 'pending',
+    claimed = NULL,
+    requested = nextval('job_ticket'),
+    result_album_id = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    warnings = '[]',
+    queued_at = now(),
+    updated_at = now()
+WHERE kind IN ('scan', 'import') AND state = 'failed';
+
+-- The albums of the failed renders, for retry-failed: each is enqueued
+-- again through the single enqueue (§6.3).
+-- name: ListFailedRenderAlbums :many
+SELECT al.id FROM jobs j JOIN albums al ON al.id = j.album_id
+WHERE j.kind = 'render' AND j.state = 'failed'
+ORDER BY al.id;
+
+-- §10.2 POST /api/render-all: every active album, and every trashed album
+-- whose output is still published (a deletion still to materialize).
+-- name: ListRenderAllAlbums :many
+SELECT id FROM albums
+WHERE deleted_at IS NULL OR published_path IS NOT NULL
+ORDER BY id;
+
+-- §6.4 retention: "Esiti conservati 90 giorni; non si eliminano batch con
+-- job non terminali". A batch expires when it and every one of its jobs
+-- are older than the retention, and none of its jobs is pending or
+-- running. Run under the catalog lock, which every transition of a
+-- terminal job back to pending also holds (retry, scan commit).
+-- name: ListExpiredBatches :many
+SELECT b.id FROM import_batches b
+WHERE b.created_at < now() - make_interval(days => @days::int)
+  AND NOT EXISTS (
+    SELECT 1 FROM jobs j
+    WHERE j.batch_id = b.id
+      AND (j.state IN ('pending', 'running') OR j.updated_at >= now() - make_interval(days => @days::int)))
+ORDER BY b.id;
+
+-- name: DeleteBatchJobs :execrows
+DELETE FROM jobs WHERE batch_id = ANY(@ids::uuid[]);
+
+-- name: DeleteImportBatches :execrows
+DELETE FROM import_batches WHERE id = ANY(@ids::uuid[]);

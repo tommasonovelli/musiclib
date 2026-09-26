@@ -33,6 +33,9 @@ const (
 	// httpShutdownTimeout bounds the graceful close of the HTTP server;
 	// requests still running after it are cut.
 	httpShutdownTimeout = 10 * time.Second
+	// reportPurgeInterval is how often the running server applies the
+	// retention of the import reports (§6.4, N-200), besides the boot.
+	reportPurgeInterval = 24 * time.Hour
 )
 
 // daemon is the state of one run of the server. Its fields are filled by
@@ -111,27 +114,40 @@ func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Lo
 		return err
 	}
 	log.Info("ready", "store_id", d.vol.StoreID().String())
-	select {
-	case <-ctx.Done():
-		return d.serveErr()
-	case err := <-d.apiFatal:
-		// §6.4: an API request lost the database or could not learn the
-		// outcome of its commit. The process exits non-zero so that
-		// Docker restarts it.
-		log.Error("fatal failure in an API request, stopping", "code", codeOf(err))
-		return err
-	case err := <-d.poolDone:
-		// §6.4: an uncertain commit, a lost database or a publication left
-		// pending stopped the workers. The process exits non-zero so that
-		// Docker restarts it; the next boot recovers (N-070, N-135).
-		// Every worker has returned; the shutdown must not report the
-		// error a second time.
-		d.poolDone = make(chan error, 1)
-		d.poolDone <- nil
-		if err == nil {
-			err = &bootError{code: codeWorkers, msg: "the worker pool stopped by itself"}
+	purge := time.NewTicker(reportPurgeInterval)
+	defer purge.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return d.serveErr()
+		case <-purge.C:
+			// §6.4 retention, once a day while the server runs (N-200).
+			if err := d.purgeReports(ctx); err != nil {
+				if store.IsFatal(err) {
+					log.Error("fatal failure while purging the import reports, stopping", "code", codeOf(err))
+					return err
+				}
+				log.Warn("purging the import reports failed; retried in a day", "code", codeOf(err), "error", err.Error())
+			}
+		case err := <-d.apiFatal:
+			// §6.4: an API request lost the database or could not learn the
+			// outcome of its commit. The process exits non-zero so that
+			// Docker restarts it.
+			log.Error("fatal failure in an API request, stopping", "code", codeOf(err))
+			return err
+		case err := <-d.poolDone:
+			// §6.4: an uncertain commit, a lost database or a publication left
+			// pending stopped the workers. The process exits non-zero so that
+			// Docker restarts it; the next boot recovers (N-070, N-135).
+			// Every worker has returned; the shutdown must not report the
+			// error a second time.
+			d.poolDone = make(chan error, 1)
+			d.poolDone <- nil
+			if err == nil {
+				err = &bootError{code: codeWorkers, msg: "the worker pool stopped by itself"}
+			}
+			return err
 		}
-		return err
 	}
 }
 
@@ -169,7 +185,7 @@ func (d *daemon) boot(ctx context.Context) error {
 	if err := d.checkTools(ctx); err != nil {
 		return err
 	}
-	if err := checkImport(d.paths.imports); err != nil {
+	if err := d.checkImport(); err != nil {
 		return err
 	}
 
@@ -190,6 +206,14 @@ func (d *daemon) boot(ctx context.Context) error {
 	if err := d.recoverRunning(ctx); err != nil {
 		return err
 	}
+	// The import reports past their retention (§6.4, N-200), now that
+	// no job is running.
+	if err := d.buildCatalog(); err != nil {
+		return err
+	}
+	if err := d.purgeReports(ctx); err != nil {
+		return err
+	}
 
 	// Step 6: renders of active albums with a stale renderer and no job.
 	if err := d.enqueueStale(ctx); err != nil {
@@ -201,7 +225,7 @@ func (d *daemon) boot(ctx context.Context) error {
 		return err
 	}
 	d.ready.Store(d.pool)
-	d.api.Enable(apihttp.Backend{Catalog: d.catalog, Blobs: d.blobs, Budget: d.budget, Work: d.vol.Work()})
+	d.api.Enable(apihttp.Backend{Catalog: d.catalog, Blobs: d.blobs, Budget: d.budget, Work: d.vol.Work(), Source: d.source})
 	return nil
 }
 
@@ -284,18 +308,66 @@ func (d *daemon) checkTools(ctx context.Context) error {
 }
 
 // checkImport verifies that /import is a directory the process can list
-// (§7.1, §11.1 step 3). It is mounted read-only; nothing writes to it.
-func checkImport(path string) error {
-	r, err := fsops.OpenRoot(path)
+// (§7.1, §11.1 step 3), and that it is not the data volume: "La root non
+// può essere /data" (§7.1). /import must not be the same directory (st_dev
+// and st_ino) as /data or one of its media directories, which a mount of
+// the data volume, or of one of its directories, at /import would be
+// (N-197). It is mounted read-only; nothing writes to it.
+func (d *daemon) checkImport() error {
+	r, err := fsops.OpenRoot(d.paths.imports)
 	if err != nil {
 		return &bootError{code: codeImport, msg: "cannot open the import source", err: err}
 	}
-	if err := r.CheckAccess(false); err != nil {
-		return errors.Join(&bootError{code: codeImport, msg: "cannot read the import source", err: err}, r.Close())
+	err = r.CheckAccess(false)
+	if err != nil {
+		err = &bootError{code: codeImport, msg: "cannot read the import source", err: err}
+	} else {
+		err = d.importIsNotData(r)
 	}
-	if err := r.Close(); err != nil {
-		return &bootError{code: codeImport, msg: "cannot close the import source", err: err}
+	if cerr := r.Close(); cerr != nil {
+		err = errors.Join(err, &bootError{code: codeImport, msg: "cannot close the import source", err: cerr})
 	}
+	return err
+}
+
+// importIsNotData compares the identity of /import with those of /data,
+// originals/, library/ and work/.
+func (d *daemon) importIsNotData(imports *fsops.Root) error {
+	in, err := imports.Stat("")
+	if err != nil {
+		return &bootError{code: codeImport, msg: "cannot describe the import source", err: err}
+	}
+	for _, r := range []*fsops.Root{d.vol.Root(), d.vol.Originals(), d.vol.Library(), d.vol.Work()} {
+		fi, err := r.Stat("")
+		if err != nil {
+			return &bootError{code: codeImport, msg: "cannot describe a data directory to compare it with the import source", err: err}
+		}
+		if fi.Dev == in.Dev && fi.Ino == in.Ino {
+			return &bootError{code: codeImportIsData,
+				msg: "/import is the data volume or one of its directories: mount the collection to import there (DESIGN.md §7.1)"}
+		}
+	}
+	return nil
+}
+
+// buildCatalog builds the catalog service (§13.2), whose commits wake the
+// pool (§6.4) once it runs.
+func (d *daemon) buildCatalog() error {
+	var err error
+	d.catalog, err = catalog.New(d.pool, func() { d.workers.Wake() }, importer.CoverFits, importer.GenreFits)
+	return err
+}
+
+// purgeReports is the retention of §6.4: the import batches whose
+// outcomes are older than catalog.ReportRetentionDays, and that have no
+// job left to run, are deleted with their jobs (N-200). It runs at boot
+// and then once a day (run).
+func (d *daemon) purgeReports(ctx context.Context) error {
+	n, err := d.catalog.PurgeImportReports(ctx)
+	if err != nil {
+		return err
+	}
+	d.log.Info("import reports purged", "batches", n, "retention_days", catalog.ReportRetentionDays)
 	return nil
 }
 
@@ -531,10 +603,6 @@ func (d *daemon) enqueueStale(ctx context.Context) error {
 // fatal error (§6.4), which run turns into a non-zero exit.
 func (d *daemon) startWorkers(ctx context.Context) error {
 	var err error
-	d.catalog, err = catalog.New(d.pool, func() { d.workers.Wake() }, importer.CoverFits, importer.GenreFits)
-	if err != nil {
-		return err
-	}
 	if d.source, err = fsops.OpenRoot(d.paths.imports); err != nil {
 		return &bootError{code: codeImport, msg: "cannot open the import source", err: err}
 	}

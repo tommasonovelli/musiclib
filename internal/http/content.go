@@ -27,8 +27,10 @@ import (
 // (428, 400), the media type (415), the query (422), a declared length
 // over the limit (413); then, for a body that is read or a blob that is
 // pinned, the album on a snapshot (404, 412, and 404 or 409 for what the
-// request names); then the body (413, 422); the space (507); the put; the
-// transaction, which decides (404, 412, 409, 422).
+// request names); then one of the MaxConcurrentUploads copy slots (§6.1,
+// N-199), held while the body is read, checked and pinned; the body (413,
+// 422); the space (507); the put; the transaction, which decides (404,
+// 412, 409, 422).
 
 // attachmentKeys are the keys of the JSON body that chooses an attachment.
 var attachmentKeys = []string{"attachment_id"}
@@ -103,6 +105,11 @@ func (h *handlers) coverUpload(w nethttp.ResponseWriter, r *nethttp.Request, id 
 	if !ok {
 		return catalog.CoverChoice{}, false
 	}
+	release, ok := h.acquireUpload(w, r)
+	if !ok {
+		return catalog.CoverChoice{}, false
+	}
+	defer release()
 	data, e := readUpload(w, r, MaxCoverBytes)
 	if e != nil {
 		h.api.writeError(w, e)
@@ -176,7 +183,16 @@ func (h *handlers) postAttachment(w nethttp.ResponseWriter, r *nethttp.Request) 
 		h.api.fail(w, r, err)
 		return
 	}
-	b, e, err := h.pinUpload(r, uploadReader(w, r, MaxAttachmentBytes), estimateOf(r, MaxAttachmentBytes), MaxAttachmentBytes)
+	release, ok := h.acquireUpload(w, r)
+	if !ok {
+		return
+	}
+	// The token goes back before the catalog transaction (N-199), and
+	// also if pinUpload panics (net/http recovers it).
+	b, e, err := func() (catalog.Blob, *Error, error) {
+		defer release()
+		return h.pinUpload(r, uploadReader(w, r, MaxAttachmentBytes), estimateOf(r, MaxAttachmentBytes), MaxAttachmentBytes)
+	}()
 	switch {
 	case err != nil:
 		h.api.fail(w, r, err)
@@ -336,6 +352,11 @@ func (h *handlers) lyricsUpload(w nethttp.ResponseWriter, r *nethttp.Request, id
 		h.api.fail(w, r, &catalog.Error{Code: catalog.CodeTrackNotFound, Message: "album " + id.String() + " has no track " + track.String()})
 		return catalog.LyricsChoice{}, false
 	}
+	release, ok := h.acquireUpload(w, r)
+	if !ok {
+		return catalog.LyricsChoice{}, false
+	}
+	defer release()
 	data, e := readUpload(w, r, MaxLyricsBytes)
 	if e == nil && !utf8.Valid(data) {
 		e = lyricsError()
@@ -406,6 +427,21 @@ func (h *handlers) chosenAttachment(w nethttp.ResponseWriter, r *nethttp.Request
 			Message: "album " + id.String() + " has no attachment " + att.String()})
 	}
 	return a, v, ok
+}
+
+// acquireUpload is uploadSlot answering its refusal: ok false means the
+// answer is written.
+func (h *handlers) acquireUpload(w nethttp.ResponseWriter, r *nethttp.Request) (func(), bool) {
+	release, e, err := h.uploadSlot(r)
+	switch {
+	case err != nil:
+		h.api.fail(w, r, err)
+		return nil, false
+	case e != nil:
+		h.api.writeError(w, e)
+		return nil, false
+	}
+	return release, true
 }
 
 // pinUpload is pin in the request's context, then the failpoint between

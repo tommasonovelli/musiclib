@@ -3108,7 +3108,11 @@ next catalog change enqueues one.
 
   The Compose stop grace is 45 s.
 
-### N-141 · Creating an import batch before the API exists — DECIDED
+### N-141 · Creating an import batch before the API exists — SUPERSEDED (round 16: POST /api/imports, N-201)
+**Round 16:** `POST /api/imports` exists; `docs/docker.md` documents it
+instead of the SQL statements, and `TestEndToEndTwoWorkers` creates its
+batch through the API. What follows is the original entry.
+
 There is no HTTP API until Phase 5, and no product surface was added for
 this round. For the Compose end-to-end check, `docs/docker.md` documents a
 test path: two SQL statements through `docker compose exec postgres psql`,
@@ -3568,6 +3572,11 @@ under other typed errors. Otherwise it returns the message unchanged.
   mutation-checked.
 
 ### N-151 · Where the round-11 pieces live — DECIDED
+**Round 16:** the rest of §10.2 is registered (`GET /api/albums`, the
+import source, the imports, the jobs, the retries, render-all: N-190 to
+N-201); `Backend` also carries `/import`. The "not registered" list below
+is history.
+
 **Round 14:** cover, attachments, lyrics, track deletion and the downloads
 are registered (N-172 to N-180); `Enable` takes a `Backend`.
 
@@ -4216,10 +4225,12 @@ N-091, N-117, N-118, N-149 and N-151 were updated; see those entries.
   MiB) and checked **before** they are pinned, so an invalid file never
   becomes a blob; the importer decodes covers in memory anyway (N-124). An
   attachment is streamed from the socket into `blobstore.Put`, never held
-  in memory. **ACCEPTED:** nothing limits concurrent uploads, so each
-  concurrent cover upload holds up to 20 MiB and may decode up to 40
-  Mpixel (about 320 MB at 16-bit RGBA); acceptable for the single trusted
-  user of §10.4.
+  in memory. **Corrected in round 16 (N-199):** round 14 said that
+  nothing limits concurrent uploads, which missed §6.1 ("Le richieste HTTP
+  di upload sono limitate a due copie simultanee"). At most two uploads
+  now read, check and pin their body at once; a third waits. So at most
+  two covers (20 MiB each, up to 40 Mpixel decoded, about 320 MB at 16-bit
+  RGBA) are in memory at once.
 - **Space (§11.2):** every put reserves its size (the Content-Length, or
   the limit without one) in the process's `jobs.Budget` against `statfs` of
   `/data/work` minus the 1 GiB margin, and releases it when the put is
@@ -4765,3 +4776,420 @@ on the live tree, which was then restored.
 - **Import:** the external cover taken from a disc directory; root audio
   accepted in a multi-disc candidate; the directory's disc number not
   given to the track.
+
+---
+
+## Round 16: the rest of the §10.2 API (2026-09-26)
+
+N-141 (superseded) and N-172 (the upload limit) were updated; see those
+entries.
+
+### N-190 · `GET /api/albums`: order, keyset cursor, summaries — DECIDED
+- **Order:** the artist's `folder_key`, then the album's `folder_key`,
+  then the id, byte-wise (`COLLATE "C"`). The keys are §5.2's comparison
+  keys, so the order is case-insensitive and independent of the database
+  locale, like `GET /api/artists` (N-146). The id breaks every tie: an
+  active album and trashed ones with the same artist and title, or two
+  trashed ones.
+- **Keyset, not OFFSET:** `after` is the opaque `next` of the previous
+  page, the base64url (no padding) of the JSON array `[artist key, title
+  key, id]`. A cursor keeps its place when its album is renamed or
+  trashed in between: the next page starts right after its position
+  (`TestListAlbumsPagination`). A cursor that does not re-encode to the
+  same text is 422 `invalid_field`, so one position has one spelling; so
+  is a key holding NUL or invalid UTF-8 (round 16 review, N-191).
+- **Filters:** `artist=<id>` (canonical id; an unknown artist is an empty
+  list, not 404: a filter), `trash=true|false` (default false: §10.3 "il
+  cestino è un filtro della libreria"). Strict query: every parameter at
+  most once, unknown ones 422 `unknown_field` (N-148's rules).
+- **Summary** (`albumSummaryJSON`): `{id, revision, etag, artist_id,
+  artist_name, title, year, genre, compilation, trashed, cover}`, the
+  album's own representation (N-150) without tracks and attachments. The
+  ETag is included so that a list action (trash, restore) can send
+  If-Match without a read; the answer itself carries no `ETag` header (a
+  list is not a resource with a revision). No processing state (§10.1).
+- **Index: none added.** The order spans two tables (artist key, album
+  key), which no single index serves without a denormalized column, that
+  is a migration and a second copy of the artist's key in every album.
+  Sorting a personal library (thousands of rows) in one snapshot takes
+  milliseconds. The artist filter uses `albums_artist_id_idx`. To revisit
+  only with a measurement (§13.2).
+
+### N-191 · Search semantics: §5.2's one key, as a substring, no accent folding — DECIDED (owner, 2026-09-26)
+- `q` is normalized as a metadata text (`names.NormalizeText`: NFC, trim,
+  control characters 422, at most 1,024 characters), then compared with
+  `names.Key` (NFC of the full case folding, with the Cherokee fix) as a
+  substring of `names.Key(title)` or `names.Key(artist name)`. So case,
+  NFC/NFD and `ß`/`ss` do not matter.
+- **No accent folding:** `beyonce` does not find `Beyoncé`. §5.2 has one
+  normalization and §13.2 forbids a second one; folding accents would be
+  a new rule of its own, with its own questions (`ø`, `ł`, `æ`).
+  **DECIDED (owner, 2026-09-26):** no accent folding in search, as
+  implemented. There stays one normalization (§5.2); an accent-insensitive
+  search, which would have been a second fold used only for search, is
+  not wanted.
+- **Round 16 review:** the search text reaches no SQL (the filter runs in
+  Go), and `names.NormalizeText` refuses NUL (a control character) and
+  invalid UTF-8 before it is used (`TestListAlbumsAPI`: `q=a%00b`,
+  `q=%FF`). The cursor `after` does reach SQL: `decodeAlbumCursor` now
+  refuses a key holding NUL or invalid UTF-8 as 422 `invalid_field`.
+  `["\u0000","",<id>]` re-encoded to the same text, and PostgreSQL
+  refused the NUL in a text parameter (SQLSTATE 22021), a 500. Invalid
+  UTF-8 cannot survive the re-encoding (`encoding/json` replaces it with
+  U+FFFD), so that half of the check is defence in depth; both are tested.
+  The other query and body values of the round-16 endpoints are
+  validated before any SQL: `path` (import-source, `POST /api/imports`)
+  by `names.SplitRelPathOrRoot` (`path_nul_byte`, `invalid_utf8`),
+  `artist` and the jobs' `after` as canonical ids, `state` and `kind` as
+  enums, the retry's overrides by `names.NormalizeText` (a NUL title
+  added to `TestRetryAPI`).
+- **On the texts, not the folder keys:** `folder_key` is sanitized and may
+  be truncated with a hash (§5.2), so `AC/DC` would be `ac_dc`, a title of
+  200 bytes would lose its end, and a query `con` would become `_con` (the
+  DOS rule). The filter therefore runs in Go on the title and the name,
+  never with SQL `lower()` (§5.2), over the rows read in the library's
+  order in batches of 500 within one REPEATABLE READ snapshot
+  (`catalog.ListAlbums`), until the page is full. Cost: in the worst case
+  a search reads every album that passes the filters; fine at personal
+  scale.
+- An empty `q` (or only spaces) is no search.
+
+### N-192 · Page sizes: 50 by default, 200 at most, 201 refused — DECIDED
+`limit` is a plain decimal 1..200. `201`, `0`, `050`, `1.5`, `-1` and an
+empty value are 422 `invalid_field`, with `details.field = "limit"` and
+`details.limit = 200`. A larger value is refused rather than clamped: a
+client asking for 500 and silently getting 200 could believe it has
+everything. The same rule applies to `GET /api/jobs`
+(`catalog.DefaultPageSize`, `catalog.MaxPageSize`).
+
+### N-193 · The job and import-report representations — DECIDED
+- **Job** (`queueJobJSON`, used by `GET /api/jobs`, the retries and the
+  report): `{id, kind, state, ticket, album_id, batch_id, source_rel,
+  overrides, result_album_id, error_code, error_message, warnings,
+  queued_at, updated_at}`.
+  - `ticket` is `requested`: a retry visibly gives a new one. `claimed` is
+    internal and not shown.
+  - `overrides` is `{artist, title}` (null for an absent one) for an
+    import, and `null` for other kinds.
+  - A warning is `{code, message, path}` (`path` null when empty).
+  - The message goes through `jobMessage` (N-150): a database code shows
+    the fixed message.
+  - No ETag: the queue is processing state (§10.1), and every `/api`
+    answer is `no-store`.
+- **Report** (`GET /api/imports/{id}`, `importJSON`): `{id, path,
+  created_at, state, scan, candidates}`.
+  - `state` is derived: `scanning` (the scan is pending or running),
+    `importing` (an import is pending or running), `completed` (every job
+    has an outcome).
+  - The scan's warnings are the unassigned files and rejected entries
+    (§7.2, N-122).
+  - Each candidate is its import job, ordered by the bytes of
+    `source_rel`: a candidate, or a branch that failed at the scan.
+  - A batch without a valid candidate is `completed`, with the scan
+    `failed`, `no_valid_candidate`, and its message (§7.2: "non successo
+    vuoto").
+- There is no list of batches: §10.2 has none. The UI keeps the ids it
+  created, and failed imports are also in `GET /api/jobs`.
+
+### N-194 · `GET /api/jobs`: by id, filters `state` and `kind` — DECIDED
+The list holds pending, running and failed jobs (§10.2); done and skipped
+ones are in the reports. The filters are `state=pending|running|failed`
+and `kind=scan|import|render`, one value each (the UI shows all, or one
+column). The order is by id: a UUIDv7 is creation order and never
+changes, so a page boundary does not move when a job changes state or is
+enqueued again (`queued_at` would). `after=<job id>` continues. The claim
+order of §6.1 is the pool's business, not the list's.
+
+### N-195 · Retry semantics — DECIDED
+`POST /api/jobs/{id}/retry` (`jobs.Retry`, one catalog transaction):
+- **failed:** a new ticket (`requested = nextval`), pending, the outcome
+  cleared (error, warnings, result album).
+  - A render goes through `jobs.EnqueueRender` (§6.3).
+  - A scan scans again: `CommitScan` keeps the import jobs already there
+    (N-122) and adds new branches.
+  - An import revalidates its current candidate (§7.2), which the executor
+    always does. `TestEndToEndImportThroughAPI` tests it through the API:
+    it retries an unchanged ambiguous branch, which fails again, then the
+    fixed one, which imports.
+- **pending or running:** nothing changes, 202 with the job (§10.2
+  "idempotenti mentre il job è già pending/running"). While the job waits,
+  the answer to a repeated request is byte for byte the first one.
+- **done or skipped:** 409 `job_not_retryable`. A done import already
+  made its album; a skipped one found its duplicate (§7.6); running either
+  again would only overwrite the report. Importing a changed directory is
+  a new batch.
+- **Overrides** (§7.3): the body is empty, or exactly `{"artist",
+  "title"}`, each a string or null, under N-148's rules (an unknown key is
+  422 `unknown_field`, a missing one 422 `missing_field`).
+  - The texts are normalized (§5.2; `""` is 422 `text_empty`).
+  - They replace the stored ones, and `{"artist": null, "title": null}`
+    clears them. An empty body keeps them, so "Riprova" in the UI and
+    retry-failed keep what the user set.
+  - Overrides for a scan or a render, even all null, are 422
+    `job_overrides_not_allowed`.
+  - On a pending or running import, overrides equal to the stored ones
+    are the idempotent no-op. Others are 409 `job_in_progress`: the
+    attempt in progress uses its own, so retry once it has an outcome.
+- **retry-failed** (`jobs.RetryFailed`): every failed scan and import in
+  one UPDATE, their overrides kept, and every failed render through
+  `EnqueueRender`. Only `state = 'failed'` rows are touched, so a running
+  job is never given a new ticket or duplicated (`TestRetryFailed`
+  compares every untouched row, `updated_at` included). 202
+  `{"retried": n}`.
+- **Lost answer** (`TestRetryAnswerLost`): the COMMIT of a retry got no
+  answer, so the process stops (§6.4). After the restart the same request
+  finds the job pending with the ticket the lost commit gave it, and
+  changes nothing: one ticket, one row. The same holds for
+  `POST /api/imports` (200, the batch of the lost commit).
+
+### N-196 · Retries and render-all take no If-Match — DECIDED
+§10.1 requires If-Match for "ogni modifica a una risorsa esistente" of the
+catalog; §10.2 says retries "non modificano il catalogo e sono
+idempotenti". A job has no ETag (it is processing state, §10.1), and a
+retry changes no album or artist row, so there is no revision to match.
+- The manual render of an album keeps its If-Match (§10.2 "I render
+  manuali richiedono anch'essi la revisione vista"), because it acts on an
+  album the user is looking at.
+- A render retry acts on a failed job the user is looking at: its
+  precondition is the job's state, checked in the transaction.
+- render-all acts on the whole library, which has no revision.
+- The §10.4 boundary (`X-Musiclib-Request`, Origin, Host) applies to all
+  of them.
+
+### N-197 · `GET /api/import-source`, and `/import` against `/data` — DECIDED (residual: owner, 2026-09-26)
+- **The listing** is `importer.Browse(src, rel)`.
+  - `rel` is validated by `names.SplitRelPathOrRoot` before any syscall:
+    absolute, `.`, `..`, empty segments, NUL, invalid UTF-8 and too deep
+    are 422 with the names code and `details.field = "path"`.
+  - Then `fsops.Root.ReadDir`: one `openat2` with `RESOLVE_BENEATH |
+    RESOLVE_NO_SYMLINKS`. Entries are sorted by name bytes; only names and
+    types are read, and no file is opened. No `path` is `/import` itself.
+- **Types:** `directory`, `file`, `symlink` (listed, never followed),
+  `special` (FIFO, socket, device), `invalid_name` (not UTF-8: shown with
+  U+FFFD, neither browsable nor importable, §5.2). Hidden files and the
+  three ignored names are listed as files: the listing shows the disk, the
+  scan decides.
+- **Refusals**, with the scan's own codes:
+  - a path that is, or goes through, a symlink or a special file: 422
+    `source_rejected_entry`;
+  - a file or a FIFO: 422 `source_not_directory`;
+  - a missing path: 404 `source_not_found`;
+  - EACCES: 422 `source_not_readable` (a new importer code).
+
+  No answer holds an absolute path (tested).
+- **§7.1 "La root non può essere /data né contenere symlink verso di
+  essa".** A batch root is a directory under `/import` reached without
+  following any symlink, and the scan never follows one, so no root and
+  no path of a scan reaches `/data` through a symlink. The boot used to
+  check only that `/import` is listable. It now also refuses an `/import`
+  that is the same directory (st_dev and st_ino) as `/data`, `originals/`,
+  `library/` or `work/`, with the new boot code `import_is_data`
+  (`TestBootRefusals`, three cases, one of them through another path).
+- **ACCEPTED residual — DECIDED (owner, 2026-09-26): accepted as
+  recorded.** A mount of a deeper directory of the data volume
+  (`library/Artist`), or an `/import` whose host directory contains the
+  data directory, is not detected: that would take a walk of the host.
+  The mount is read-only, and the output as an input can only make an
+  import create duplicate albums; no data is lost (§3.2).
+- **Round 16 review:** a failed `Stat` of a data directory during this
+  comparison was returned raw (the log showed an fsops code). It is now
+  a `bootError` `import_unavailable`, the code of every other failure of
+  the `/import` check, with the fsops error as its cause
+  (`TestImportIsNotDataStatFailure`, which closes the volume's roots under
+  the check; mutation-checked).
+
+### N-198 · render-all's scope — DECIDED
+`POST /api/render-all` (`catalog.RenderAll`, one catalog transaction)
+enqueues:
+- every active album;
+- every trashed album whose `published_path` is not NULL: a deletion still
+  to materialize (§10.2). A trashed album without published output has
+  nothing to remove and is not enqueued.
+
+Each goes through `jobs.EnqueueRender`, the upsert on the album's single
+row (§6.3). A failed render becomes pending, and a running one stays
+running with a newer ticket, so it is built again after. No row is ever
+duplicated, and no revision changes (`TestRenderAll`). The answer is 202
+`{"enqueued": n}`, and the pool is woken once after the commit.
+
+### N-199 · Two upload copies at once; a third waits — DECIDED (residual: owner, 2026-09-26)
+§6.1: "Le richieste HTTP di upload sono limitate a due copie
+simultanee." `API.uploads` is a semaphore of `MaxConcurrentUploads = 2`
+tokens, one per process.
+- **What it covers.** An upload (cover, attachment, LRC) takes a token
+  after its cheap checks and its snapshot precheck (N-173). It holds the
+  token while its body is read, checked and pinned, and gives it back
+  before the catalog transaction. So at most two bodies are read at once,
+  and at most two covers are in memory (this corrects N-172's accepted
+  risk).
+- **A third upload waits**, rather than getting 503 or 429: the limit is
+  on copies, and several files dropped at once in the UI should all
+  arrive. While it waits, nothing of its body is read, nothing is
+  reserved in the space budget, and nothing is pinned.
+- **The wait is bounded by the request's context.** The server closing the
+  connection (at shutdown, after the 10 s grace), or a client disconnect
+  the server has noticed, ends it with 400 `upload_incomplete` and no
+  token taken (`TestUploadSlotContext`).
+- **ACCEPTED — DECIDED (owner, 2026-09-26): accepted as recorded.**
+  Go's HTTP/1.1 server notices a closed connection only once
+  the request's body has been read. So an upload whose client left while
+  it waited keeps its place. At its turn it fails to read its body (400,
+  nothing pinned or saved) and gives the token back at once
+  (`TestUploadSlotClientGone`). If the whole body had already arrived,
+  the upload completes, like any upload the client abandoned after
+  sending it.
+- **Deterministic tests**, through two new failpoints of
+  `http.Config.Failpoints`: `upload_waiting` (before the wait) and
+  `upload_copying` (holding a token).
+  - `TestUploadSlots` holds two uploads at `upload_copying`, sees the
+    third reach `upload_waiting` but not `upload_copying`, with nothing
+    reserved, then frees one token and sees it copy. It runs with a third
+    upload of each kind (attachment, cover, lyrics).
+  - `TestUploadSlotsBound`: eight uploads of the three kinds, at most two
+    at once between `upload_copying` and `upload_pinned`, and two at once
+    at least once.
+- **Round 16 review:** the attachment path called `release()` right after
+  `pinUpload`, not deferred, so a panic in `pinUpload` (recovered by
+  net/http) would have kept a token forever. The pin now runs in a
+  closure with `defer release()`: the token still goes back before the
+  catalog transaction, and on a panic too. The cover and lyrics paths
+  already deferred it in helpers that return before the transaction. Not
+  covered by a test: it would take a panic injected into `pinUpload`, a
+  failpoint for one line; the slot tests cover the normal release.
+
+### N-200 · The §6.4 retention of the import reports — DECIDED (implemented; failed jobs purged: owner, 2026-09-26)
+"Esiti conservati 90 giorni; non si eliminano batch con job non
+terminali." Nothing implemented it. It is small and safe, so it is done
+now rather than left to doctor, which reports and never deletes (§11.3).
+- **What.** `catalog.PurgeImportReports` is one catalog transaction. It
+  deletes, with its jobs, every batch created more than 90 days ago
+  (`ReportRetentionDays`) whose jobs all have an outcome (done, skipped or
+  failed) last changed more than 90 days ago.
+  - A batch with a pending or running job is never touched.
+  - Every transition of a terminal job back to pending (a retry, a scan's
+    new import jobs) takes the catalog lock too, so none can race the
+    purge; a claim only moves pending to running.
+  - Albums are never affected: `jobs.result_album_id` references the
+    album, not the reverse.
+  - The clock is PostgreSQL's (`now()`), the one that wrote `updated_at`.
+- **Failed jobs count as outcomes:** after 90 days an unretried failure
+  goes too. §4.2 makes failed a terminal state, and §6.4's rule names non
+  terminal jobs only. **DECIDED (owner, 2026-09-26):** accepted. A failed
+  job never retried is purged with its batch once the batch and every
+  outcome in it are 90 days old without change; until then it stays
+  visible in `GET /api/jobs` (and in its report). Rationale: failed is
+  terminal (§4.2), and §6.4 protects only non-terminal jobs.
+- **When.** At boot, in step 5 right after running → pending, so that a
+  job left running by a crash is pending and recent, and keeps its batch.
+  Then once a day while the server runs (`reportPurgeInterval`, a
+  constant). A fatal database error there stops the process like any
+  other (§6.4); any other error is logged and retried the next day.
+- **Tests.**
+  - `catalog.TestPurgeImportReports`, with fabricated timestamps. Purged:
+    an old batch with every job terminal, and an old one with only a
+    failed job. Kept: a pending job, a running job, an outcome of 89
+    days, a batch of 89 days, and (round 16 review) a batch of 89 days
+    whose jobs changed 100 days ago, the batch's age alone. Every album
+    stays, and a second run purges nothing.
+  - `cmd/musiclibd.TestBootStepsInOrder`: the purge comes after the
+    recovery of running jobs; one expired batch is deleted, and one whose
+    scan was left running is kept.
+- The catalog service is now built at the start of step 5 instead of step
+  7 (`buildCatalog`). Nothing else uses it before step 7.
+
+### N-201 · `POST /api/imports` does not look at the disk — DECIDED
+- **The body** is exactly `{"id", "path"}`: `id` is the client's request
+  UUID (canonical form, any version, not the nil UUID); `path` is relative
+  to `/import`, as on disk (`""` is `/import`).
+- **The answers.** `catalog.CreateImportBatch` creates the batch and its
+  scan job in one transaction.
+  - A new batch is 201 with `Location`.
+  - The same id and path answer the same report with 200.
+  - The same id with another path is 409 `import_batch_conflict`, with the
+    recorded path in `details.path`. That includes another NFC form or
+    another case, since the path is kept as on disk (§5.2).
+  - Eight concurrent requests with one id give one batch and one scan job,
+    one 201 and seven 200 (`TestCreateImportConcurrently`, five rounds).
+- **No disk check.** The path is validated (§5.2) but not looked up. A
+  missing or rejected root makes the scan fail with `source_not_found` or
+  `source_rejected_entry`, which the report shows and a retry repeats once
+  the mount is fixed (§11.4 "verificare/rimontare la sorgente e
+  riprovare"). A disk check in the request would be a second place
+  deciding the same thing, would race the mount anyway, and would have to
+  be skipped for a repeated request, whose idempotent answer must not
+  depend on the disk.
+
+### N-202 · Round 16 mutation checks — DECIDED
+Each of the following was applied alone on the live tree, the named tests
+run, and the file restored (a helper that restores through an EXIT trap).
+Each made a test fail:
+- **Batch idempotency and 409:** `ON CONFLICT (id) DO NOTHING` removed from
+  the batch insert (`TestCreateImport`, `TestCreateImportConcurrently`:
+  500); the root comparison skipped (`TestCreateImport`: 200 instead of
+  409).
+- **Retry:** a pending job treated as failed (`TestRetryImport`,
+  `TestRetryAPI`); `requested = nextval` dropped from the retry
+  (`TestRetryImport`: no new ticket); overrides accepted for any kind
+  (`TestRetryAPI`: a render retried with overrides); a third override key
+  (`TestRetryAPI`).
+- **retry-failed:** `state IN ('failed', 'running')` (`TestRetryFailed`: 4
+  jobs retried, want 3).
+- **render-all:** active albums only (`TestRenderAll`: 3, want 4); every
+  album (6, want 4).
+- **Retention:** the pending/running condition dropped (4 batches purged,
+  want 2); the recent-outcome condition dropped (3, want 2); (round 16
+  review) the batch-age condition `created_at < now() - 90 days` dropped
+  in the generated query (3, want 2). That last mutant survived the
+  original cases, whose recent batch also had recent outcomes; the case
+  "recent batch, old outcomes" (89 days, jobs changed 100 days ago) was
+  added for it.
+- **Round 16 review, further mutants:** the cursor key check weakened to
+  NUL *and* invalid UTF-8 (`TestListAlbumsAPI`: the NUL cursor is 500);
+  the data directory's `Stat` error returned raw in `importIsNotData`
+  (`TestImportIsNotDataStatFailure`: `fs_root_closed`, want
+  `import_unavailable`).
+- **Upload slots:** a capacity of 3 (`TestUploadSlots`: "a third copy
+  started"); the slot removed from the cover, the lyrics, the attachment
+  path, each alone (`TestUploadSlots/<kind>`); the request context ignored
+  while waiting (`TestUploadSlotContext`).
+- **Pages:** `limit` 201 accepted by the HTTP layer (`TestListAlbumsAPI`)
+  and by the catalog (`TestListAlbumsSearch`).
+- **Search:** raw bytes instead of `names.Key` (`search "kind"` finds
+  nothing); the folder keys instead of the texts (`ac/dc` finds nothing);
+  the id dropped from a search batch's continuation (`uuid.Max`):
+  `TestListAlbumsPagination` pages a tie of 600 trashed albums after 450
+  that do not match, so that the first batch of 500 ends inside the tie
+  (50 found, want 600). Without those 450 the mutant survived: the page
+  filled before the batch ended. The test was added for it.
+- **Confinement:** a symlink listed as a directory (`TestImportSource`);
+  the boot's identity check of `/import` off (`TestBootRefusals`, three
+  cases).
+
+**Test hygiene found by the mutants:** a slot mutant first hung the
+test for its 10 minutes, because uploads held at `upload_copying` were
+never released after the failure. The hooks now release every held
+upload at cleanup, and `TestUploadSlotContext` waits at most 30 s: a
+broken slot fails in seconds.
+
+**Observed once, explained, test fixed (round 16 review):** in one full
+gate run under load, `cmd/musiclibd.TestProcessSignalsWithHelpersActive/killed`
+found the volume lock still held right after the SIGKILLed server's
+`Wait`. The cause, established by the reviewer, is benign:
+- the lock's descriptor is opened with `O_CLOEXEC` in the same `openat2`
+  (`fsops`' `alwaysOpenFlags`), so no executed tool ever holds it;
+- the only possible holder after the server dies is a tool child between
+  `clone()` and `execve()`, which has its own copy of the descriptor
+  table (Go's `os/exec` clones without `CLONE_FILES`);
+- that child execs (closing the descriptor) or exits within scheduler
+  latency: `PR_SET_PDEATHSIG` plus Go's re-check of `getppid` after
+  setting it.
+
+So the lock is released a few scheduler ticks after the server's death,
+not necessarily before `Wait` returns. The test now retries
+`volume.Acquire` for up to 5 s in the SIGKILL case only
+(`awaitLockFree`, like `assertNoSurvivors`), failing at once on any error
+other than `volume_locked`; the SIGTERM case stays strict (a clean
+shutdown releases the lock before exiting). Production: the window is
+far shorter than Docker's restart delay, and a boot that still met it
+would stop with `volume_locked` and be restarted again (§2.2, §11.1);
+nothing is written without the lock.

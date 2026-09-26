@@ -165,6 +165,35 @@ func (h *handlers) pin(ctx context.Context, src io.Reader, estimate, limit int64
 	return catalog.Blob{Hash: b.SHA256, Size: b.Size}, nil, nil
 }
 
+// MaxConcurrentUploads is how many uploads copy their body at once (§6.1:
+// "Le richieste HTTP di upload sono limitate a due copie simultanee").
+const MaxConcurrentUploads = 2
+
+// uploadSlot waits for one of the MaxConcurrentUploads copy slots of the
+// process (NOTES.md N-199). A third upload waits, reading nothing of its
+// body, until a slot is free or its request ends (the client went away, or
+// the server closes it at shutdown): then 400 upload_incomplete, with
+// nothing read, reserved or pinned. The slot covers the reading of the
+// body, its checks and the put, never the catalog transaction; the caller
+// releases it with the returned function.
+func (h *handlers) uploadSlot(r *nethttp.Request) (func(), *Error, error) {
+	if err := h.api.failpoints.Hit("upload_waiting"); err != nil {
+		return nil, nil, errors.Join(errors.New("failpoint upload_waiting"), err)
+	}
+	select {
+	case h.api.uploads <- struct{}{}:
+	case <-r.Context().Done():
+		return nil, newError(nethttp.StatusBadRequest, CodeUploadIncomplete,
+			"the request ended while it waited for one of the %d upload slots", MaxConcurrentUploads), nil
+	}
+	release := func() { <-h.api.uploads }
+	if err := h.api.failpoints.Hit("upload_copying"); err != nil {
+		release()
+		return nil, nil, errors.Join(errors.New("failpoint upload_copying"), err)
+	}
+	return release, nil, nil
+}
+
 // pinned is the failpoint between the put and the catalog transaction
 // (N-142, N-173).
 func (h *handlers) pinned() error {

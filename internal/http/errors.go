@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"musiclib/internal/catalog"
+	"musiclib/internal/jobs"
 	"musiclib/internal/names"
 	"musiclib/internal/store"
 )
@@ -102,6 +103,14 @@ var statusOf = map[string]int{
 	// Two attachments whose output paths collide are a conflict of names
 	// (§10.1), found when an attachment is uploaded (N-172).
 	catalog.CodeAttachmentCollision: nethttp.StatusConflict,
+	// The imports and the queue (round 16, N-193, N-195).
+	catalog.CodeImportBatchNotFound: nethttp.StatusNotFound,
+	catalog.CodeJobNotFound:         nethttp.StatusNotFound,
+	catalog.CodeImportBatchConflict: nethttp.StatusConflict,
+	jobs.CodeNotRetryable:           nethttp.StatusConflict,
+	jobs.CodeInProgress:             nethttp.StatusConflict,
+	jobs.CodeOverridesNotAllowed:    nethttp.StatusUnprocessableEntity,
+	jobs.CodeInvalidOverrides:       nethttp.StatusUnprocessableEntity,
 
 	names.CodeTextEmpty:              nethttp.StatusUnprocessableEntity,
 	names.CodeTextTooLong:            nethttp.StatusUnprocessableEntity,
@@ -155,8 +164,16 @@ func translate(err error) *Error {
 		return &Error{Status: statusOf[code], Code: code, Message: msg}
 	}
 	status := statusOf[code]
+	if status == 0 {
+		return internalError()
+	}
 	ce, ok := catalog.AsError(err)
-	if status == 0 || !ok {
+	if !ok {
+		// The queue's own refusals (a retry, N-195) carry their message.
+		var je *jobs.Error
+		if errors.As(err, &je) && je.Code == code {
+			return &Error{Status: status, Code: code, Message: je.Msg}
+		}
 		return internalError()
 	}
 	e := &Error{Status: status, Code: code, Message: ce.Message, Details: detailsOf(ce.Details)}

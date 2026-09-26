@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"musiclib/internal/catalog"
+	"musiclib/internal/jobs"
 	"musiclib/internal/names"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
@@ -125,7 +126,9 @@ func TestRouting(t *testing.T) {
 		{"GET", "/api/nothing", notFound404, CodeNotFound, ""},
 		{"GET", "/api/", notFound404, CodeNotFound, ""},
 		{"GET", "/api", notFound404, CodeNotFound, ""},
-		{"GET", "/api/albums", notFound404, CodeNotFound, ""}, // the search is a later round
+		{"GET", "/api/imports/", notFound404, CodeNotFound, ""},
+		{"PUT", "/api/albums", nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed, "GET, HEAD"},
+		{"GET", "/api/jobs/retry-failed", nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed, "POST"},
 		{"GET", "/api/artists/", notFound404, CodeNotFound, ""},
 		{"GET", "/api//artists", notFound404, CodeNotFound, ""},
 		{"GET", "/api/albums/" + id.String() + "/../" + id.String(), notFound404, CodeNotFound, ""},
@@ -261,7 +264,11 @@ func TestStatusTable(t *testing.T) {
 		catalog.CodeNoTracks: 422, names.CodePathAbsolute: 422, names.CodePathDotSegment: 422,
 		names.CodePathEmptySegment: 422, names.CodePathTooDeep: 422, names.CodePathTooLong: 422,
 		names.CodePathNulByte: 422, names.CodePathEmpty: 422,
-		catalog.CodeBlobMismatch: 0, catalog.CodeInvalidBlob: 0,
+		// Round 16 (N-193, N-195).
+		catalog.CodeImportBatchNotFound: 404, catalog.CodeJobNotFound: 404, catalog.CodeImportBatchConflict: 409,
+		jobs.CodeNotRetryable: 409, jobs.CodeInProgress: 409, jobs.CodeOverridesNotAllowed: 422,
+		jobs.CodeInvalidOverrides: 422,
+		catalog.CodeBlobMismatch:  0, catalog.CodeInvalidBlob: 0,
 	} {
 		if statusOf[code] != want {
 			t.Errorf("%s: %d, want %d", code, statusOf[code], want)

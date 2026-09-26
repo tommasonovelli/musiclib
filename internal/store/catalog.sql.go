@@ -673,6 +673,100 @@ func (q *Queries) ListAlbumClaims(ctx context.Context, albumID uuid.UUID) ([]Lis
 	return items, nil
 }
 
+const listAlbumSummaries = `-- name: ListAlbumSummaries :many
+SELECT al.id, al.revision, al.artist_id, ar.name AS artist_name, ar.folder_key AS artist_key,
+       al.title, al.folder_key AS title_key, al.year, al.genre, al.compilation,
+       (al.deleted_at IS NOT NULL)::boolean AS trashed,
+       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+LEFT JOIN blobs cb ON cb.hash = al.cover_hash
+WHERE (al.deleted_at IS NOT NULL) = $1::boolean
+  AND (NOT $2::boolean OR al.artist_id = $3::uuid)
+  AND ($4::boolean
+       OR (ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id)
+          > ($5::text, $6::text, $7::uuid))
+ORDER BY ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id
+LIMIT $8::int
+`
+
+type ListAlbumSummariesParams struct {
+	Trashed     bool
+	ByArtist    bool
+	ArtistID    uuid.UUID
+	First       bool
+	AfterArtist string
+	AfterTitle  string
+	AfterID     uuid.UUID
+	Lim         int32
+}
+
+type ListAlbumSummariesRow struct {
+	ID          uuid.UUID
+	Revision    int64
+	ArtistID    uuid.UUID
+	ArtistName  string
+	ArtistKey   string
+	Title       string
+	TitleKey    string
+	Year        *int32
+	Genre       *string
+	Compilation bool
+	Trashed     bool
+	CoverHash   *string
+	CoverSize   *int64
+	CoverFormat *string
+}
+
+// §10.2 GET /api/albums: album summaries in the library's order, the
+// artist's folder key, then the album's, then the id, byte-wise (COLLATE
+// "C"). Keyset pagination: the page starts after the cursor's triple
+// (NOTES.md N-190). The text search is applied by the caller with the
+// normalization of internal/names, never with SQL lower() (§5.2).
+func (q *Queries) ListAlbumSummaries(ctx context.Context, arg ListAlbumSummariesParams) ([]ListAlbumSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listAlbumSummaries,
+		arg.Trashed,
+		arg.ByArtist,
+		arg.ArtistID,
+		arg.First,
+		arg.AfterArtist,
+		arg.AfterTitle,
+		arg.AfterID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAlbumSummariesRow
+	for rows.Next() {
+		var i ListAlbumSummariesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Revision,
+			&i.ArtistID,
+			&i.ArtistName,
+			&i.ArtistKey,
+			&i.Title,
+			&i.TitleKey,
+			&i.Year,
+			&i.Genre,
+			&i.Compilation,
+			&i.Trashed,
+			&i.CoverHash,
+			&i.CoverSize,
+			&i.CoverFormat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAlbumTrackViews = `-- name: ListAlbumTrackViews :many
 SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
        t.blob_hash, b.size AS blob_size, b.format AS blob_format, t.lyrics_hash

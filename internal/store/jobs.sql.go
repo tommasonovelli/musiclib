@@ -11,6 +11,18 @@ import (
 	"github.com/google/uuid"
 )
 
+const deleteBatchJobs = `-- name: DeleteBatchJobs :execrows
+DELETE FROM jobs WHERE batch_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteBatchJobs(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBatchJobs, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteFinishedRender = `-- name: DeleteFinishedRender :execrows
 DELETE FROM jobs
 WHERE id = $1 AND kind = 'render' AND state = 'running' AND claimed = $2::bigint AND requested = $2::bigint
@@ -24,6 +36,18 @@ type DeleteFinishedRenderParams struct {
 // §6.4: a render whose ticket is still the one built ends by disappearing.
 func (q *Queries) DeleteFinishedRender(ctx context.Context, arg DeleteFinishedRenderParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteFinishedRender, arg.ID, arg.Ticket)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteImportBatches = `-- name: DeleteImportBatches :execrows
+DELETE FROM import_batches WHERE id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeleteImportBatches(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteImportBatches, ids)
 	if err != nil {
 		return 0, err
 	}
@@ -145,6 +169,33 @@ func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (i
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getBatchScanJob = `-- name: GetBatchScanJob :one
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE kind = 'scan' AND batch_id = $1
+`
+
+func (q *Queries) GetBatchScanJob(ctx context.Context, batchID *uuid.UUID) (Job, error) {
+	row := q.db.QueryRow(ctx, getBatchScanJob, batchID)
+	var i Job
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.AlbumID,
+		&i.BatchID,
+		&i.SourceRel,
+		&i.Overrides,
+		&i.Requested,
+		&i.Claimed,
+		&i.State,
+		&i.ResultAlbumID,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.Warnings,
+		&i.QueuedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getImportBatch = `-- name: GetImportBatch :one
@@ -295,6 +346,198 @@ func (q *Queries) InsertScanJob(ctx context.Context, arg InsertScanJobParams) er
 	return err
 }
 
+const listBatchImportJobs = `-- name: ListBatchImportJobs :many
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE kind = 'import' AND batch_id = $1
+ORDER BY source_rel COLLATE "C", id
+`
+
+// The candidates of a batch (§7.2), by the bytes of their path.
+func (q *Queries) ListBatchImportJobs(ctx context.Context, batchID *uuid.UUID) ([]Job, error) {
+	rows, err := q.db.Query(ctx, listBatchImportJobs, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Job
+	for rows.Next() {
+		var i Job
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.AlbumID,
+			&i.BatchID,
+			&i.SourceRel,
+			&i.Overrides,
+			&i.Requested,
+			&i.Claimed,
+			&i.State,
+			&i.ResultAlbumID,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.Warnings,
+			&i.QueuedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredBatches = `-- name: ListExpiredBatches :many
+SELECT b.id FROM import_batches b
+WHERE b.created_at < now() - make_interval(days => $1::int)
+  AND NOT EXISTS (
+    SELECT 1 FROM jobs j
+    WHERE j.batch_id = b.id
+      AND (j.state IN ('pending', 'running') OR j.updated_at >= now() - make_interval(days => $1::int)))
+ORDER BY b.id
+`
+
+// §6.4 retention: "Esiti conservati 90 giorni; non si eliminano batch con
+// job non terminali". A batch expires when it and every one of its jobs
+// are older than the retention, and none of its jobs is pending or
+// running. Run under the catalog lock, which every transition of a
+// terminal job back to pending also holds (retry, scan commit).
+func (q *Queries) ListExpiredBatches(ctx context.Context, days int32) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listExpiredBatches, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFailedRenderAlbums = `-- name: ListFailedRenderAlbums :many
+SELECT al.id FROM jobs j JOIN albums al ON al.id = j.album_id
+WHERE j.kind = 'render' AND j.state = 'failed'
+ORDER BY al.id
+`
+
+// The albums of the failed renders, for retry-failed: each is enqueued
+// again through the single enqueue (§6.3).
+func (q *Queries) ListFailedRenderAlbums(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listFailedRenderAlbums)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJobs = `-- name: ListJobs :many
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs
+WHERE state = ANY($1::text[]) AND kind = ANY($2::text[]) AND id > $3::uuid
+ORDER BY id
+LIMIT $4::int
+`
+
+type ListJobsParams struct {
+	States []string
+	Kinds  []string
+	After  uuid.UUID
+	Lim    int32
+}
+
+// The API's reads of the queue (§10.2 GET /api/jobs, GET /api/imports/{id}).
+// They run in one REPEATABLE READ snapshot (store.InSnapshotTx). Jobs are
+// listed by id: a UUIDv7 never changes, so a page boundary never moves
+// when a job changes state (NOTES.md N-194).
+func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error) {
+	rows, err := q.db.Query(ctx, listJobs,
+		arg.States,
+		arg.Kinds,
+		arg.After,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Job
+	for rows.Next() {
+		var i Job
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.AlbumID,
+			&i.BatchID,
+			&i.SourceRel,
+			&i.Overrides,
+			&i.Requested,
+			&i.Claimed,
+			&i.State,
+			&i.ResultAlbumID,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.Warnings,
+			&i.QueuedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRenderAllAlbums = `-- name: ListRenderAllAlbums :many
+SELECT id FROM albums
+WHERE deleted_at IS NULL OR published_path IS NOT NULL
+ORDER BY id
+`
+
+// §10.2 POST /api/render-all: every active album, and every trashed album
+// whose output is still published (a deletion still to materialize).
+func (q *Queries) ListRenderAllAlbums(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listRenderAllAlbums)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleRenderAlbums = `-- name: ListStaleRenderAlbums :many
 SELECT al.id FROM albums al
 WHERE al.deleted_at IS NULL
@@ -408,6 +651,62 @@ func (q *Queries) RequeueRenderAttempt(ctx context.Context, arg RequeueRenderAtt
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const retryAllFailedJobs = `-- name: RetryAllFailedJobs :execrows
+UPDATE jobs SET
+    state = 'pending',
+    claimed = NULL,
+    requested = nextval('job_ticket'),
+    result_album_id = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    warnings = '[]',
+    queued_at = now(),
+    updated_at = now()
+WHERE kind IN ('scan', 'import') AND state = 'failed'
+`
+
+// §10.2 POST /api/jobs/retry-failed, the scans and imports: every failed
+// one gets a new ticket and keeps its overrides; nothing else is touched,
+// a running job least of all.
+func (q *Queries) RetryAllFailedJobs(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, retryAllFailedJobs)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const retryFailedJob = `-- name: RetryFailedJob :one
+UPDATE jobs SET
+    state = 'pending',
+    claimed = NULL,
+    requested = nextval('job_ticket'),
+    overrides = $1,
+    result_album_id = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    warnings = '[]',
+    queued_at = now(),
+    updated_at = now()
+WHERE id = $2 AND kind IN ('scan', 'import') AND state = 'failed'
+RETURNING requested
+`
+
+type RetryFailedJobParams struct {
+	Overrides []byte
+	ID        uuid.UUID
+}
+
+// §10.2 retry of a failed scan or import: a new ticket, back to pending,
+// the outcome of the failed attempt cleared; the overrides are the
+// caller's (the stored ones, or new ones for an import, §7.3).
+func (q *Queries) RetryFailedJob(ctx context.Context, arg RetryFailedJobParams) (int64, error) {
+	row := q.db.QueryRow(ctx, retryFailedJob, arg.Overrides, arg.ID)
+	var requested int64
+	err := row.Scan(&requested)
+	return requested, err
 }
 
 const snapshotAlbum = `-- name: SnapshotAlbum :one

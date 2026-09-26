@@ -1,7 +1,6 @@
 // Package http is the HTTP API of DESIGN.md §10 (§2.3: "handler
 // HTML/JSON, validazione delle richieste"): the conventions of §10.1, the
-// security boundary of §10.4, and the endpoints of §10.2 whose domain
-// exists.
+// security boundary of §10.4, and the endpoints of §10.2.
 //
 // Handlers validate and translate, nothing else. Every catalog write goes
 // through the transactional services of internal/catalog (§13.2), which
@@ -55,20 +54,26 @@ type Config struct {
 	Fatal func(error)
 	Log   *slog.Logger
 	// Failpoints is nil in production. Tests set it to act at the named
-	// point of an upload: upload_pinned, after the blob is pinned and before
-	// the catalog transaction (§12.2, NOTES.md N-142, N-173).
+	// points of an upload: upload_waiting, before it waits for one of the
+	// MaxConcurrentUploads copy slots; upload_copying, once it holds one,
+	// before its body is read (N-199); upload_pinned, after the blob is
+	// pinned and before the catalog transaction (§12.2, NOTES.md N-142,
+	// N-173).
 	Failpoints failpoint.Hook
 }
 
 // Backend is what the API serves: the catalog, and for the uploads and
 // downloads of §10.2 the blob store (§7.5: the single put primitive), the
 // process's space budget and the work root whose free space the budget
-// compares (§11.2).
+// compares (§11.2), and /import for its listing.
 type Backend struct {
 	Catalog *catalog.Service
 	Blobs   *blobstore.Store
 	Budget  *jobs.Budget
 	Work    *fsops.Root
+	// Source is /import, listed by GET /api/import-source (importer.Browse):
+	// names and types only, never a file opened (§7.1, §10.4).
+	Source *fsops.Root
 }
 
 // API serves /api. It is safe for concurrent use.
@@ -80,6 +85,9 @@ type API struct {
 	fatalOnce     sync.Once
 	log           *slog.Logger
 	failpoints    failpoint.Hook
+	// uploads holds one token per upload copying its body (§6.1: "Le
+	// richieste HTTP di upload sono limitate a due copie simultanee").
+	uploads chan struct{}
 
 	// state is what /api does now: serve with a catalog, or refuse with
 	// 503 and a code.
@@ -104,7 +112,7 @@ func New(cfg Config) (*API, error) {
 		return nil, newError(0, CodeInvalidConfig, "the API needs the render version, the fatal-error hook and a logger")
 	}
 	a := &API{origin: cfg.PublicOrigin, host: u.Host, renderVersion: cfg.RenderVersion, fatal: cfg.Fatal, log: cfg.Log,
-		failpoints: cfg.Failpoints}
+		failpoints: cfg.Failpoints, uploads: make(chan struct{}, MaxConcurrentUploads)}
 	a.Disable(CodeNotReady, "boot or recovery in progress: try again shortly")
 	return a, nil
 }
@@ -214,7 +222,7 @@ func notFound() *Error {
 // also has a pattern without a method, so that a wrong method is a JSON
 // 405 with Allow, and /api/ catches the rest as a JSON 404.
 func (a *API) routes(b Backend) nethttp.Handler {
-	h := &handlers{api: a, catalog: b.Catalog, blobs: b.Blobs, budget: b.Budget, work: b.Work}
+	h := &handlers{api: a, catalog: b.Catalog, blobs: b.Blobs, budget: b.Budget, work: b.Work, source: b.Source}
 	mux := nethttp.NewServeMux()
 	route := func(pattern string, methods map[string]nethttp.HandlerFunc) {
 		var allow []string
@@ -287,6 +295,31 @@ func (a *API) routes(b Backend) nethttp.Handler {
 		nethttp.MethodPut:    h.putLyrics,
 		nethttp.MethodDelete: h.deleteLyrics,
 	})
+	// Round 16: the library list, the imports and the queue (§10.2).
+	route("/api/albums", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet: h.listAlbums,
+	})
+	route("/api/import-source", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet: h.importSource,
+	})
+	route("/api/imports", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.createImport,
+	})
+	route("/api/imports/{id}", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet: h.getImport,
+	})
+	route("/api/jobs", map[string]nethttp.HandlerFunc{
+		nethttp.MethodGet: h.listJobs,
+	})
+	route("/api/jobs/{id}/retry", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.retryJob,
+	})
+	route("/api/jobs/retry-failed", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.retryFailed,
+	})
+	route("/api/render-all", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.renderAll,
+	})
 	mux.HandleFunc("/api/", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		a.writeError(w, notFound())
 	})
@@ -300,4 +333,5 @@ type handlers struct {
 	blobs   *blobstore.Store
 	budget  *jobs.Budget
 	work    *fsops.Root
+	source  *fsops.Root
 }

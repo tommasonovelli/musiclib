@@ -56,6 +56,9 @@ type env struct {
 	blobs     *blobstore.Store
 	budget    *jobs.Budget
 	hooks     faulttest.Switch
+	// imports is the test's /import, source its root (round 16).
+	imports string
+	source  *fsops.Root
 
 	mu     sync.Mutex
 	fatals []error
@@ -372,8 +375,12 @@ func (e *env) openStore() {
 	if e.work, err = fsops.OpenRoot(filepath.Join(e.data, "work")); err != nil {
 		e.t.Fatal(err)
 	}
+	e.imports = e.t.TempDir()
+	if e.source, err = fsops.OpenRoot(e.imports); err != nil {
+		e.t.Fatal(err)
+	}
 	e.t.Cleanup(func() {
-		for _, r := range []*fsops.Root{e.originals, e.work} {
+		for _, r := range []*fsops.Root{e.originals, e.work, e.source} {
 			if err := r.Close(); err != nil {
 				e.t.Error(err)
 			}
@@ -388,5 +395,5 @@ func (e *env) openStore() {
 // backend is what the API serves in the tests: the real catalog and the
 // real blob store.
 func (e *env) backend() Backend {
-	return Backend{Catalog: e.svc, Blobs: e.blobs, Budget: e.budget, Work: e.work}
+	return Backend{Catalog: e.svc, Blobs: e.blobs, Budget: e.budget, Work: e.work, Source: e.source}
 }

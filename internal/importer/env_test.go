@@ -370,16 +370,14 @@ func (e *env) blobFormat(hash string) string {
 	return *f
 }
 
-// retry puts a finished import job back to pending with overrides, as
-// POST /api/jobs/{id}/retry will (§10.2): a new ticket, no error.
+// retry is POST /api/jobs/{id}/retry (§10.2) through the catalog service
+// behind it: a failed import back to pending with a new ticket and the
+// given overrides (catalog.RetryJob, jobs.Retry).
 func (e *env) retry(id uuid.UUID, ov jobs.Overrides) {
 	e.t.Helper()
-	b, err := ov.Encode()
-	if err != nil {
-		e.t.Fatal(err)
+	if _, changed, err := e.cat.RetryJob(context.Background(), id, &ov); err != nil || !changed {
+		e.t.Fatalf("RetryJob(%s): changed %v, %v", id, changed, err)
 	}
-	e.exec(`UPDATE jobs SET state = 'pending', claimed = NULL, requested = nextval('job_ticket'), error_code = NULL,
-		error_message = NULL, result_album_id = NULL, warnings = '[]', overrides = $2, queued_at = now() WHERE id = $1`, id, b)
 }
 
 func hasWarning(ws []jobs.Warning, code jobs.WarningCode, path string) bool {

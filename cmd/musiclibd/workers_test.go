@@ -30,6 +30,7 @@ import (
 	"musiclib/internal/render"
 	"musiclib/internal/store"
 	"musiclib/internal/store/pgtest"
+	"musiclib/internal/volume"
 )
 
 // The boot steps 4 to 7 and the workers (§11.1), on real albums: FLAC
@@ -66,8 +67,7 @@ func writeAlbum(t *testing.T, imports, dir, artist, album string, n int, seconds
 }
 
 // dbPool is a pool on the test database, for the test's own catalog calls
-// and checks: import batches are created through the catalog service
-// until POST /api/imports exists (a later round).
+// and checks.
 func dbPool(t *testing.T, dbURL string) *pgxpool.Pool {
 	t.Helper()
 	return pgtest.Pool(t, dbURL)
@@ -234,11 +234,9 @@ func TestEndToEndTwoWorkers(t *testing.T) {
 	d := startDaemon(t, cfg, p)
 	d.waitStatus(t, "/health/ready", http.StatusOK)
 	db := dbPool(t, dbURL)
-	cat := catalogOn(t, db)
 	ctx := context.Background()
-	if _, err := cat.CreateImportBatch(ctx, uuid.New(), ""); err != nil {
-		t.Fatal(err)
-	}
+	// The batch through the API (§7.1): /import itself.
+	d.mustAPI(t, http.MethodPost, "/api/imports", "", map[string]string{"id": uuid.NewString(), "path": ""}, http.StatusCreated)
 	var id uuid.UUID
 	waitFor(t, "the albums to be published", func() bool {
 		return idle(t, db) && queryInt(t, db, `SELECT count(*) FROM albums WHERE published_revision > 0`) == 2
@@ -392,25 +390,43 @@ func TestBootStepsInOrder(t *testing.T) {
 	execSQL(t, db, `UPDATE jobs SET state = 'failed', error_code = 'x', error_message = 'x' WHERE album_id = $1`, failed)
 	execSQL(t, db, `DELETE FROM jobs WHERE album_id = $1`, current)
 	execSQL(t, db, `UPDATE albums SET published_revision = 1, published_renderer = $2 WHERE id = $1`, current, render.Version)
+	// §6.4 retention (N-200): a batch whose outcomes are 100 days old goes;
+	// one whose scan was left running 100 days ago comes back to pending
+	// first (step 5), so it stays.
+	expired, wasRunning := store.NewID(), store.NewID()
+	for _, b := range []uuid.UUID{expired, wasRunning} {
+		execSQL(t, db, `INSERT INTO import_batches (id, root_rel, created_at) VALUES ($1, 'old', now() - interval '100 days')`, b)
+		execSQL(t, db, `INSERT INTO jobs (id, kind, batch_id, state, error_code, error_message, queued_at, updated_at)
+			VALUES ($1, 'scan', $2, 'failed', 'source_not_found', 'x', now() - interval '100 days', now() - interval '100 days')`,
+			store.NewID(), b)
+	}
+	execSQL(t, db, `UPDATE jobs SET state = 'running', claimed = requested, error_code = NULL, error_message = NULL
+		WHERE batch_id = $1`, wasRunning)
 
 	d := startDaemon(t, testConfig(dbURL), p)
 	d.waitStatus(t, "/health/ready", http.StatusOK)
 	var order []string
 	for _, m := range d.logs.messages(t) {
 		switch m {
-		case "journal recovered", "work cleaned", "running jobs recovered", "stale renders enqueued", "workers started", "ready":
+		case "journal recovered", "work cleaned", "running jobs recovered", "import reports purged", "stale renders enqueued",
+			"workers started", "ready":
 			order = append(order, m)
 		}
 	}
-	want := []string{"journal recovered", "work cleaned", "running jobs recovered", "stale renders enqueued", "workers started", "ready"}
+	want := []string{"journal recovered", "work cleaned", "running jobs recovered", "import reports purged", "stale renders enqueued",
+		"workers started", "ready"}
 	if !slices.Equal(order[len(order)-len(want):], want) {
 		t.Fatalf("boot events %q, want %q", order, want)
 	}
 	for _, ev := range d.logs.events(t) {
 		switch ev["msg"] {
+		case "import reports purged":
+			if ev["batches"] != float64(1) || ev["retention_days"] != float64(90) {
+				t.Fatalf("purge event %v, want the one expired batch", ev)
+			}
 		case "running jobs recovered":
-			if ev["jobs"] != float64(0) {
-				t.Fatalf("%v running jobs recovered: FINALIZE must complete the journal's job first", ev["jobs"])
+			if ev["jobs"] != float64(1) {
+				t.Fatalf("%v running jobs recovered: FINALIZE must complete the journal's job first, and only the old scan was left running", ev["jobs"])
 			}
 		case "stale renders enqueued":
 			if ev["albums"] != float64(1) {
@@ -434,6 +450,13 @@ func TestBootStepsInOrder(t *testing.T) {
 	}
 	if n := queryInt(t, db, `SELECT count(*) FROM publication`); n != 0 {
 		t.Fatal("the journal survived the boot")
+	}
+	if queryInt(t, db, `SELECT count(*) FROM import_batches WHERE id = $1`, expired) != 0 ||
+		queryInt(t, db, `SELECT count(*) FROM jobs WHERE batch_id = $1`, expired) != 0 {
+		t.Fatal("the expired import batch survived the boot")
+	}
+	if queryInt(t, db, `SELECT count(*) FROM import_batches WHERE id = $1`, wasRunning) != 1 {
+		t.Fatal("a batch whose job was running was purged")
 	}
 }
 
@@ -631,6 +654,31 @@ func assertNoSurvivors(t *testing.T, pids []int) {
 	}
 }
 
+// awaitLockFree checks that the volume lock can be taken within 5 s, like
+// assertNoSurvivors. It is for a SIGKILLed server only: the lock's
+// descriptor is O_CLOEXEC from its openat2, so no executed tool holds it,
+// but a tool child between clone and execve (os/exec does not share the
+// descriptor table) still has a copy until it execs or exits, which
+// Pdeathsig and Go's getppid re-check make a matter of scheduler latency
+// (N-202). Any error other than "locked" fails at once.
+func awaitLockFree(t *testing.T, data string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		v, err := volume.Acquire(data)
+		if err == nil {
+			if err := v.Close(); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if volume.Code(err) != volume.CodeLocked || time.Now().After(deadline) {
+			t.Fatalf("the volume lock is not free: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A real server process with two workers busy on an album whose tools are
 // running: the database is taken away. §6.4: the process exits non-zero
 // (Docker restarts it), no helper survives it, and a restart recovers and
@@ -715,7 +763,15 @@ func TestProcessSignalsWithHelpersActive(t *testing.T) {
 				assertShutdownOrder(t, s.stderr, true)
 			}
 			assertNoSurvivors(t, <-pids)
-			assertLockFree(t, p.data)
+			if sig == unix.SIGTERM {
+				// A clean shutdown releases the lock before exiting.
+				assertLockFree(t, p.data)
+			} else {
+				// After a SIGKILL a tool child still between clone and
+				// execve may hold the lock's descriptor for a few
+				// scheduler ticks (N-202).
+				awaitLockFree(t, p.data)
+			}
 
 			again := startServerProcess(t, dbURL, p, 0o022, envWorkers+"=2")
 			again.waitHealthy(t)

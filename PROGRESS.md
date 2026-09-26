@@ -74,12 +74,12 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 ## Phase 5 — Full experience
 
 - [x] Recursive scan and multi-disc grouping (§7.2) — the recursive scan, rules 1 to 5 and the unassigned-file report; round 15: `CD<N>` / `Disc <N>` directories grouped into one multi-disc candidate, `duplicate_disc` and `invalid_disc` (over 99) failing the branch, audio below a disc directory ambiguous once at least one disc directory has direct audio, rule 5 otherwise (N-183, N-184, owner decisions of 2026-09-26), attachments inside and beside the discs, limits over every disc, revalidation and stability covering the disc directories; `multidisc_not_supported_yet` removed
-- [~] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer (tested through a retry done by SQL); round 15: the disc of a disc directory wins over the tag with `disc_tag_ignored` (N-185), numbering per disc, the title from the candidate root, the cover from the candidate root (N-186); `tracks_renumbered` names the disc directory in a multi-disc album. The retry endpoint comes with the API
+- [x] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer; round 15: the disc of a disc directory wins over the tag with `disc_tag_ignored` (N-185), numbering per disc, the title from the candidate root, the cover from the candidate root (N-186); `tracks_renumbered` names the disc directory in a multi-disc album; round 16: the overrides `{artist, title}` through `POST /api/jobs/{id}/retry` (strict, normalized, import only, N-195), tested end to end (`mixed_album` fixed by a retry) and in the importer tests, whose retries now go through `catalog.RetryJob`
 - [x] Fingerprinting and duplicate detection (§7.6) — the fingerprint in `internal/importer` (golden test), duplicates `skipped` by the import commit
-- [~] Complete HTTP APIs (§10.2) — round 11: `GET`/`POST /api/artists`, `GET`/`PUT /api/artists/{id}`, `GET`/`PUT`/`DELETE /api/albums/{id}`, `GET .../status`, `POST .../restore`, `POST .../render`; round 14: cover, attachments, lyrics, track deletion and the downloads by entity id (N-172 to N-182). Still to come: `GET /api/albums` (search), imports, jobs and retries, `render-all`
+- [x] Complete HTTP APIs (§10.2) — round 11: `GET`/`POST /api/artists`, `GET`/`PUT /api/artists/{id}`, `GET`/`PUT`/`DELETE /api/albums/{id}`, `GET .../status`, `POST .../restore`, `POST .../render`; round 14: cover, attachments, lyrics, track deletion and the downloads by entity id (N-172 to N-182); round 16: `GET /api/albums` (search, filters, keyset pages), `GET /api/import-source`, `POST /api/imports`, `GET /api/imports/{id}`, `GET /api/jobs`, the retries, `render-all` (N-190 to N-201), and the §6.1 limit of two upload copies (N-199)
 - [ ] UI: Library, Album, Import, Activity (§10.3)
 - [x] HTTP security boundary: `PUBLIC_ORIGIN`, `X-Musiclib-Request` (§10.4) — `internal/http` (round 11, N-145): Host and Origin against `PUBLIC_ORIGIN`, `X-Musiclib-Request: 1` on every mutation, no CORS ever, `nosniff` everywhere; the health endpoints exempt from the Host check. The UI side (fetch setting the header, template escaping) comes with the UI
-- [~] Trash, restore, retry (§4.3, §6.4) — trash and restore in the catalog and over HTTP (`DELETE /api/albums/{id}`, `POST .../restore`, round 11); retry with the jobs endpoints
+- [x] Trash, restore, retry (§4.3, §6.4) — trash and restore in the catalog and over HTTP (`DELETE /api/albums/{id}`, `POST .../restore`, round 11); round 16: `POST /api/jobs/{id}/retry` and `POST /api/jobs/retry-failed` (N-195, N-196), the §6.4 retention of the import reports (N-200); the trash as a filter of `GET /api/albums` (N-190)
 
 ## Phase 6 — Operations
 
@@ -102,7 +102,7 @@ named points; **later** = the phase that brings the feature.
 | §12.2 row | Required property | Status | Tests |
 |---|---|---|---|
 | Due worker sullo stesso job | Uno solo ottiene il claim | crash + in-process | `jobs.TestCrashAroundTheClaim` (killed inside the claim transaction, after its commit, in the executor: exactly one execution after `RecoverRunning`); `jobs.TestOneClaimPerJob`, `TestEveryJobClaimedOnce`, `TestPoolExecutesEachJobOnce` |
-| Due import dello stesso candidato / commit dalla risposta persa | Un album e un esito durevole, non duplicati | crash + in-process | `importer.TestCrashAtTheImportCommit` (before, after), `TestImportCommitAnswerLost` (answer lost, connection cut before the COMMIT; the process stops and restarts), `TestTwoProcessesImportTheSameCandidate` (two processes committing at once); `importer.TestCrashAtTheScanCommit`; `catalog.TestCommitImportLostAck`, `TestCommitImportConcurrentSameFingerprint`, `TestCommitImportIdempotent` |
+| Due import dello stesso candidato / commit dalla risposta persa | Un album e un esito durevole, non duplicati | crash + in-process | round 16: `http.TestRetryAnswerLost` (a retry and a `POST /api/imports` whose COMMIT answer is lost, repeated after the restart: one ticket, one batch), `http.TestCreateImportConcurrently`; `importer.TestCrashAtTheImportCommit` (before, after), `TestImportCommitAnswerLost` (answer lost, connection cut before the COMMIT; the process stops and restarts), `TestTwoProcessesImportTheSameCandidate` (two processes committing at once); `importer.TestCrashAtTheScanCommit`; `catalog.TestCommitImportLostAck`, `TestCommitImportConcurrentSameFingerprint`, `TestCommitImportIdempotent` |
 | Stesso blob fissato contemporaneamente | Un file integro, nessun overwrite | crash + in-process | uploads go through the same put (round 14, §7.5); `blobstore.TestCrashDuringPut` (killed at `temp_synced`, `temp_verified`, `shards_synced`, `pinned`; `CleanTemps`; re-put idempotent, same inode); `blobstore.TestPutConcurrentSameContent` |
 | Blob esistente corrotto | Errore, nessuna fiducia nel solo nome | in-process | `blobstore.TestPutDoesNotTrustExisting`; `render.TestBuildCorruptOriginal` |
 | Modifica API durante un build | Build obsoleta scartata, nuova richiesta conservata | in-process | `publish.TestPublishSupersededBuild`, `TestExecuteRenderSupersededAndCancelled`; `jobs.TestCoalescing` |
@@ -116,7 +116,7 @@ named points; **later** = the phase that brings the feature.
 | Errore DB dopo rename | Journal completato al riavvio | in-process (real wire loss) + crash | `publish.TestRecoverDatabaseErrorAfterRename` (the FINALIZE commit cut, its answer lost, through `pgtest.Proxy`); `cmd/musiclibd.TestProcessDatabaseLossMidWork` |
 | Tag writer altera i campioni o perde un tag non gestito | Album non pubblicato | in-process | `render.TestBuildTagWriterAltersSamples`, `TestBuildTagWriterLosesUnmanagedField`, `TestBuildMP3OpaqueField`; `media.TestVerifyTags`, `TestVerifyTagsID3v1Migration`, `TestTagsMP3MutationSweep` |
 | Modifica dell'output con size/mtime invariati | Doctor deep la rileva e render/rebuild la ripara | **later: Phase 6** (doctor, rebuild) | render repairing damaged own output: `publish.TestPublishReplacesDamagedOwnOutput` |
-| Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | `http.TestPostAttachment` (round 14: an uploaded attachment's absolute, `..`, empty-segment, NUL and too-deep paths refused before its body is read; file/directory, case, NFC and sanitization collisions 409, nothing pinned), `catalog.TestAddAttachment`; `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
+| Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | round 16: `http.TestImportSource` (the /import listing: `..`, absolute paths, empty segments, NUL, symlinks to /data, outside and inside, through a symlink, a FIFO, never followed nor opened, no absolute path answered), `cmd/musiclibd.TestBootRefusals` (`import_is_data`); `http.TestPostAttachment` (round 14: an uploaded attachment's absolute, `..`, empty-segment, NUL and too-deep paths refused before its body is read; file/directory, case, NFC and sanitization collisions 409, nothing pinned), `catalog.TestAddAttachment`; `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
 | Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | in-process at the API (round 11); **the UI part: Phase 5** | `http.TestConcurrentCoverUploads` (round 14: two cover uploads on one revision, exactly one 412, the loser's blob absent or pinned and unreferenced), `http.TestUploadFailsAfterThePut` (a change between the put and the transaction: 412, the blob unreferenced), `catalog.TestDeleteTrackConcurrent`; `http.TestTwoClientsSaveDifferentRevisions` (20 rounds of two concurrent PUTs of one revision through a real server: exactly one 412 naming the winner's revision, the loser reloads and re-applies, both changes kept); `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
 | SIGTERM/SIGKILL con più worker e helper attivi | Nessun helper del vecchio tentativo resta in attività | crash | `cmd/musiclibd.TestProcessSignalsWithHelpersActive`, `TestProcessDatabaseLossMidWork`; `media.TestRunToolDiesWithParent` (Pdeathsig), `TestRunCancelKillsAndReapsWholeGroup` |
 | Crash durante rebuild o restore | Marker impedisce il boot su una manutenzione incompleta | **later: Phase 6** (rebuild, restore); the marker's boot refusal is done | `volume.TestMaintenanceMarkerBlocksBoot`; the `cmd/musiclibd` maintenance refusals |
@@ -453,9 +453,9 @@ logs JSON on stderr.
 | 1 | HTTP serving with negative readiness; `volume.Acquire` |
 | (N-065) | `CheckMaintenance`, before anything touches the database |
 | 2 | pool of `WORKERS + 8`, `Ping` with backoff 250 ms → 5 s until cancelled; `store.Migrate` |
-| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg, ffprobe and musiclib-tags, `media_tool_unavailable` / `media_tool_version`), `/import` listable |
+| 3 | `Identify`, `OpenLayout`, `CheckFilesystem`, `checkTools` (the Runner with `WORKERS` slots; pinned ffmpeg, ffprobe and musiclib-tags, `media_tool_unavailable` / `media_tool_version`), `/import` listable and not `/data` or one of its media directories (`import_is_data`, round 16, N-197) |
 | 4 | the blob store, the process space budget, the builder and the publisher; `Publisher.Recover` (§9.4): the pending journal completed forward; `publish_illegal_state` suspends publishing and keeps the process up without steps 5 to 7, `publish_io` fails the boot (N-135) |
-| 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)`, `importer.CleanWork`, `Publisher.CleanWork` (`work/render`, `work/retired` not referenced by a journal); `jobs.RecoverRunning` |
+| 5 | `blobstore.CleanTemps`, `fsops.RemoveProbeLeftovers(work)`, `importer.CleanWork`, `Publisher.CleanWork` (`work/render`, `work/retired` not referenced by a journal); `jobs.RecoverRunning`; round 16: the catalog built, then `catalog.PurgeImportReports` (§6.4, 90 days; also once a day while the server runs, N-200) |
 | 6 | `jobs.EnqueueStaleRenders(render.Version)` |
 | 7 | the catalog (whose commits wake the pool), the importer on `/import`, `jobs.NewPool` with `WORKERS` workers dispatching scan, import and render; readiness positive; the API enabled over the catalog (round 11) |
 
@@ -534,7 +534,10 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
   musiclib-tags children observed in `/proc`; losing the database gives a
   non-zero exit; SIGTERM gives exit 0 with the shutdown order; SIGKILL is
   covered by `Pdeathsig`. In every case none of the observed tools
-  survives, and a restart finishes the albums with no failed job.
+  survives, and a restart finishes the albums with no failed job. After
+  SIGTERM the lock is free at once; after SIGKILL it must be free within
+  5 s, since a tool child between clone and execve may still hold the
+  lock's descriptor for a few scheduler ticks (round 16, N-202).
 - **The API on the real server (round 11):**
   - `/api` is 503 `not_ready` during the boot, then serves;
   - the loopback Host that the health endpoints accept is 421 at `/api`;
@@ -1839,6 +1842,7 @@ Endpoints (§10.2); representations in N-150:
 | `POST /api/albums/{id}/restore` + If-Match | restore; 200 with the album |
 | `POST /api/albums/{id}/render` + If-Match | forced enqueue with no new revision (`catalog.RequestRender`, `jobs.EnqueueRender`); 202 with the status |
 | cover, attachments, lyrics, track deletion, downloads | round 14: the table of the next section |
+| the library list, imports, jobs, retries, render-all | round 16: the table of the section after it |
 
 Tests: a real `httptest` server over the real handler, over the real
 catalog on real PostgreSQL 17. No mock.
@@ -2041,6 +2045,127 @@ the file-name escaping, twice; a read error taken for an invalid image.
 scripts/check.sh
 scripts/dev.sh go test -race -count=2 -timeout=15m ./internal/http/ ./internal/catalog/ ./internal/media/ ./internal/importer/ ./cmd/musiclibd/
 scripts/dev.sh go test -race -count=2 -run 'TestEndToEndEditorContent|TestM4ACoverRemovalResidual' ./cmd/musiclibd/
+```
+
+### The rest of the §10.2 API: library list, imports, queue, retries (§6.1, §6.4, §7.1–§7.3, §10.1, §10.2, §10.4) ✔ (round 16)
+
+The endpoints of §10.2 still missing after round 14, over the existing
+catalog, queue and importer. Handlers validate and translate; every write
+is one transaction of `internal/catalog` (§13.2); no SQL and no absolute
+path in `internal/http`. Decisions N-190 to N-201, mutation checks N-202.
+
+| Endpoint | Answer |
+|---|---|
+| `GET /api/albums?q=&artist=&trash=&limit=&after=` | album summaries in the library's order (artist key, title key, id), a page of 1..200 (default 50; 201 is 422), `next` an opaque keyset cursor (N-190); `q` searches titles and artist names with `names.Key` as a substring, no accent folding (N-191, owner decision 2026-09-26); a cursor key with NUL or invalid UTF-8 is 422 |
+| `GET /api/import-source?path=` | the entries of a directory under `/import`, sorted by name bytes, typed (`directory`, `file`, `symlink`, `special`, `invalid_name`); symlinks never followed; 422 for an invalid path or a path through a symlink, 404 missing (N-197) |
+| `POST /api/imports` `{id, path}` | the batch and its scan job in one transaction: 201 + `Location`, 200 for the same request again, 409 `import_batch_conflict` for the same id with another path (N-201) |
+| `GET /api/imports/{id}` | the report: `scanning`/`importing`/`completed`, the scan (its warnings: unassigned files, rejected entries), each candidate's job with its state, typed error, warnings, overrides and result album (N-193) |
+| `GET /api/jobs?state=&kind=&limit=&after=` | pending, running and failed jobs by id (N-194), messages through N-150 |
+| `POST /api/jobs/{id}/retry` (body empty or `{artist, title}`) | a failed job gets a new ticket; pending or running: unchanged; done or skipped: 409; overrides for an import only, strict (N-195); no If-Match (N-196); 202 with the job |
+| `POST /api/jobs/retry-failed` | every failed job, running ones untouched; 202 `{retried}` |
+| `POST /api/render-all` | every active album and every trashed one still published, through `jobs.EnqueueRender`; 202 `{enqueued}` (N-198) |
+
+**Pieces:**
+- `internal/jobs/retry.go`: `Retry`, `RetryFailed`, `Overrides.Equal`, the
+  codes `job_not_retryable`, `job_in_progress`, `job_overrides_not_allowed`.
+- `internal/catalog/queue.go`: `JobView`, `ListJobs`, `GetJob`,
+  `ImportReport` (`State()`), `GetImportReport`, `RetryJob` (overrides
+  normalized, §5.2), `RetryFailed`, `RenderAll`, `PurgeImportReports`,
+  `DefaultPageSize`, `MaxPageSize`, `ReportRetentionDays`, `CodeJobNotFound`.
+- `internal/catalog/search.go`: `ListAlbums`, `AlbumFilter`, `AlbumCursor`,
+  `AlbumSummary`, `AlbumPage`.
+- `internal/importer/browse.go`: `Browse`, `SourceEntry`, the entry types,
+  `DisplayName`, `CodeSourceNotReadable`.
+- `internal/http`: `albumlist.go`, `queue.go`, `query.go` (strict query
+  strings, `limit`), the routes, the new codes in `statusOf`, `translate`
+  for the queue's typed errors, `Backend.Source`; `upload.go`:
+  `MaxConcurrentUploads`, `uploadSlot` and the failpoints `upload_waiting`,
+  `upload_copying` (N-199).
+- `cmd/musiclibd`: `/import` compared with `/data` and its media
+  directories at step 3 (`import_is_data`, N-197); the catalog built at
+  step 5 and the report retention run there and daily (N-200); the API
+  enabled with `/import`.
+- SQL: ten queries in `sql/jobs.sql`, one in `sql/catalog.sql`; no schema
+  change, no new index (N-190).
+
+**How it maps to DESIGN.md:**
+- **§10.2 GET /api/albums:** search by title and artist, artist and trash
+  filters, pages of 50 up to 200; deterministic order; one snapshot.
+- **§5.2:** the search compares with the one normalization (`names.Key`),
+  never SQL `lower()`; the import root is validated and kept as on disk.
+- **§7.1:** `/import` only, relative paths, no symlink followed, the root
+  never `/data`; the request UUID makes creation idempotent, 409 for other
+  parameters, batch and scan job in one transaction.
+- **§7.2:** the report per candidate, the unassigned files, "no valid
+  candidate" completed with the scan's explanation; a retry revalidates
+  the current candidate.
+- **§7.3:** the overrides `{artist, title}` only, through the retry.
+- **§6.3, §10.2:** retries and render-all through the single enqueue, one
+  row per album, no catalog change, idempotent while pending or running;
+  retry-failed never duplicates a running job.
+- **§6.1:** two upload copies at once.
+- **§6.4:** the report outcomes kept 90 days, batches with a job to run
+  never deleted.
+- **§10.1, §10.4:** strict JSON and queries, typed errors, `nosniff`,
+  `no-store`, the boundary on every mutation, no absolute path.
+
+**Tests** (real PostgreSQL 17, real ext4, the real tools; no mock):
+- **jobs** (`retry_test.go`): `TestRetryImport` (new ticket, outcome
+  cleared, overrides kept, replaced, cleared; pending and running
+  unchanged; other overrides `job_in_progress`; non-normalized refused),
+  `TestRetryRefusals` (done, skipped, overrides on a scan and a render,
+  unknown id, a scan retried), `TestRetryRender` (the album's one row),
+  `TestRetryFailed` (exactly the three failed jobs; running, pending and
+  done rows byte-equal, `updated_at` included; a second call retries
+  nothing).
+- **catalog** (`search_test.go`, `queue_test.go`): the search cases (case,
+  NFD, `ß`, no accent folding, `AC/DC` and a DOS name searched as text,
+  the Cherokee fold, control characters and 1,025 characters refused, the
+  limits); filters and a tie of two trashed albums paged one by one; 1,100
+  albums paged at 1, 7, 50 and 200 with and without a search across the
+  batch boundary, equal to the reference order; a cursor whose album left
+  the list; the report's states, order and no-valid-candidate case;
+  `ListJobs` pages and filters; `RetryJob` normalization and wake-ups;
+  `RenderAll` (six albums, the running render keeps its claim with a newer
+  ticket, the failed one pending, no revision, one row each after two
+  runs); `PurgeImportReports` with fabricated timestamps, each of its
+  three conditions (batch age, outcome age, no job to run) tested alone.
+- **http** (`imports_test.go`, `jobs_test.go`, `slots_test.go`): every
+  endpoint's answers and refusals (22 import-source cases on a real tree
+  with symlinks to `/data`, outside and inside, a FIFO, an invalid name,
+  an unreadable directory; the list query refusals, among them four cursors
+  holding NUL or invalid UTF-8 and a search text with NUL; 9 import body
+  refusals; 12 retry body refusals), no absolute path in any answer;
+  eight concurrent `POST /api/imports` with one id, five rounds;
+  `TestRetryAnswerLost` (the COMMIT answer of a retry and of an import
+  lost through `pgtest.Proxy`, the request repeated after the restart);
+  the upload slots (N-199).
+- **end to end** (`cmd/musiclibd/imports_test.go`,
+  `TestEndToEndImportThroughAPI`, the real server with two workers and
+  real FLAC files): the listing, the batch (201, then 200), the real scan
+  and imports, the report (a good album, `mixed_album`, an ambiguous
+  branch, an unassigned file), `mixed_album` fixed by a retry with a title,
+  the ambiguous branch retried unchanged (fails again) then fixed on disk
+  (imports), a done job 409, a batch without a valid candidate completed
+  with its explanation, the library list, render-all publishing every
+  album again. `TestEndToEndTwoWorkers` creates its batch through the API.
+  `TestBootRefusals` (`import_is_data`, three cases),
+  `TestImportIsNotDataStatFailure` (a data directory that cannot be
+  described is `import_unavailable`), `TestBootStepsInOrder` (the purge at
+  step 5).
+
+**Mutation-checked (N-202):** batch idempotency and 409; the retry's
+states, new ticket and overrides whitelist; retry-failed on running jobs;
+render-all's scope both ways; the three retention conditions; the upload
+slot's capacity, each upload path, the context; the page limit in both
+layers; the search key and texts; the cursor id across a search batch; a
+symlink shown as a directory; the boot's `/import` identity check; the
+cursor's NUL check; the boot code of a data directory's `Stat` failure.
+
+```sh
+scripts/check.sh
+scripts/dev.sh go test -race -count=2 ./internal/http/ ./internal/catalog/ ./internal/jobs/ ./internal/importer/ ./cmd/musiclibd/
+scripts/dev.sh go test -race -count=5 -run 'TestUploadSlot|TestCreateImportConcurrently|TestRetry' ./internal/http/ ./internal/jobs/
 ```
 
 ## Decisions made during implementation

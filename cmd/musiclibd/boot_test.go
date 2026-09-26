@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"musiclib/internal/fsops"
 	"musiclib/internal/media"
 	"musiclib/internal/render"
 	"musiclib/internal/store"
@@ -79,8 +81,8 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	if st, code := d.get(t, "/api/albums"); st != http.StatusMisdirectedRequest || code != "host_not_allowed" {
 		t.Fatalf("GET /api/albums with the loopback Host: %d %s", st, code)
 	}
-	if r := d.api(t, http.MethodGet, "/api/albums", "", nil); r.status != http.StatusNotFound || r.code() != "not_found" {
-		t.Fatalf("GET /api/albums (a later round): %d %v", r.status, r.body)
+	if r := d.mustAPI(t, http.MethodGet, "/api/albums", "", nil, http.StatusOK); r.body["albums"] == nil {
+		t.Fatalf("GET /api/albums: %v", r.body)
 	}
 	// The health endpoints: GET only, nosniff, no CORS.
 	resp, err := http.Post(d.base+"/health/live", "text/plain", nil)
@@ -271,6 +273,40 @@ func TestBootRefusals(t *testing.T) {
 			},
 		},
 		{
+			// §7.1: "La root non può essere /data" (N-197): /import mounted
+			// on the data volume itself, or on one of its directories.
+			name: "import source is the data volume", code: codeImportIsData,
+			setup: func(t *testing.T, p *paths) string {
+				p.imports = p.data
+				return pgtest.EmptyDB(t)
+			},
+		},
+		{
+			name: "import source is library/", code: codeImportIsData,
+			setup: func(t *testing.T, p *paths) string {
+				dbURL := pgtest.EmptyDB(t)
+				bootOnce(t, dbURL, *p)
+				p.imports = filepath.Join(p.data, "library")
+				return dbURL
+			},
+		},
+		{
+			// A bind mount is another path to the same directory: a
+			// symlink stands for it here (OpenRoot follows the host path
+			// it is given), and the identity is what is compared.
+			name: "import source is originals/ by another path", code: codeImportIsData,
+			setup: func(t *testing.T, p *paths) string {
+				dbURL := pgtest.EmptyDB(t)
+				bootOnce(t, dbURL, *p)
+				link := filepath.Join(t.TempDir(), "import")
+				if err := os.Symlink(filepath.Join(p.data, "originals"), link); err != nil {
+					t.Fatal(err)
+				}
+				p.imports = link
+				return dbURL
+			},
+		},
+		{
 			// §2.1, §11.1 step 3: the pinned tools are a required primitive.
 			name: "missing ffprobe", code: media.CodeToolUnavailable,
 			setup: func(t *testing.T, p *paths) string {
@@ -435,5 +471,37 @@ func TestAPIFatalErrorStopsTheProcess(t *testing.T) {
 	assertLockFree(t, p.data)
 	if n := queryInt(t, dbPool(t, dbURL), `SELECT count(*) FROM artists WHERE name = 'Lost Answer'`); n != 1 {
 		t.Fatalf("%d artists: the change must be durable", n)
+	}
+}
+
+// A data directory that cannot be described while /import is compared
+// with it (N-197) stops the boot with the import code, not a raw fsops
+// error: here the volume's roots are closed under the check.
+func TestImportIsNotDataStatFailure(t *testing.T) {
+	p := testPaths(t)
+	v, err := volume.Acquire(p.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := fsops.OpenRoot(p.imports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := in.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d := &daemon{paths: p, vol: v}
+	err = d.importIsNotData(in)
+	var be *bootError
+	if !errors.As(err, &be) || codeOf(err) != codeImport {
+		t.Fatalf("importIsNotData: %v (code %s), want a bootError %s", err, codeOf(err), codeImport)
+	}
+	if fsops.Code(err) != fsops.CodeRootClosed {
+		t.Fatalf("the cause is lost: %v", err)
 	}
 }

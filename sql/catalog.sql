@@ -207,3 +207,24 @@ SELECT count(*) FROM tracks WHERE album_id = $1;
 
 -- name: DeleteTrack :execrows
 DELETE FROM tracks WHERE id = @id AND album_id = @album_id;
+
+-- §10.2 GET /api/albums: album summaries in the library's order, the
+-- artist's folder key, then the album's, then the id, byte-wise (COLLATE
+-- "C"). Keyset pagination: the page starts after the cursor's triple
+-- (NOTES.md N-190). The text search is applied by the caller with the
+-- normalization of internal/names, never with SQL lower() (§5.2).
+-- name: ListAlbumSummaries :many
+SELECT al.id, al.revision, al.artist_id, ar.name AS artist_name, ar.folder_key AS artist_key,
+       al.title, al.folder_key AS title_key, al.year, al.genre, al.compilation,
+       (al.deleted_at IS NOT NULL)::boolean AS trashed,
+       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+LEFT JOIN blobs cb ON cb.hash = al.cover_hash
+WHERE (al.deleted_at IS NOT NULL) = @trashed::boolean
+  AND (NOT @by_artist::boolean OR al.artist_id = @artist_id::uuid)
+  AND (@first::boolean
+       OR (ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id)
+          > (@after_artist::text, @after_title::text, @after_id::uuid))
+ORDER BY ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id
+LIMIT @lim::int;
