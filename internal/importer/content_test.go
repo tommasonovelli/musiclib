@@ -209,25 +209,6 @@ func TestImportFormats(t *testing.T) {
 	}
 }
 
-// A CD<N> / Disc <N> layout (§7.2 rules 2 and 3) fails as not supported
-// yet (Phase 5), never grouped otherwise.
-func TestScanMultiDiscNotSupported(t *testing.T) {
-	e := newEnv(t)
-	e.flac("Box/CD1/1.flac", track{})
-	e.flac("Box/cd02/1.flac", track{freq: 500})
-	e.put("Box/Artwork/front.jpg", jpegImage(t, 8, 8, 1))
-	e.flac("Set/Disc 1/1.flac", track{})
-	b := e.importDir("")
-	e.failed(b, "Box", CodeMultiDiscNotSupported)
-	e.failed(b, "Set", CodeMultiDiscNotSupported)
-	if n := e.count(`SELECT count(*) FROM jobs WHERE kind = 'import' AND batch_id = $1`, b.ID); n != 2 {
-		t.Errorf("%d import jobs, want 2", n)
-	}
-	if s := e.scanJob(b); s.State != "failed" || s.Code != CodeNoValidCandidate {
-		t.Errorf("scan %+v", s)
-	}
-}
-
 // Symlinks, FIFOs, sockets and devices inside a candidate are rejected
 // without being followed or opened (§5.2, N-030).
 func TestScanRejectsSpecialFiles(t *testing.T) {

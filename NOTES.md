@@ -2205,7 +2205,15 @@ of the path.
 
 Pinned by `TestNaturalOrder`; mutation-checked.
 
-### N-120 · Multi-disc layouts in Phase 2 — DECIDED (Phase 5 groups them)
+### N-120 · Multi-disc layouts in Phase 2 — SUPERSEDED (round 15: rules 2 and 3 implemented, see N-183 to N-189)
+**Round 15:** `multidisc_not_supported_yet` is gone. The name rules below
+are kept (N-183). One behavior below changed: audio below a disc directory
+no longer falls through to rule 5 when at least one disc directory has
+audio directly in it; the branch is then ambiguous (N-184, owner decision
+(b′), 2026-09-26). When no disc directory has direct audio, rule 5 applies
+as below.
+The rest of this entry is the Phase 2 record.
+
 Rules 2 and 3 of §7.2 are Phase 5. Until then, `group` recognizes the shape
 of rule 2:
 - a directory without direct audio;
@@ -4503,3 +4511,257 @@ inline; the cover no-op off; the Content-Type left to `ServeContent`'s
 sniffing; the file-name fallback unescaped; `filename*` with more literal
 characters; in `media.ValidateCover`, a read error taken for an invalid
 image (`media.TestValidateCoverCodes`).
+
+---
+
+## Round 15: multi-disc grouping, §7.2 rules 2 and 3 (2026-09-25)
+
+### N-183 · What a disc directory is, and the rule 3 checks — DECIDED (disc directories without audio: owner, 2026-09-26)
+The shape (`discShaped` in `internal/importer/group.go`) is a directory
+with no direct audio, every child holding audio named `CD<N>` or
+`Disc <N>`, and at least one disc-named child with audio directly in it
+(N-184, owner decision (b′), 2026-09-26). Only a directory of that shape
+is a multi-disc candidate: the disc directories, the checks below and the
+attachments apply to it alone. Anything else follows rule 5. The name
+rules of N-120 are kept, and nothing in §7.2 contradicts them:
+- `N` is ASCII digits, positive, leading zeros allowed (`CD01`,
+  `Disc 002`);
+- the prefix is folded ASCII-only (`cd1`, `DISC 2`). Unicode folding is
+  refused on purpose: Go lowercases `İ` (U+0130) to `i`, which would make
+  `Dİsc 1` a disc (pinned, mutation-checked);
+- `Disc` takes exactly one space and `CD` none. `CD 1`, `Disc1`, `Disc-1`,
+  `Disc  1` and `CD0` are ordinary directories (rule 5).
+
+Readings:
+- **Every direct child with a disc name is a disc directory, audio or
+  not** (DECIDED (owner, 2026-09-26): confirmed as implemented). One
+  without audio holds no tracks, and its files are attachments under
+  `Extras/CD2/...`. It still counts for rule 3: `CD1` with audio next to
+  `CD01` with only `scan.jpg` is `duplicate_disc`, and `CD100/scans` next
+  to `CD1` is `invalid_disc`. This is the conservative reading of "due
+  directory disco con lo stesso numero": an explicit error that the user
+  fixes by renaming, never a guess about which one is the disc. Both cases
+  are pinned by `TestGroupMultiDisc` ("duplicate without audio", "CD100
+  without audio is beyond the schema"). Under (b′) this applies only once
+  the directory is rule-2 shaped: `Rips/CD1/A/*.flac` next to
+  `Rips/CD01/B/*.flac` has no disc with direct audio, so it is two rule-5
+  albums, not `duplicate_disc`, and likewise `Rips/CD100/A` is an ordinary
+  album.
+- **A non-disc sibling with audio** makes the directory not rule-2 shaped,
+  whatever the discs hold. `Box/CD1` + `Box/CD2` + `Box/Bonus`, all with
+  audio, are three independent albums by rule 5 read literally (DECIDED
+  (owner, 2026-09-26): confirmed as implemented). Pinned by
+  `TestGroupMultiDisc` ("Box/CD1 and Box/CD2 next to Box/Bonus") and on
+  disk by `TestScanMultiDiscLayouts`.
+- **The checks** run in this order. Each one fails the whole branch with
+  one pre-failed import job, whose path is the candidate and whose message
+  names the directories. Nothing of the branch is imported.
+  1. Audio below a disc directory's own level: `ambiguous_candidate`
+     (N-184). The directory being shaped, at least one disc has
+     direct audio, so "move the audio files into the disc directory" is
+     the right fix.
+  2. Two disc directories with the same number, whatever the spelling
+     (`CD1`/`CD01`, `CD1`/`Disc 1`, `CD2`/`cd2`): the new code
+     `duplicate_disc`.
+  3. A number over 99: `invalid_disc`, the catalog's code (§4.2
+     `tracks.disc` 1–99; §7.3 "errore, non overflow o troncamento"). A
+     number too large for an int is kept as `MaxInt`, so it never wraps.
+  4. Rejected entries and the limits, as for rule 1.
+- **Attachments:** everything else in the subtree belongs to the
+  candidate. That covers root files (cover, booklet, `.cue`, `.log`),
+  subdirectories without audio at the root, and non-audio files inside the
+  disc directories. Each keeps its path under the candidate
+  (`Extras/CD1/Scans/x.jpg`).
+- **Title fallback:** the candidate's root, which is the parent of the
+  discs, never a disc directory (§7.3 "directory radice del candidato").
+- **Limits (§7.2):** 1,000 tracks and 10,000 files are counted over the
+  whole candidate, every disc included. They are checked at the scan, again
+  at the import, and again at the commit. They are pinned on synthetic
+  trees and with 10,001 real files spread over three directories.
+- **Revalidation (§7.2) and stability (§7.1).** The import regroups the
+  current disk with the same `group`. It therefore sees a disc directory
+  that was added, removed, renamed or given audio below it after the scan.
+  The identity snapshot covers every directory and file of the subtree,
+  disc directories included. Content is checked again on the copies: audio
+  found by content at the root or outside the disc directories is
+  `ambiguous_candidate`. One example is a FLAC named `.jpg`, which the scan
+  does not probe (N-115).
+
+### N-184 · Audio below a disc directory: ambiguous only when a disc has direct audio — DECIDED (owner, 2026-09-26: refined rule (b′))
+Rule 2 of §7.2 reads "discendenti con audio sono solo figli diretti".
+Layouts where disc-named directories hold audio deeper than their own
+level match neither rule 2 nor rule 1, and three readings were weighed:
+- **(a) Rule 5, literally.** Every such layout falls through: each nested
+  directory with audio is an independent album. This is what Phase 2 did
+  (N-120).
+- **(b) Rule 4, always** (round 15 as first implemented). A directory whose
+  audio-holding children all have disc names is multi-disc in shape, and
+  any audio below a disc directory makes the whole branch
+  `ambiguous_candidate`.
+- **(b′) Rule 4 only when the layout is really multi-disc (the owner's
+  decision).** A directory is rule-2 shaped only when every child holding
+  audio has a disc name **and at least one disc-named child has audio
+  directly in it**. Then audio below a disc directory fails the whole
+  branch as `ambiguous_candidate`, naming the misplaced file and its disc
+  directory. When no disc-named child has direct audio, the directory is
+  not rule-2 shaped, and rule 5 applies as in Phase 2.
+
+**Examples:**
+- **A:** `Box/CD1/1.flac` + `Box/CD2/Bonus/x.flac`. `CD1` has direct
+  audio, so `Box` is one multi-disc candidate, and the whole branch is
+  `ambiguous_candidate` naming `Box/CD2/Bonus/x.flac`. No partial import.
+  The same holds for `CD1/1.flac` + `CD1/Bonus/1.flac` (audio in and below
+  one disc), and for `CD1/*.flac` next to `Disc 2/Side A/*.flac` (one disc
+  direct, another only nested).
+- **B, a data-CD backup:** `Rips/CD1/Artist - Album/*.mp3` +
+  `Rips/CD2/Other/*.mp3`. No disc has direct audio, so this is not
+  multi-disc: rule 5 finds `Rips/CD1/Artist - Album` and `Rips/CD2/Other`
+  as two independent albums, exactly as Phase 2 did. A lone
+  `Box/CD1/sub/x.flac` is likewise the album `Box/CD1/sub`.
+
+**Rationale.** Rule 5 read literally (a) would partially import an obvious
+album in example A: `CD1` alone under a guessed title, `CD2/Bonus` as
+another album. That is the partial import §7.2 forbids, and a guess where
+an explicit error is due. The first implementation (b) wrongly failed
+data-CD backups like example B, where `CD1` and `CD2` are just the names
+of backup discs holding ordinary album folders. Direct audio in at least
+one disc directory is what makes the layout a multi-disc rip; without it
+there is nothing to call a disc.
+
+**Consequences:**
+- The duplicate check, the over-99 check and "a disc-named directory
+  without audio is a disc directory" (N-183) apply only once the directory
+  is rule-2 shaped. `Rips/CD1/A` next to `Rips/CD01/B`, neither with
+  direct audio, are two rule-5 albums, not `duplicate_disc`; `Rips/CD100/A`
+  is an ordinary album, not `invalid_disc`.
+- The `ambiguous_candidate` message, "move the audio files into the disc
+  directory", now fires only when the layout is really multi-disc.
+- A non-disc sibling with audio still makes the directory not rule-2
+  shaped: `Box/CD1` + `Box/CD2` + `Box/Bonus` are three albums (N-183,
+  owner decision).
+- The import regroups the current disk with the same `group`
+  (`revalidate`), so the scan and the import agree on the shape. Audio
+  added after the scan below a disc of a shaped candidate
+  (`TestImportMultiDiscRevalidates`, `Deep/CD2/Extra/1.flac`) still fails
+  it.
+
+Pinned by `TestGroupMultiDisc` (examples A and B, the mix, the lone
+nested disc, the duplicate and over-99 names without direct audio),
+`TestScanMultiDiscLayouts` (example A as `in/Deep`, example B as
+`in/Rips`, on real ext4) and `TestImportMultiDiscRevalidates`.
+Mutation-checked (N-189).
+
+### N-185 · The disc directory wins over the disc tag, with a warning — DECIDED (warning kept: owner, 2026-09-26)
+§7.3 says "Disco: numero della directory disco". In a disc directory the
+disc tag is therefore not used:
+- **A different tag** (positive, differing from the directory's number)
+  gives one `disc_tag_ignored` warning per disc directory, a new `jobs`
+  warning code. Its path is the directory, and it names the disagreeing
+  values. Separately ripped discs often all say `DISCNUMBER=1`: the user is
+  told, and nothing fails.
+- **No usable tag** gives nothing: an absent, zero or unparsable tag. A
+  tag of `1/2` on `CD1` agrees.
+- **A disc tag over 99** in a disc directory is not an error. It is
+  ignored and warned about, so nothing overflows or is truncated.
+- **Outside disc directories** the old rule stands: the tag, otherwise 1,
+  and a tag over 99 is `invalid_disc`.
+
+Track numbers stay per disc (§7.3): `numberTracks` groups the tracks by
+their final disc. A disc keeps its track tags when every value on it is
+positive and distinct. Otherwise that disc alone is renumbered by the
+natural order of its basenames, with `tracks_renumbered`. `mixed_album`,
+the album artist and Various Artists are computed over every disc of the
+candidate.
+
+**The warning is kept — DECIDED (owner, 2026-09-26).** §7.3 does not
+require `disc_tag_ignored`; the owner confirmed keeping it, as
+implemented.
+
+**The path of `tracks_renumbered` (round 15 review nit, 2026-09-26).** In
+a multi-disc album the warning's path is the renumbered disc's directory
+(`CD02`), as for `disc_tag_ignored`. The tracks of one disc are all
+directly in its one directory (rule 2; rule 3 refuses two directories for
+one number), so the directory is well defined (`renumberedPath` in
+`metadata.go`). A disc without a disc directory, whose tracks are in the
+candidate's root, keeps an empty path as before, for single-disc albums
+and for discs taken from tags alike. Pinned by `TestRenumberedWarningPath`
+and `TestImportMultiDiscAlbum`; mutation-checked (N-189).
+
+### N-186 · The external cover comes only from the candidate's root — DECIDED
+§7.4 reads "nella radice `cover.*`, poi `folder.*`, poi `front.*`". For a
+multi-disc candidate, the root is the candidate's root, which is the
+parent of the discs. `CD1/cover.jpg` is only an attachment
+(`Extras/CD1/cover.jpg`), and the embedded front cover is the next
+fallback, as for any album.
+
+No per-disc fallback is invented, because the spec names the root only. A
+disc-level image can still be chosen as the cover in the editor (round 14:
+`PUT /api/albums/{id}/cover` from an attachment).
+
+The residual: a rip with covers only inside the disc directories and no
+embedded picture imports with no cover. Pinned by
+`TestImportMultiDiscCoverOnlyFromTheRoot`.
+
+LRC files follow §7.4 unchanged: "nella stessa directory". So
+`CD1/01.lrc` associates only with a track of `CD1/`, and a same-stem LRC
+in `CD2/` with no matching track there stays an attachment. The catalog's
+commit already checks the directory (`checkLyrics`). The render places
+the LRC next to its track as `Disc 1/01 - Title.lrc` (§5.1).
+
+### N-187 · The fingerprint is unchanged: disc numbers are in the paths — DECIDED
+§7.6 defines the fingerprint exactly as `[relative path, size, hash]` for
+every file. The paths are relative to the candidate's root, so they carry
+the disc directories (`CD1/01.flac`).
+- **No collision.** A two-disc album and a one-disc album of the same
+  files have different paths, and so different fingerprints.
+  `TestMultiDiscFingerprint` imports both; they share their blobs.
+- **No change.** Adding the disc numbers would contradict §7.6 and change
+  every stored `import_fingerprint`. The serializer and the golden test
+  are unchanged, and no existing catalog is affected.
+- **Consistency.** The grouping is a function of the file set, so the same
+  fingerprint always means the same candidate shape.
+
+### N-188 · Where the round-15 pieces live — DECIDED
+- `group.go`: `branch.Discs`, `discShaped`, `multiDisc` and `discNumber`
+  (`isDiscName` is kept as its wrapper).
+- `candidate.go`: `revalidate` also returns the disc directories.
+  `splitTracks` gives each track its disc and refuses audio outside the
+  disc directories.
+- `metadata.go`: `trackTags.Disc`, the disc rule, `discTagWarnings` and
+  `renumberedPath` (the disc directory as the path of `tracks_renumbered`).
+- `errors.go`: `CodeDuplicateDisc` (`duplicate_disc`) is added and
+  `CodeMultiDiscNotSupported` is removed.
+- `jobs`: `WarnDiscTagIgnored` (`disc_tag_ignored`).
+
+The scan's inserts are unchanged: one import job per branch, pending or
+pre-failed, through `catalog.CommitScan`. `TestCrashAtTheScanCommitMultiDisc`
+still kills the scan at both commit points, with a multi-disc album and a
+pre-failed `duplicate_disc` branch.
+
+The planner already rendered multi-disc albums (§5.1). `render_version`
+is unchanged, since the output of a given snapshot is unchanged.
+`publish.TestExecuteRenderMultiDiscAlbum` checks the published tree end
+to end.
+
+### N-189 · Round 15 mutation checks — DECIDED
+Each of the following makes a test fail. Each was checked one at a time
+on the live tree, which was then restored.
+- **Grouping:** the duplicate disc check off; the over-99 check off; audio
+  below a disc falling through to rule 5 (the deep-audio check disabled:
+  `TestGroupMultiDisc` example A, "audio in and below a disc directory"
+  and the one-direct-one-nested mix fail; rerun on 2026-09-26 under
+  (b′)); `discShaped` ignoring whether any disc has direct audio (the
+  (b) of N-184: `TestGroupMultiDisc` example B, the lone nested disc and
+  the two no-direct-audio name rows fail, and so does
+  `TestScanMultiDiscLayouts`); the limits and rejected entries not checked
+  for a multi-disc branch.
+- **Disc names:** `Disc` accepted without its space (`Disc-1`); leading
+  zeros counted; Unicode lowercasing of the prefix (`Dİsc 1`).
+- **Metadata:** the disc tag preferred over the directory; the
+  `disc_tag_ignored` warning off; numbering over the whole album instead
+  of per disc; the title taken from a disc directory; `tracks_renumbered`
+  without the disc directory's path (`TestRenumberedWarningPath` and
+  `TestImportMultiDiscAlbum` fail).
+- **Import:** the external cover taken from a disc directory; root audio
+  accepted in a multi-disc candidate; the directory's disc number not
+  given to the track.

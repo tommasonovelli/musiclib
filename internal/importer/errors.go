@@ -35,12 +35,14 @@ const (
 	// (§7.1).
 	CodeSourceChanged = "source_changed"
 	// CodeAmbiguousCandidate: direct audio together with audio further
-	// down, or overlapping candidates (§7.2 rule 4).
+	// down, or overlapping candidates (§7.2 rule 4); for a multi-disc
+	// candidate, audio outside its disc directories or below one of them
+	// (NOTES.md N-184).
 	CodeAmbiguousCandidate = "ambiguous_candidate"
-	// CodeMultiDiscNotSupported: a CD<N> / Disc <N> structure (§7.2 rules
-	// 2 and 3), which Phase 5 groups. Until then it fails explicitly and is
-	// never grouped otherwise.
-	CodeMultiDiscNotSupported = "multidisc_not_supported_yet"
+	// CodeDuplicateDisc: two disc directories of one multi-disc candidate
+	// with the same number, such as CD1 and CD01, or CD1 and Disc 1 (§7.2
+	// rule 3). The branch fails as a whole.
+	CodeDuplicateDisc = "duplicate_disc"
 	// CodeNotACandidate: the directory of an import job has no direct audio
 	// (any more).
 	CodeNotACandidate = "not_a_candidate"

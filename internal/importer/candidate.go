@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
@@ -24,6 +25,9 @@ type importFile struct {
 	audio  bool
 	format string
 	tags   media.Inspection
+	// disc is the number of the track's disc directory in a multi-disc
+	// candidate, 0 in a single-disc one (§7.3).
+	disc int
 }
 
 // importCandidate is the work of an import job up to the commit (§7.1–§7.6):
@@ -50,8 +54,8 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 		}()
 	}
 
-	// §7.2: a retry never trusts the old scan.
-	tree, err := im.revalidate(ctx, r, len(segs), c.SourceRel)
+	// §7.2: a retry never trusts the old scan, nor its disc directories.
+	tree, discs, err := im.revalidate(ctx, r, len(segs), c.SourceRel)
 	if err != nil {
 		return catalog.ImportCandidate{}, nil, err
 	}
@@ -88,7 +92,7 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 			return catalog.ImportCandidate{}, ws, err
 		}
 	}
-	tracks, others, err := splitTracks(files, c.SourceRel)
+	tracks, others, err := splitTracks(files, discs, c.SourceRel)
 	if err != nil {
 		return catalog.ImportCandidate{}, ws, err
 	}
@@ -110,30 +114,41 @@ func (im *Importer) importCandidate(ctx context.Context, c *jobs.Claim) (_ catal
 }
 
 // revalidate walks the candidate again and applies the scan's rules to it:
-// it must still be one valid candidate (§7.2 rules 1 and 4, the limits, no
-// rejected entry). The files carry the scan's view of audio.
-func (im *Importer) revalidate(ctx context.Context, r *fsops.Root, depth int, sourceRel string) (*srcDir, error) {
+// it must still be one valid candidate (§7.2 rules 1 to 4, the limits, no
+// rejected entry), single-disc or multi-disc as the disk is now, whatever
+// the scan saw. The files carry the scan's view of audio. discs maps the
+// path of every disc directory of a multi-disc candidate to its number; it
+// is nil for a single-disc one.
+func (im *Importer) revalidate(ctx context.Context, r *fsops.Root, depth int, sourceRel string) (*srcDir, map[string]int, error) {
 	tree, err := walk(ctx, im.src, r, depth, "")
 	if err != nil {
-		return nil, sourceError(sourceRel, err)
+		return nil, nil, sourceError(sourceRel, err)
 	}
 	if err := im.markAudio(ctx, r, tree); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	g := group(tree, sourceRel)
 	for _, br := range g.Branches {
-		if br.Dir == tree {
-			if br.Err != nil {
-				return nil, br.Err
-			}
-			return tree, nil
+		if br.Dir != tree {
+			continue
 		}
+		if br.Err != nil {
+			return nil, nil, br.Err
+		}
+		var discs map[string]int
+		if br.Discs != nil {
+			discs = map[string]int{}
+			for _, d := range br.Discs {
+				discs[d.Dir.Rel] = d.No
+			}
+		}
+		return tree, discs, nil
 	}
-	msg := fmt.Sprintf("%s has no audio files directly in it", label(sourceRel, ""))
+	msg := fmt.Sprintf("%s has no audio files directly in it, nor in CD<N> or Disc <N> directories", label(sourceRel, ""))
 	if len(g.Branches) > 0 {
 		msg += fmt.Sprintf("; the albums are in its subdirectories, such as %q", joinRel(sourceRel, g.Branches[0].Dir.Rel))
 	}
-	return nil, errorf(CodeNotACandidate, "%s", msg)
+	return nil, nil, errorf(CodeNotACandidate, "%s", msg)
 }
 
 // estimate is the conservative space estimate of §11.2 for a candidate:
@@ -327,18 +342,30 @@ func tagWarnings(rel string, in media.Inspection) ([]jobs.Warning, error) {
 }
 
 // splitTracks separates the tracks from the other files and checks, by
-// content, the rules the scan checked by its view (§7.2): the tracks are
-// directly in the candidate (rule 4), there is at least one, and at most
-// MaxTracks. Tracks are sorted by pathNaturalCompare, the others by path.
-func splitTracks(files []*importFile, sourceRel string) (tracks, others []*importFile, err error) {
+// content, the rules the scan checked by its view (§7.2): the tracks of a
+// single-disc candidate (discs nil) are directly in it (rule 4); those of a
+// multi-disc one are directly in one of its disc directories (rules 2 and
+// 4, N-184), whose number becomes their disc (§7.3). There is at least one
+// track, and at most MaxTracks over all discs. Tracks are sorted by
+// pathNaturalCompare, the others by path.
+func splitTracks(files []*importFile, discs map[string]int, sourceRel string) (tracks, others []*importFile, err error) {
 	for _, f := range files {
 		if !f.audio {
 			others = append(others, f)
 			continue
 		}
-		if strings.Contains(f.src.Rel, "/") {
+		dir := path.Dir(f.src.Rel)
+		switch no, ok := discs[dir]; {
+		case discs == nil && dir == ".":
+		case ok:
+			f.disc = no
+		case discs == nil:
 			return nil, nil, &Error{Code: CodeAmbiguousCandidate, Path: f.src.Rel,
 				Message: fmt.Sprintf("%s has audio files and more audio below it (%q): import its subdirectories separately",
+					label(sourceRel, ""), joinRel(sourceRel, f.src.Rel))}
+		default:
+			return nil, nil, &Error{Code: CodeAmbiguousCandidate, Path: f.src.Rel,
+				Message: fmt.Sprintf("%s is a multi-disc album, but %q is audio outside its disc directories: move it into one of them",
 					label(sourceRel, ""), joinRel(sourceRel, f.src.Rel))}
 		}
 		tracks = append(tracks, f)
@@ -360,7 +387,7 @@ func (im *Importer) buildCandidate(ctx context.Context, c *jobs.Claim, tracks, o
 	tags := make([]trackTags, len(tracks))
 	trackPaths := make([]string, len(tracks))
 	for i, t := range tracks {
-		tags[i] = trackTags{Path: t.src.Rel, Tags: t.tags.Managed}
+		tags[i] = trackTags{Path: t.src.Rel, Disc: t.disc, Tags: t.tags.Managed}
 		trackPaths[i] = t.src.Rel
 	}
 	meta, err := inferMetadata(dirName(c.SourceRel), tags, c.Overrides)
@@ -422,7 +449,9 @@ func (im *Importer) buildCandidate(ctx context.Context, c *jobs.Claim, tracks, o
 	return cand, ws, err
 }
 
-// dirName is the name of the candidate's directory, "" for /import itself.
+// dirName is the name of the candidate's directory, "" for /import itself:
+// the fallback album title of §7.3. For a multi-disc candidate it is the
+// parent of the disc directories, never a disc directory (N-183).
 func dirName(sourceRel string) string {
 	if sourceRel == "" {
 		return ""

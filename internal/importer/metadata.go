@@ -21,9 +21,12 @@ const (
 )
 
 // trackTags is one track's managed fields, as Inspect read them from the
-// verified copy, with its source path relative to the candidate.
+// verified copy, with its source path relative to the candidate. Disc is
+// the number of its disc directory in a multi-disc candidate (§7.2 rule 2),
+// 0 when there is none.
 type trackTags struct {
 	Path string
+	Disc int
 	Tags media.ManagedTags
 }
 
@@ -57,10 +60,14 @@ type readTrack struct {
 	path                                     string
 	title, artist, albumArtist, album, genre string
 	disc                                     int
-	track                                    int
-	trackOK                                  bool
-	year                                     int
-	compilation                              bool
+	// discDir is true when disc is the disc directory's number; tagDisc is
+	// then the positive disc tag, 0 without one (N-185).
+	discDir     bool
+	tagDisc     int
+	track       int
+	trackOK     bool
+	year        int
+	compilation bool
 }
 
 // inferMetadata is the table of §7.3, a pure function of the tracks' tags,
@@ -100,9 +107,12 @@ func inferMetadata(dirName string, tracks []trackTags, ov jobs.Overrides) (album
 		}
 		m.Tracks[i] = t
 	}
-	if m.Warnings, err = numberTracks(rs, m.Tracks); err != nil {
+	m.Warnings = discTagWarnings(rs)
+	ws, err := numberTracks(rs, m.Tracks)
+	if err != nil {
 		return albumMeta{}, err
 	}
+	m.Warnings = append(m.Warnings, ws...)
 	var w *jobs.Warning
 	m.Year, w = albumYear(rs)
 	if w != nil {
@@ -134,16 +144,22 @@ func readTags(t trackTags) (readTrack, error) {
 		}
 		*f.dst = v
 	}
-	// Disc: the tag when positive, otherwise 1 (§7.3: there are no disc
-	// directories in Phase 2). A number beyond the schema is an error, never
-	// truncated.
+	// Disc (§7.3): the number of the disc directory; without one, the tag
+	// when positive, otherwise 1. A disc tag the directory overrides is not
+	// used, so it cannot overflow (N-185); a used one beyond the schema is
+	// an error, never truncated.
 	r.disc = 1
 	if n, ok := media.TagNumber(t.Tags.Disc); ok && n > 0 {
-		if n > catalog.MaxDisc {
-			return readTrack{}, &Error{Code: catalog.CodeInvalidDisc, Path: t.Path,
-				Message: fmt.Sprintf("%q: disc %s is outside 1..%d", t.Path, quoteNumber(n), catalog.MaxDisc)}
-		}
-		r.disc = n
+		r.tagDisc = n
+	}
+	switch {
+	case t.Disc > 0:
+		r.disc, r.discDir = t.Disc, true
+	case r.tagDisc > catalog.MaxDisc:
+		return readTrack{}, &Error{Code: catalog.CodeInvalidDisc, Path: t.Path,
+			Message: fmt.Sprintf("%q: disc %s is outside 1..%d", t.Path, quoteNumber(r.tagDisc), catalog.MaxDisc)}
+	case r.tagDisc > 0:
+		r.disc = r.tagDisc
 	}
 	if n, ok := media.TagNumber(t.Tags.Track); ok && n > 0 {
 		if n > catalog.MaxTrackNumber {
@@ -290,10 +306,53 @@ func basenameTitle(p string) (string, error) {
 	return t, nil
 }
 
+// discTagWarnings reports, once per disc directory, the tracks whose
+// positive disc tag differs from the directory's number, which wins (§7.3
+// "Disco: numero della directory disco", NOTES.md N-185). Tracks without a
+// disc tag, or outside disc directories, give none. By disc number.
+func discTagWarnings(rs []readTrack) []jobs.Warning {
+	type dir struct {
+		disc  int
+		tags  []int
+		count int
+	}
+	byDir := map[string]*dir{}
+	var dirs []string
+	for _, r := range rs {
+		if !r.discDir || r.tagDisc == 0 || r.tagDisc == r.disc {
+			continue
+		}
+		d := path.Dir(r.path)
+		if byDir[d] == nil {
+			byDir[d] = &dir{disc: r.disc}
+			dirs = append(dirs, d)
+		}
+		byDir[d].count++
+		if !slices.Contains(byDir[d].tags, r.tagDisc) {
+			byDir[d].tags = append(byDir[d].tags, r.tagDisc)
+		}
+	}
+	slices.SortFunc(dirs, func(a, b string) int { return byDir[a].disc - byDir[b].disc })
+	var ws []jobs.Warning
+	for _, d := range dirs {
+		x := byDir[d]
+		slices.Sort(x.tags)
+		tags := make([]string, len(x.tags))
+		for i, n := range x.tags {
+			tags[i] = quoteNumber(n)
+		}
+		ws = append(ws, jobs.Warning{Code: jobs.WarnDiscTagIgnored, Path: d,
+			Message: fmt.Sprintf("%q is disc %d, but %d of its tracks have the disc tag %s: the directory's number is used",
+				d, x.disc, x.count, strings.Join(tags, ", "))})
+	}
+	return ws
+}
+
 // numberTracks sets the track numbers (§7.3), disc by disc: the tags when
 // every track of the disc has a positive number and they are distinct;
 // otherwise the whole disc is numbered 1..n in the natural order of the
-// basenames, ties by the full path, with a warning.
+// basenames, ties by the full path, with a warning. The warning's path is
+// the disc directory in a multi-disc candidate, and empty otherwise.
 func numberTracks(rs []readTrack, ts []trackMeta) ([]jobs.Warning, error) {
 	discs := map[int][]int{}
 	for i, r := range rs {
@@ -330,10 +389,23 @@ func numberTracks(rs []readTrack, ts []trackMeta) ([]jobs.Warning, error) {
 		for n, i := range idx {
 			ts[i].No = n + 1
 		}
-		ws = append(ws, jobs.Warning{Code: jobs.WarnTracksRenumbered,
+		ws = append(ws, jobs.Warning{Code: jobs.WarnTracksRenumbered, Path: renumberedPath(rs[idx[0]]),
 			Message: fmt.Sprintf("disc %d: the track numbers are missing, not positive or repeated; the %d tracks are numbered by file name", d, len(idx))})
 	}
 	return ws, nil
+}
+
+// renumberedPath is the path of the tracks_renumbered warning of the disc
+// holding r: its disc directory, as disc_tag_ignored's, since the tracks of
+// one disc of a multi-disc candidate are all directly in that directory
+// (§7.2 rule 2, rule 3 refuses two directories for one number); "" for a
+// disc without a disc directory, whose tracks are directly in the
+// candidate's root.
+func renumberedPath(r readTrack) string {
+	if !r.discDir {
+		return ""
+	}
+	return path.Dir(r.path)
 }
 
 // albumYear is §7.3's year: the most frequent valid value, a tie going to

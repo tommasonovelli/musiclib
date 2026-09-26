@@ -75,7 +75,8 @@ const (
 	// WarnUnassignedFile: a file outside every candidate (§7.2).
 	WarnUnassignedFile WarningCode = "unassigned_file"
 	// WarnTracksRenumbered: a disc numbered by the natural order of the
-	// basenames (§7.3).
+	// basenames (§7.3); its path is the disc directory in a multi-disc
+	// album, empty otherwise.
 	WarnTracksRenumbered WarningCode = "tracks_renumbered"
 	// WarnYearDiscordant: the tracks disagree on the year (§7.3).
 	WarnYearDiscordant WarningCode = "year_discordant"
@@ -101,6 +102,9 @@ const (
 	// (media.MP3GenreWritable): it must be corrected in the editor before the
 	// album renders (owner decision N-162).
 	WarnGenreNotWritable WarningCode = "genre_not_writable"
+	// WarnDiscTagIgnored: a track of a disc directory whose disc tag names
+	// another disc; the directory's number is used (§7.3, NOTES.md N-185).
+	WarnDiscTagIgnored WarningCode = "disc_tag_ignored"
 )
 
 var warningCodes = map[WarningCode]bool{
@@ -114,6 +118,7 @@ var warningCodes = map[WarningCode]bool{
 	WarnLyricsNotUTF8:      true,
 	WarnFLACID3:            true,
 	WarnGenreNotWritable:   true,
+	WarnDiscTagIgnored:     true,
 }
 
 // maxWarningMessage bounds a warning's text, in bytes.

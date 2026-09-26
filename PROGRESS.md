@@ -44,7 +44,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] `internal/media`: `ffprobe` / `ffmpeg` adapter, `AudioDigest` (§8.4) — pinned static FFmpeg 8.1.3 in every image (N-073), tool Runner (§8.5, §6.1), probe and classification (§7.2, §8.1), boot check of the tool versions (§11.1 step 3)
 - [x] `native/musiclib-tags`: C++ TagLib helper (inspect / extract-images / write-managed-tags) (§8.1) — **FLAC complete**: pinned static TagLib 2.3.2 (N-083), the three operations, the Go adapter `Inspect` / `ExtractImages` / `WriteManagedTags` and the §9.1 step 6 check `VerifyTags`, ID3 tags in a FLAC stripped by a declared rule (N-090); **MP3 complete since round 12** (helper version 3: its own ID3v2/APE/ID3v1 reader and writer, N-152); **M4A (AAC and ALAC) complete since round 13** (helper version 4: its own box walker, ilst reader and writer, N-165)
 - [x] Managed tag mapping and alias removal (§8.2, §8.3) — **FLAC, MP3 and M4A complete** (tables in `native/musiclib-tags/src/fields.h`, N-088, N-159, N-166)
-- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1, 4 and 5; rules 2 and 3 fail as `multidisc_not_supported_yet` until Phase 5, N-120), the import executor of one FLAC, MP3 or M4A candidate, formats mixed or not (N-157) (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); an M4A the tag reader refuses (fragmented, encrypted, several tracks) is `unsupported_audio` (N-165). The executors (`ExecuteScan`, `ExecuteImport`) run in the pool of `cmd/musiclibd` since round 9; the space check reserves in the process budget (N-139)
+- [x] `internal/importer`: import of a single album candidate (§7.1–§7.6) — batch creation (`catalog.CreateImportBatch`), the scan executor (§7.2 rules 1 to 5; the multi-disc rules 2 and 3 since round 15, N-183 to N-189), the import executor of one FLAC, MP3 or M4A candidate, formats mixed or not (N-157) (revalidation, source stability, space check, verified copies, full decode, tags, metadata, LRC, cover, fingerprint, commit); an M4A the tag reader refuses (fragmented, encrypted, several tracks) is `unsupported_audio` (N-165). The executors (`ExecuteScan`, `ExecuteImport`) run in the pool of `cmd/musiclibd` since round 9; the space check reserves in the process budget (N-139)
 - [x] `internal/catalog`: domain transactions, revisions, reservations, enqueue (§4.3, §5.3) — import commit (§7.6), `PUT` album semantics, trash/restore, artist rename, `path_claims`, `CheckFresh`; the transaction runner and the catalog lock in `internal/store` (N-095)
 - [x] `internal/render`: snapshot → pure plan → build in staging (§9.1) — `render_version` (§2.1, N-010 resolved by N-130), the pure planner, the verified build in `work/render/<build_id>/album` with its failure cleanup; run by `publish.ExecuteRender` since round 9
 - [x] `.musiclib.json` receipt (§9.2) — canonical encoder, strict parser for recovery and doctor, `receipt_hash` (N-133)
@@ -73,8 +73,8 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
 ## Phase 5 — Full experience
 
-- [~] Recursive scan and multi-disc grouping (§7.2) — the recursive scan with rules 1, 4 and 5 and the unassigned-file report are done; rules 2 and 3 (multi-disc) fail explicitly until this phase (N-120)
-- [~] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer (tested through a retry done by SQL); disc directories come with rules 2 and 3, the retry endpoint with the API
+- [x] Recursive scan and multi-disc grouping (§7.2) — the recursive scan, rules 1 to 5 and the unassigned-file report; round 15: `CD<N>` / `Disc <N>` directories grouped into one multi-disc candidate, `duplicate_disc` and `invalid_disc` (over 99) failing the branch, audio below a disc directory ambiguous once at least one disc directory has direct audio, rule 5 otherwise (N-183, N-184, owner decisions of 2026-09-26), attachments inside and beside the discs, limits over every disc, revalidation and stability covering the disc directories; `multidisc_not_supported_yet` removed
+- [~] Inferred initial metadata and import overrides (§7.3) — the whole table and the overrides are applied by the importer (tested through a retry done by SQL); round 15: the disc of a disc directory wins over the tag with `disc_tag_ignored` (N-185), numbering per disc, the title from the candidate root, the cover from the candidate root (N-186); `tracks_renumbered` names the disc directory in a multi-disc album. The retry endpoint comes with the API
 - [x] Fingerprinting and duplicate detection (§7.6) — the fingerprint in `internal/importer` (golden test), duplicates `skipped` by the import commit
 - [~] Complete HTTP APIs (§10.2) — round 11: `GET`/`POST /api/artists`, `GET`/`PUT /api/artists/{id}`, `GET`/`PUT`/`DELETE /api/albums/{id}`, `GET .../status`, `POST .../restore`, `POST .../render`; round 14: cover, attachments, lyrics, track deletion and the downloads by entity id (N-172 to N-182). Still to come: `GET /api/albums` (search), imports, jobs and retries, `render-all`
 - [ ] UI: Library, Album, Import, Activity (§10.3)
@@ -1261,7 +1261,7 @@ scripts/check.sh ./internal/catalog/...
 scripts/dev.sh go test -race -count=20 ./internal/store/... ./internal/jobs/ ./internal/catalog/
 ```
 
-### `internal/importer` — scan and import of one candidate (§7.1–§7.6, §8.5, §11.2) ✔ (FLAC; MP3 since round 12; M4A since round 13)
+### `internal/importer` — scan and import of one candidate (§7.1–§7.6, §8.5, §11.2) ✔ (FLAC; MP3 since round 12; M4A since round 13; multi-disc since round 15)
 
 This is Phase 2's FLAC slice. The scan groups a batch into candidates; the
 import turns one candidate into the closed input of `catalog.CommitImport`.
@@ -1303,8 +1303,8 @@ without one, and the job stays running until the boot recovers it.
   - Symlinks, special files and invalid names are rejected and never
     opened.
   - Audio is decided by the rule of N-115.
-  - Rules 1, 4 and 5 apply; the rule 2 and 3 shape fails as not supported
-    yet (N-120).
+  - Rules 1 to 5 apply; the multi-disc rules 2 and 3 are detailed in the
+    round-15 part below.
   - The limits are checked on the tree.
   - Unassigned files and rejected entries become warnings.
   - With no valid candidate, the scan is failed with an explanation (N-122).
@@ -1321,7 +1321,8 @@ without one, and the job stays running until the boot recovers it.
   - Other audio is `unsupported_audio`.
   - No audio with a known audio extension is `corrupt_audio`; without one,
     it is an attachment.
-  - Audio in a subdirectory is `ambiguous_candidate`.
+  - Audio in a subdirectory is `ambiguous_candidate`; in a multi-disc
+    candidate, audio anywhere but directly in a disc directory is.
 - **§7.6, §8.4:** `AudioDigest` decodes every track completely. A failed
   decode is `corrupt_audio`.
 - **N-092, N-090:** a field from `Inspection.Blocking()` is
@@ -1347,8 +1348,8 @@ without one, and the job stays running until the boot recovers it.
 |---|---|
 | `source_not_found`, `source_not_directory`, `source_rejected_entry` | the root or the candidate is missing, is not a directory, or holds or goes through a symlink or special file |
 | `source_changed` | §7.1 |
-| `ambiguous_candidate` | rule 4 |
-| `multidisc_not_supported_yet` | rules 2 and 3, until Phase 5 |
+| `ambiguous_candidate` | rule 4; audio below a disc directory of a rule-2 shaped directory (N-184) |
+| `duplicate_disc` | rule 3: two disc directories with the same number |
 | `not_a_candidate` | no direct audio any more |
 | `no_valid_candidate` | a scan with nothing to import |
 | `insufficient_space` | §11.2 |
@@ -1382,7 +1383,7 @@ job, every source entry's bytes, inode, mode and mtime are compared, and
   a message that says so.
 - **Formats:** a corrupt FLAC, text named `.mp3`, M4A, WAV, and a FLAC
   without an extension.
-- **Layouts:** multi-disc; an ambiguous branch next to a good one, with the
+- **Layouts:** an ambiguous branch next to a good one, with the
   unassigned files and a symlink reported; a symlink, a FIFO and a socket
   inside a candidate (the device case needs CAP_MKNOD, N-127); root failures;
   revalidation after the scan; `/import` itself as a candidate.
@@ -1432,6 +1433,122 @@ job, every source entry's bytes, inode, mode and mtime are compared, and
   inserts without ON CONFLICT, and the batch conflict unchecked.
 
 The open-time identity check alone survives, by design (N-126).
+
+**Round 15: multi-disc candidates (§7.2 rules 2 and 3, §7.3, §7.4, §7.6).**
+The placeholder `multidisc_not_supported_yet` is gone.
+
+| Piece | Role |
+|---|---|
+| `group` / `discShaped` / `multiDisc` | rule 2: a directory without direct audio whose audio-holding children are all `CD<N>` or `Disc <N>`, at least one of them with direct audio, is one candidate (N-184 (b′)); rule 3's checks (N-183) |
+| `discNumber` (`isDiscName`) | the name rule of N-120, kept: ASCII-only folding, leading zeros, N > 0; a huge N stays over 99, never wraps |
+| `branch.Discs` | the disc directories and their numbers, given to the import by `revalidate` |
+| `splitTracks` | on the copies: a track must be directly in a disc directory; its number is the track's disc |
+| `trackTags.Disc`, `discTagWarnings` | §7.3: the directory wins over the disc tag, with `disc_tag_ignored` (N-185, kept by the owner) |
+| `numberTracks`, `renumberedPath` | per-disc numbering; `tracks_renumbered` carries the disc directory as its path in a multi-disc album, none otherwise |
+| `duplicate_disc`, `jobs.WarnDiscTagIgnored` | the new code and warning |
+
+**How it maps to DESIGN.md:**
+- **§7.2 rule 2, the shape (N-184, owner decision (b′), 2026-09-26).** A
+  directory without direct audio is rule-2 shaped when every child holding
+  audio has a disc name and at least one disc-named child has audio
+  directly in it. Otherwise rule 5 applies as in Phase 2: a data-CD backup
+  `Rips/CD1/Artist - Album/*.mp3` + `Rips/CD2/Other/*.mp3` gives two
+  independent albums, and `Box/CD1` + `Box/CD2` + `Box/Bonus` (a non-disc
+  sibling with audio) gives three.
+- **Disc directories.** In a rule-2 shaped directory every direct child
+  with a disc name is a disc directory, audio or not (N-183, confirmed by
+  the owner). One without audio contributes only attachments, but counts
+  for the checks: `CD1` next to `CD01/scan.jpg` is `duplicate_disc`,
+  `CD100/scans` is `invalid_disc`.
+- **§7.2 rule 3, in this order, each failing the branch as a whole with one
+  pre-failed import job naming the paths:**
+  - audio below a disc directory is `ambiguous_candidate`, naming the
+    misplaced file (`Box/CD1/1.flac` + `Box/CD2/Bonus/x.flac`); no partial
+    import;
+  - two disc directories with one number (`CD1`/`CD01`, `CD1`/`Disc 1`)
+    are `duplicate_disc`;
+  - a disc over 99 is `invalid_disc`;
+  - then the rejected entries and the limits, counted over every disc.
+- **§7.2 attachments.** Root files, siblings without audio, and non-audio
+  files inside the discs keep their paths (`Extras/CD1/Scans/x.jpg`).
+- **§7.2 rule 4 at the import.** Direct audio next to disc directories, or
+  audio found by content outside them, is `ambiguous_candidate`.
+- **§7.1 and the retry.** The revalidation and the stability snapshot walk
+  the whole subtree, disc directories included.
+- **§7.3.** The disc comes from the directory. Numbering is per disc: the
+  tags, or that disc alone renumbered by the natural order with
+  `tracks_renumbered`. The title falls back to the candidate's root.
+  `mixed_album` and the album artist apply across every disc.
+- **§7.4.** The LRC association stays per directory. The external cover
+  comes only from the candidate's root (N-186), so a disc-level
+  `cover.jpg` is an attachment only.
+- **§7.6.** The fingerprint is unchanged: its paths already carry the disc
+  directories (N-187).
+- **§5.1.** The planner's `Disc <D>/` layout, the LRC next to its track,
+  `cover.jpg` at the root and `Extras/CD1/...` are verified end to end by
+  `publish.TestExecuteRenderMultiDiscAlbum`.
+
+**Tests:**
+- **Pure layout tables** (`TestGroupMultiDisc`, 34 layouts):
+  - `CD1`/`CD2`, `Disc 1`/`Disc 2`, mixed case, leading zeros,
+    non-contiguous discs, a single `CD1`, disc 99, the batch root as the
+    album;
+  - the duplicates `CD1`/`CD01`, `CD1`/`Disc 1`, case-only, and one
+    without audio;
+  - `CD100` with audio and `CD100/scans` without, and a number too large
+    for an int;
+  - `CD0`, `CD 1` and `Disc1` as ordinary directories;
+  - `Box/CD1` next to `Box/Bonus`, and `CD1` + `CD2` + `Bonus` as three
+    albums;
+  - siblings and disc directories without audio;
+  - audio below a disc directory (example A), in and below one, and one
+    disc with direct audio next to one with only nested audio: ambiguous;
+  - no disc directory with direct audio (a lone `CD1/sub`, the data-CD
+    backup of example B, `CD1/A` + `CD01/B`, `CD100/A`): rule 5, no
+    duplicate or over-99 check;
+  - direct audio plus discs;
+  - nested albums next to single-disc ones;
+  - rejected entries inside and outside, unassigned files.
+- **Other pure tests:**
+  - `TestGroupMultiDiscLimits`: the exact limits over several discs;
+  - `TestDiscNumber`: separators and `İ`;
+  - `TestInferMetadata`: six disc-directory rows;
+  - `TestRenumberedWarningPath`: `tracks_renumbered` names the disc
+    directory of the renumbered disc, and has no path without one.
+- **End to end:**
+  - `TestImportMultiDiscAlbum`: disc tags overridden with the warning,
+    per-disc numbering with and without usable tags, the LRC per
+    directory, the root cover over `CD1/cover.jpg`, attachments in the
+    discs, the ignored files, the fingerprint;
+  - `TestImportMultiDiscMixedFormats`: FLAC and MP3;
+  - `TestImportMultiDiscCoverOnlyFromTheRoot`;
+  - `TestScanMultiDiscLayouts` on disk, including example B's data-CD
+    backup and `CD1` + `CD2` + `Bonus`;
+  - `TestImportMultiDiscRevalidates`: a duplicate added, audio added
+    below a disc, all the audio gone, a FLAC named `.jpg` at the root,
+    and a single-disc album that became multi-disc;
+  - `TestImportMultiDiscRefusesAChangedSource`: four changes inside the
+    discs;
+  - `TestMultiDiscFingerprint`: two discs and one disc of the same files,
+    then a skipped re-import;
+  - `TestScanMultiDiscFileLimit`: 10,001 real files over three
+    directories;
+  - `TestCrashAtTheScanCommitMultiDisc`: SIGKILL at both scan commit
+    points;
+  - `publish.TestExecuteRenderMultiDiscAlbum`: the published tree and the
+    disc tags.
+
+**Mutation-checked (N-189):**
+- the duplicate check, the over-99 check, audio below a disc falling to
+  rule 5 (the deep-audio check off), `discShaped` ignoring whether any disc
+  has direct audio, and the limits skipped for multi-disc branches;
+- `tracks_renumbered` without the disc directory's path;
+- `Disc` without its space, leading zeros counted, Unicode lowercasing;
+- the tag over the directory, the warning off, numbering over the whole
+  album;
+- the title and the cover from a disc directory;
+- root audio accepted, and the directory's disc not given to the track.
+
 
 ```sh
 scripts/check.sh ./internal/importer/...

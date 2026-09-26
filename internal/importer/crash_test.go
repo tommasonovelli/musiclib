@@ -329,3 +329,36 @@ func TestCrashAtTheScanCommit(t *testing.T) {
 		})
 	}
 }
+
+// The scan's commit interrupted with a multi-disc album and a pre-failed
+// duplicate-disc branch (§7.2 rules 2 and 3): repeating it keeps one import
+// job per branch, the failed one still failed with its reason, and one
+// two-disc album.
+func TestCrashAtTheScanCommitMultiDisc(t *testing.T) {
+	for _, at := range []string{"scan_committing", "scan_committed"} {
+		t.Run(at, func(t *testing.T) {
+			c := newCrashEnv(t)
+			c.twoTrackAlbum("Box/CD1")
+			c.flac("Box/Disc 2/1.flac", track{freq: 900, tags: []string{"ARTIST=Crash Artist", "ALBUM=Crash Album Box/CD1", "TITLE=three"}})
+			c.twoTrackAlbum("Dup/CD1")
+			c.twoTrackAlbum("Dup/CD01")
+			b := c.batch("")
+			if got := c.child("CRASH_AT=" + at).Wait(t); got != faulttest.Killed {
+				t.Fatalf("child: %q, want killed at %s", got, at)
+			}
+			c.boot()
+			c.runAll()
+			if n := c.count(`SELECT count(*) FROM jobs WHERE kind = 'import' AND batch_id = $1`, b.ID); n != 2 {
+				t.Fatalf("%d import jobs, want one per branch", n)
+			}
+			c.failed(b, "Dup", CodeDuplicateDisc)
+			a := c.done(b, "Box")
+			if len(a.Tracks) != 3 || a.Tracks[2].Disc != 2 {
+				t.Fatalf("album %+v", a.Tracks)
+			}
+			if n := c.count(`SELECT count(*) FROM albums`); n != 1 {
+				t.Fatalf("%d albums", n)
+			}
+		})
+	}
+}

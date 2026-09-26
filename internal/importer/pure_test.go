@@ -81,6 +81,11 @@ func dirOf(paths ...string) *srcDir {
 			d.Files = append(d.Files, &srcFile{Rel: p, Audio: audio})
 		}
 	}
+	// Entries by the bytes of their names, as fsops.Root.ReadDir gives them.
+	root.each(func(d *srcDir) {
+		slices.SortFunc(d.Dirs, func(a, b *srcDir) int { return strings.Compare(a.Rel, b.Rel) })
+		slices.SortFunc(d.Files, func(a, b *srcFile) int { return strings.Compare(a.Rel, b.Rel) })
+	})
 	return root
 }
 
@@ -117,15 +122,6 @@ func TestGroup(t *testing.T) {
 		{"rule 4: audio below audio", []string{"A/1.flac!", "A/Bonus/1.flac!", "B/1.flac!"},
 			map[string]string{"A": CodeAmbiguousCandidate, "B": "ok"}, nil, nil},
 		{"rule 4 deep", []string{"A/1.flac!", "A/x/y/z/1.flac!"}, map[string]string{"A": CodeAmbiguousCandidate}, nil, nil},
-		{"rule 2", []string{"Box/CD1/1.flac!", "Box/CD2/1.flac!", "Box/Art/f.jpg", "Box/notes.txt"},
-			map[string]string{"Box": CodeMultiDiscNotSupported}, nil, nil},
-		{"rule 2, one disc", []string{"Box/Disc 01/1.flac!"}, map[string]string{"Box": CodeMultiDiscNotSupported}, nil, nil},
-		{"rule 3: duplicate numbers", []string{"Box/CD1/1.flac!", "Box/cd01/1.flac!"}, map[string]string{"Box": CodeMultiDiscNotSupported}, nil, nil},
-		{"not rule 2: another audio child", []string{"Box/CD1/1.flac!", "Box/Bonus/1.flac!"},
-			map[string]string{"Box/CD1": "ok", "Box/Bonus": "ok"}, nil, nil},
-		{"not rule 2: audio below a disc", []string{"Box/CD1/1.flac!", "Box/CD2/x/1.flac!"},
-			map[string]string{"Box/CD1": "ok", "Box/CD2/x": "ok"}, nil, nil},
-		{"not rule 2: CD0", []string{"Box/CD0/1.flac!"}, map[string]string{"Box/CD0": "ok"}, nil, nil},
 		{"rejected inside a candidate", []string{"A/1.flac!", "A/Scans/link@"}, map[string]string{"A": CodeSourceRejected}, nil, nil},
 		{"rejected outside", []string{"link@", "A/1.flac!"}, map[string]string{"A": "ok"}, nil, []string{"link"}},
 		{"nothing", []string{"a.txt", "D/b.txt"}, map[string]string{}, []string{"D/b.txt", "a.txt"}, nil},
@@ -217,6 +213,7 @@ func TestInferMetadata(t *testing.T) {
 		artists       []string // "" = inherit
 		genres        []string // "-" = inherit
 		warnings      []jobs.WarningCode
+		discs         []int // checked when set
 		code          string
 	}
 	for _, tc := range []struct {
@@ -302,6 +299,33 @@ func TestInferMetadata(t *testing.T) {
 		{"track out of range", "D", []trackTags{tt("x", "TRACKNUMBER=1000")}, none, want{code: catalog.CodeInvalidTrackNumber}},
 		{"disc out of range", "D", []trackTags{tt("x", "DISCNUMBER=100")}, none, want{code: catalog.CodeInvalidDisc}},
 		{"control character", "D", []trackTags{tt("x", "TITLE=a\x01b")}, none, want{code: CodeInvalidTag}},
+		// Disc directories (§7.2 rule 2, §7.3): the directory's number wins
+		// over the disc tag, with one warning per directory whose tags
+		// disagree (N-185); numbering is per disc; the fallback title is the
+		// candidate's root, never a disc directory.
+		{"disc directories override tags, numbering per disc", "Box", []trackTags{
+			td(1, "CD1/a", "DISCNUMBER=1", "TRACKNUMBER=1"), td(1, "CD1/b", "DISCNUMBER=2", "TRACKNUMBER=2"),
+			td(2, "CD2/a", "DISCNUMBER=1", "TRACKNUMBER=1"), td(2, "CD2/b", "DISCNUMBER=1", "TRACKNUMBER=1"),
+			td(3, "CD3/a", "TRACKNUMBER=7")}, none, want{
+			artist: UnknownArtist, title: "Box", nos: []int{1, 2, 1, 2, 7}, titles: []string{"a", "b", "a", "b", "a"},
+			artists: make([]string, 5), genres: slices.Repeat([]string{"-"}, 5), discs: []int{1, 1, 2, 2, 3},
+			warnings: []jobs.WarningCode{jobs.WarnDiscTagIgnored, jobs.WarnDiscTagIgnored, jobs.WarnTracksRenumbered}}},
+		{"disc directories: tags agreeing give no warning", "Box", []trackTags{
+			td(1, "CD1/a", "DISCNUMBER=1/2", "TRACKNUMBER=1"), td(2, "Disc 02/a", "DISCNUMBER=02", "TRACKNUMBER=1")}, none, want{
+			artist: UnknownArtist, title: "Box", nos: []int{1, 1}, titles: []string{"a", "a"},
+			artists: make([]string, 2), genres: []string{"-", "-"}, discs: []int{1, 2}}},
+		{"disc directory overrides a tag beyond the schema", "Box", []trackTags{td(2, "CD2/x", "DISCNUMBER=100", "TRACKNUMBER=1")}, none, want{
+			artist: UnknownArtist, title: "Box", nos: []int{1}, titles: []string{"x"}, artists: []string{""}, genres: []string{"-"},
+			discs: []int{2}, warnings: []jobs.WarningCode{jobs.WarnDiscTagIgnored}}},
+		{"disc directories: the album and artist rules span every disc", "Box", []trackTags{
+			td(1, "CD1/a", "ALBUM=X", "ARTIST=A", "TRACKNUMBER=1"), td(2, "CD2/a", "ALBUM=Y", "ARTIST=A", "TRACKNUMBER=1")}, none,
+			want{code: CodeMixedAlbum}},
+		{"disc directories: various artists across discs", "Box", []trackTags{
+			td(1, "CD1/a", "ARTIST=A", "TRACKNUMBER=1"), td(2, "CD2/a", "ARTIST=B", "TRACKNUMBER=1")}, none, want{
+			artist: VariousArtists, title: "Box", compilation: true, nos: []int{1, 1}, titles: []string{"a", "a"},
+			artists: []string{"A", "B"}, genres: []string{"-", "-"}, discs: []int{1, 2}}},
+		{"disc directories: album artists discordant across discs", "Box", []trackTags{
+			td(1, "CD1/a", "ALBUMARTIST=A"), td(2, "CD2/a", "ALBUMARTIST=B")}, none, want{code: CodeAmbiguousAlbumArtist}},
 		{"title from a dot file", "D", []trackTags{tt(".flac", "TRACKNUMBER=1")}, none, want{
 			artist: UnknownArtist, title: "D", nos: []int{1}, titles: []string{".flac"}, artists: []string{""}, genres: []string{"-"}}},
 	} {
@@ -344,6 +368,11 @@ func TestInferMetadata(t *testing.T) {
 			}
 			got := want{artist: m.Artist, title: m.Title, year: year, genre: genre, compilation: m.Compilation,
 				nos: nos, titles: titles, artists: artists, genres: genres, warnings: codes}
+			if w.discs != nil {
+				for _, tr := range m.Tracks {
+					got.discs = append(got.discs, tr.Disc)
+				}
+			}
 			if !reflect.DeepEqual(got, w) {
 				t.Errorf("got  %+v\nwant %+v", got, w)
 			}
@@ -599,4 +628,11 @@ func TestFailureHidesDatabaseText(t *testing.T) {
 			t.Errorf("%s: message %q", tc.name, msg)
 		}
 	}
+}
+
+// td is tt for a track in a disc directory numbered disc.
+func td(disc int, path string, kv ...string) trackTags {
+	t := tt(path, kv...)
+	t.Disc = disc
+	return t
 }
