@@ -20,7 +20,7 @@ func browserEnv(t *testing.T) (*env, context.Context) {
 	t.Helper()
 	e := newEnv(t)
 	e.srv.Close()
-	listener, err := net.Listen("tcp", "127.0.0.1:8080")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,11 @@ func browserEnv(t *testing.T) (*env, context.Context) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 	e.srv = srv
-	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath("/usr/bin/chromium"), chromedp.Env(append(os.Environ(), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir(), "XDG_CACHE_HOME="+t.TempDir())...), chromedp.NoSandbox, chromedp.Flag("disable-dev-shm-usage", true), chromedp.Flag("no-proxy-server", true), chromedp.Flag("host-resolver-rules", "MAP music.test 127.0.0.1"))
+	// Browser requests use the listener's real port; the boundary must agree.
+	e.api.origin = srv.URL
+	e.api.host = listener.Addr().String()
+	e.host = e.api.host
+	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath("/usr/bin/chromium"), chromedp.Env(append(os.Environ(), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir(), "XDG_CACHE_HOME="+t.TempDir())...), chromedp.NoSandbox, chromedp.Flag("disable-dev-shm-usage", true), chromedp.Flag("no-proxy-server", true))
 	alloc, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	t.Cleanup(cancel)
 	ctx, stop := chromedp.NewContext(alloc)
@@ -70,7 +74,7 @@ func TestBrowserEditorConflictAndContent(t *testing.T) {
 	}
 	e, root := browserEnv(t)
 	id := e.seed("Browser Artist", "First title")
-	url := testOrigin + "/albums/" + id.String()
+	url := e.srv.URL + "/albums/" + id.String()
 	tab1, stop1 := chromedp.NewContext(root)
 	defer stop1()
 	tab2, stop2 := chromedp.NewContext(root)
@@ -151,7 +155,7 @@ func TestBrowserPollingStopsWhenIdle(t *testing.T) {
 	id := e.seed("Polling artist", "Polling album")
 	tab, stop := chromedp.NewContext(root)
 	defer stop()
-	if err := chromedp.Run(tab, chromedp.Navigate(testOrigin+"/albums/"+id.String()), chromedp.WaitVisible("#editor:not([hidden])")); err != nil {
+	if err := chromedp.Run(tab, chromedp.Navigate(e.srv.URL+"/albums/"+id.String()), chromedp.WaitVisible("#editor:not([hidden])")); err != nil {
 		t.Fatal(err)
 	}
 	if got := browserEval(t, tab, `document.querySelector('#status').dataset.pending`); got != "true" {

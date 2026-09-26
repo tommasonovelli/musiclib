@@ -42,11 +42,12 @@ const (
 )
 
 type env struct {
-	t   *testing.T
-	db  *pgxpool.Pool
-	api *API
-	srv *httptest.Server
-	svc *catalog.Service
+	t    *testing.T
+	db   *pgxpool.Pool
+	api  *API
+	srv  *httptest.Server
+	host string // browser tests use the listener's ephemeral port
+	svc  *catalog.Service
 
 	// The blob store on the ext4 TMPDIR (§12.1), the process budget, and
 	// the failpoint of the uploads.
@@ -175,6 +176,9 @@ func (e *env) do(r req) resp {
 		hr.ContentLength = r.length
 	}
 	hr.Host = testHost
+	if e.host != "" {
+		hr.Host = e.host
+	}
 	if r.method != nethttp.MethodGet && r.method != nethttp.MethodHead {
 		hr.Header.Set(RequestHeader, "1")
 	}

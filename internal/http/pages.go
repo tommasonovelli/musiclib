@@ -31,7 +31,7 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, notFound())
 		return
 	}
-	if r.URL.Path == "/static/app.css" || r.URL.Path == "/static/app.js" {
+	if r.URL.Path == "/static/app.css" || r.URL.Path == "/static/app.js" || r.URL.Path == "/static/queue.js" {
 		name := strings.TrimPrefix(r.URL.Path, "/static/")
 		b, err := web.Assets.ReadFile(name)
 		if err != nil {
@@ -63,9 +63,9 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/":
 		a.libraryPage(w, r, b.Catalog)
 	case r.URL.Path == "/import":
-		a.renderPage(w, r, "stub.html", pageData{Title: "Import"})
+		a.renderPage(w, r, "import.html", pageData{Title: "Import", Queue: true})
 	case r.URL.Path == "/activity":
-		a.renderPage(w, r, "stub.html", pageData{Title: "Activity"})
+		a.renderPage(w, r, "activity.html", pageData{Title: "Activity", Queue: true})
 	case strings.HasPrefix(r.URL.Path, "/albums/"):
 		id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/albums/"))
 		if err != nil || id == uuid.Nil || id.String() != strings.TrimPrefix(r.URL.Path, "/albums/") {
@@ -80,7 +80,7 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 
 type pageData struct {
 	Title, AlbumLink, Query, Next, Status string
-	Trash, Pending                        bool
+	Trash, Pending, Queue                 bool
 	Artists                               []pageArtist
 	Albums                                []pageAlbum
 	Album                                 albumJSON

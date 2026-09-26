@@ -5272,3 +5272,81 @@ actual JPEG/PNG bytes and limits before any change. The UI does not claim
 that every attachment is a valid cover; failed choices display the typed
 error without losing edits. A real-browser test uploads an image attachment,
 selects it, removes the cover and uploads a replacement.
+
+### N-210 · Import and Activity browser state — DECIDED
+DESIGN.md §6.4, §7.1–§7.3, §10.3: `/import?batch=<UUID>` is a bookmarkable
+report; there is no batch-list API. The browser generates one UUID per loaded
+import form and retains it after a failed/lost response. It disables submit
+while the POST is in flight; changing the path with that UUID is the API's 409,
+not a new import. A new intended import requires a fresh `/import` visit.
+Only directories in the confined source listing are links; everything else is
+text. Reports show the scan's warnings and typed candidate errors and clearly
+label the completed no-candidate result. The retry form contains exactly
+artist and title; blank entries send null for both (replacement), and the
+ordinary Activity retry sends an empty body (preserves overrides, N-195).
+Both views poll on a two-second timer only while their current response has
+pending/running work; an idle view makes no further requests. Activity fetches
+all pages of the existing cursor API, not just the first 50 jobs. All untrusted
+text enters the DOM through textContent; no client-side path or tag validation.
+Round 17's request/error/poll functions are scoped inside its album editor
+closure, not exportable API helpers; the queue module uses the same native
+fetch/header/textContent/timer conventions without coupling the editor's
+ETag and metadata state to queue state. No framework or client-side domain
+state was added. On an accepted import retry, the old attempt's draft is
+invalidated for that job until the first successful post-retry report render;
+that render takes the server's override values even if the new attempt has
+already failed. Reports requested before acceptance cannot render afterward
+(a per-view generation check). A rejected retry leaves the draft intact, and
+ordinary or failed polls still preserve drafts, focus and caret while editing.
+No attempt identifier or persistent client-side draft store is needed.
+
+### N-211 · Browser tests use an ephemeral HTTP listener — DECIDED
+The round-17 browser tests used port 8080, conflicting with other listeners.
+Their server now binds `127.0.0.1:0`, and its actual URL is installed as the
+test API's PUBLIC_ORIGIN and expected Host before browser navigation. The
+shared API test fixture retains its fixed origin outside browser tests. No
+product configuration or runtime Host check changed.
+
+### N-212 · Chromium dependency closure — DEFERRED (owner, 2026-09-26)
+N-204's dev-only Chromium `.deb` hash and exact version remain pinned, but its
+transitive Debian dependency versions are **not** frozen. Freezing the full
+closure without a verified, available snapshot timestamp for Chromium
+154.0.8037.57-1~deb13u1 would require resolving and testing its complete
+architecture-specific dependency graph on a clean image and maintaining a
+snapshot mirror: substituting an unverified historical timestamp could make
+the mandatory gate unbuildable. The owner deferred the closure freeze to a
+dedicated toolchain round with a verified Debian snapshot and an uncached
+rebuild. **The residual risk is that an uncached dev/test build can install
+newer ABI-compatible Debian dependency packages, or fail if the exact
+Chromium `.deb` disappears.** A cached build and the pinned runtime image are
+unaffected. That dedicated toolchain round will pin the verified snapshot
+and rebuild uncached; this does not change product behavior. No Dockerfile
+change here.
+
+### N-213 · Round-18 UI mutation checks — DECIDED
+Each JS mutant was run with the real Chromium/PostgreSQL/ext4 tests and
+reverted: generate a new UUID on submit (`TestBrowserImportLostAnswerAndConflict`
+failed); add `genre` to the retry body (`TestBrowserImportAndOverride` failed);
+show Retry for non-failed jobs (`TestBrowserActivityActionsAndIdle` failed);
+poll a completed report (`TestBrowserImportReportAndRetry` failed); and replace
+textContent with innerHTML (`TestBrowserImportReportAndRetry` failed). The
+existing N-207 escaping check for the server template remains in the gate.
+Review follow-up: `TestBrowserImportDraftSurvivesPolling` runs a failed
+candidate alongside a pending one, types both overrides in Chromium, waits
+more than four seconds and checks the active input's focus and caret after
+multiple polls and a failed poll, then verifies the persisted retry. Disabling
+the draft restoration made that test fail (`poll lost draft, focus or caret`).
+`TestBrowserActivityActionsAndIdle` now claims a real running render job and
+checks its unchanged requested/claimed tickets, unique row and missing Retry
+action after Retry failed, alongside the pending guard. Offering Retry for
+running rows made that test fail (`nonfailed job has retry`). Both mutants were
+reverted; no SQL or production retry behavior was changed.
+Follow-up: `TestBrowserImportRetryInvalidatesPreviousAttempt` holds a captured
+pre-retry report response, rejects one retry to verify retained values, then
+holds the accepted retry's response while the DB job becomes failed again.
+The post-retry report is released before the old report; it must show the
+server-normalized overrides and the new failure. Removing draft invalidation
+made the test fail at the new report (`previous attempt overwrote the new
+report`); removing the report generation guard made it fail after delivering
+the old response (same assertion). Both mutants were reverted. The test's
+fetch gates enforce the response ordering, not timer races.

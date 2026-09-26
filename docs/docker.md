@@ -57,9 +57,11 @@ for `go get`. The test/dev image also contains **Chromium 154.0.8037.57-1~deb13u
 (package SHA-256 checked in the Dockerfile), driven by the pinned Go
 `chromedp v0.14.2` module for actual browser UI tests. The runtime image
 contains neither Chromium nor Node. The browser tests use a local listener
-inside the test container; they require no published database or app port.
+inside the test container on an ephemeral localhost port, with the test
+`PUBLIC_ORIGIN` adjusted to that port; they require no published database or app port.
 The package comes from Debian's package repository at image build time;
-if that exact version is removed, see NOTES.md N-204. UI usage is described
+if that exact version is removed, or a transitive dependency changes,
+see NOTES.md N-204 and N-212 (dev/test image build risk only). UI usage is described
 in [docs/ui.md](ui.md).
 
 `dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
