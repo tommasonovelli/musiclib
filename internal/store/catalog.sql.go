@@ -677,10 +677,13 @@ const listAlbumSummaries = `-- name: ListAlbumSummaries :many
 SELECT al.id, al.revision, al.artist_id, ar.name AS artist_name, ar.folder_key AS artist_key,
        al.title, al.folder_key AS title_key, al.year, al.genre, al.compilation,
        (al.deleted_at IS NOT NULL)::boolean AS trashed,
-       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format
+       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format,
+       al.published_path, al.published_revision, al.published_renderer,
+       j.state AS job_state, j.error_code AS job_error_code, j.error_message AS job_error_message
 FROM albums al
 JOIN artists ar ON ar.id = al.artist_id
 LEFT JOIN blobs cb ON cb.hash = al.cover_hash
+LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
 WHERE (al.deleted_at IS NOT NULL) = $1::boolean
   AND (NOT $2::boolean OR al.artist_id = $3::uuid)
   AND ($4::boolean
@@ -702,20 +705,26 @@ type ListAlbumSummariesParams struct {
 }
 
 type ListAlbumSummariesRow struct {
-	ID          uuid.UUID
-	Revision    int64
-	ArtistID    uuid.UUID
-	ArtistName  string
-	ArtistKey   string
-	Title       string
-	TitleKey    string
-	Year        *int32
-	Genre       *string
-	Compilation bool
-	Trashed     bool
-	CoverHash   *string
-	CoverSize   *int64
-	CoverFormat *string
+	ID                uuid.UUID
+	Revision          int64
+	ArtistID          uuid.UUID
+	ArtistName        string
+	ArtistKey         string
+	Title             string
+	TitleKey          string
+	Year              *int32
+	Genre             *string
+	Compilation       bool
+	Trashed           bool
+	CoverHash         *string
+	CoverSize         *int64
+	CoverFormat       *string
+	PublishedPath     *string
+	PublishedRevision int64
+	PublishedRenderer *string
+	JobState          *string
+	JobErrorCode      *string
+	JobErrorMessage   *string
 }
 
 // §10.2 GET /api/albums: album summaries in the library's order, the
@@ -756,6 +765,12 @@ func (q *Queries) ListAlbumSummaries(ctx context.Context, arg ListAlbumSummaries
 			&i.CoverHash,
 			&i.CoverSize,
 			&i.CoverFormat,
+			&i.PublishedPath,
+			&i.PublishedRevision,
+			&i.PublishedRenderer,
+			&i.JobState,
+			&i.JobErrorCode,
+			&i.JobErrorMessage,
 		); err != nil {
 			return nil, err
 		}

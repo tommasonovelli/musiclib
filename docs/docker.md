@@ -53,7 +53,16 @@ layer, downloaded and verified against `go.sum` when `go.mod`/`go.sum` change.
 It tests exactly the tree it was built from, even while you keep editing.
 
 `dev` and `fuzz.sh` bind-mount the live sources instead, with network access
-for `go get`. `dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
+for `go get`. The test/dev image also contains **Chromium 154.0.8037.57-1~deb13u1**
+(package SHA-256 checked in the Dockerfile), driven by the pinned Go
+`chromedp v0.14.2` module for actual browser UI tests. The runtime image
+contains neither Chromium nor Node. The browser tests use a local listener
+inside the test container; they require no published database or app port.
+The package comes from Debian's package repository at image build time;
+if that exact version is removed, see NOTES.md N-204. UI usage is described
+in [docs/ui.md](ui.md).
+
+`dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
 so `scripts/dev.sh go test ./internal/store/...` runs the PostgreSQL tests. `fuzz.sh` needs that, so a failing input is written back to
 `<package>/testdata/fuzz/<Target>/` in your tree and can be committed.
 
@@ -175,6 +184,8 @@ knows where PostgreSQL comes from:
 mkdir -p import                                   # or set MUSICLIB_IMPORT; Compose does not create it
 docker compose --profile app up -d --build --wait # returns when app is healthy
 curl -s http://127.0.0.1:8080/health/ready        # {"status":"ready"}
+# Open http://127.0.0.1:8080/ in your browser (Library; Album editor,
+# Import and Activity navigation). Use the exact PUBLIC_ORIGIN host.
 docker compose logs -f app                        # JSON lines
 docker compose stop app && docker compose run --rm app doctor --deep && docker compose start app   # §11.3, Phase 6
 ```

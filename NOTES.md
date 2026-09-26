@@ -5193,3 +5193,82 @@ shutdown releases the lock before exiting). Production: the window is
 far shorter than Docker's restart delay, and a boot that still met it
 would stop with `volume_locked` and be restarted again (§2.2, §11.1);
 nothing is written without the lock.
+
+## UI foundation and editor (round 17)
+
+### N-203 · Page URLs and rendering — DECIDED
+DESIGN.md §2.1, §2.3 and §10.3: GET `/` is Library, `/albums/{id}` is Album,
+`/import` and `/activity` are linked placeholders for round 18. Only the last
+two are stubs. `/static/app.css` and `/static/app.js` are exact asset paths;
+`web/` is embedded by `go:embed` and HTML handlers are in `internal/http`.
+The API's atomic enabled backend, Host/Origin checks, `nosniff` and no-store
+apply to catalog pages too; HTML adds CSP `default-src 'self'; object-src
+'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. No
+inline JS or CSS and no CORS. Labels/navigation are in English as required
+by project convention even though DESIGN.md §10.3 names the four views and
+badges in Italian. This translation does not change their semantics.
+
+### N-204 · Browser tests and pinned dev tools — DECIDED, build availability risk
+The dev/test Docker image (not runtime) installs Chromium
+`154.0.8037.57-1~deb13u1` with its .deb SHA-256
+`d70bab9fbcb7bfbb7227b9510fb5cf1f7290bd6d6af3dd168b19ba4cc9b8035d`;
+the Go CDP driver is `chromedp v0.14.2` (and exact indirect versions and
+checksums in go.mod/go.sum). The base Go image remains digest-pinned. The
+browser runs inside the no-network test container, talks to a real local
+HTTP server backed by PostgreSQL 17/ext4, and is mandatory in the gate.
+Risk: Debian's live apt indexes and transitive package versions are not
+immutable; a future security-repository cleanup could remove this exact
+Chromium version and prevent an uncached Docker rebuild. Recommend freezing
+its Debian dependency closure in a dated snapshot before long-term CI use;
+no change to runtime or product behavior is needed.
+
+### N-205 · Library badges in one page query — DECIDED
+`ListAlbumSummaries` LEFT JOINs the one render job per album and returns
+published revision, renderer and path in the same snapshot as the keyset
+page. `AlbumSummary` exposes these to HTML but the JSON list's deliberate
+representation is unchanged (§10.1). No 200 extra requests/transactions.
+A missing job on an active stale album (or a trashed album still with a
+published path) reads Queued; pending/running/failed take priority; an
+archived album has neither path nor job. Actual status remains separate
+from metadata and is polled only on an album page with a pending/running job.
+
+### N-206 · Editor state and conflict behavior — DECIDED
+The SSR page reads desired album, status and artist selector; JavaScript
+holds the initial ETag and form fields only. The Save button PUTs the full
+aggregate; other content operations return a changed aggregate and then
+reload on success. A 412 or any other error never reloads or adopts the
+response ETag. Content operations warn before discarding unsaved metadata;
+deletions require explicit confirmation (album can be restored; tracks and
+attachments cannot). Null artist/genre overrides are represented by a
+visible inherited field and an explicit Inherit command; typing an empty
+genre is an explicit empty override. JS creates DOM for typed errors using
+`textContent`, not HTML. Downloads always use entity-id URLs. The JS polls
+at 2-second intervals while a pending or running render exists and stops
+requesting status when idle; it does not fetch the status for list entries.
+
+### N-207 · UI mutation checks — DECIDED
+Mutants run against real PostgreSQL/Chromium and reverted: omit `If-Match`
+(`TestBrowserEditorConflictAndContent` timed out on save), reload on a 412
+(the conflict message/edits assertion timed out), omit track deletion
+confirmation (cancelled deletion removed a track after the test awaited the
+request), substitute `text/template` for `html/template`
+(`TestPagesCatalogEscapingAndBoundary` found a raw script in Library).
+
+### N-208 · Read-only Album without JavaScript — DECIDED
+The album page renders a read-only summary, track list and entity-id download
+links alongside its editor. The editor is hidden in HTML until the JS module
+loads, when it replaces the read-only summary. Thus no-JS users cannot
+submit a misleading form but can still read metadata and download content.
+On the Library the Album navigation item links to the first album of the
+current page (when present); on an empty list or a round-18 placeholder it
+asks the user to select an album rather than linking to the wrong view.
+
+### N-209 · Cover choice lists attachments without format hints — DECIDED
+Attachment uploads may store `blobs.format = NULL`; the upload API does not
+classify arbitrary attachment contents. The album page therefore offers all
+of its attachments in the cover selector rather than filtering solely on
+that nullable hint. `PUT /cover` opens the selected blob and validates the
+actual JPEG/PNG bytes and limits before any change. The UI does not claim
+that every attachment is a valid cover; failed choices display the typed
+error without losing edits. A real-browser test uploads an image attachment,
+selects it, removes the cover and uploads a replacement.

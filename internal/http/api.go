@@ -97,6 +97,7 @@ type API struct {
 // state is either a router over a catalog, or the 503 to answer.
 type state struct {
 	router  nethttp.Handler
+	backend Backend
 	code    string
 	message string
 }
@@ -119,7 +120,7 @@ func New(cfg Config) (*API, error) {
 
 // Enable makes the API serve b: the end of the boot (§11.1 step 7).
 func (a *API) Enable(b Backend) {
-	a.state.Store(&state{router: a.routes(b)})
+	a.state.Store(&state{router: a.routes(b), backend: b})
 }
 
 // Disable makes every /api request answer 503 with code and message: at

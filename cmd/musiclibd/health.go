@@ -32,6 +32,16 @@ func (d *daemon) routes() http.Handler {
 	mux.HandleFunc("GET /health/ready", d.handleReady)
 	mux.Handle("/api", d.api)
 	mux.Handle("/api/", d.api)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// The catch-all must not turn wrong-method health probes into page
+		// requests: health remains outside the page Host boundary.
+		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		d.api.Pages(w, r)
+	})
 	return apihttp.SecurityHeaders(mux)
 }
 

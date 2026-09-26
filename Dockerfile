@@ -214,6 +214,13 @@ COPY --from=build-lame /opt/lame/bin/lame /usr/local/bin/lame
 # for the hostile-input tests (toolchain images only).
 COPY --from=build-tags /opt/musiclib-tags/bin/musiclib-tags /opt/musiclib-tags/bin/musiclib-tags-asan /usr/local/bin/
 
+# Dev/test-only real browser for the §12.1 UI tests. The exact Chromium
+# package version is pinned; the runtime stage does not inherit it.
+RUN apt-get update \
+ && apt-get download chromium=154.0.8037.57-1~deb13u1 \
+ && echo 'd70bab9fbcb7bfbb7227b9510fb5cf1f7290bd6d6af3dd168b19ba4cc9b8035d  chromium_154.0.8037.57-1~deb13u1_amd64.deb' | sha256sum -c - \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./chromium_154.0.8037.57-1~deb13u1_amd64.deb \
+ && rm -f chromium_*.deb && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 USER dev
 

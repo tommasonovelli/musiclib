@@ -60,6 +60,13 @@ type AlbumSummary struct {
 	Compilation bool
 	Trashed     bool
 	Cover       *BlobRef
+	// Processing state is read with the page, not by fetching every album separately.
+	PublishedPath     *string
+	PublishedRevision int64
+	PublishedRenderer *string
+	JobState          *string
+	JobErrorCode      *string
+	JobErrorMessage   *string
 	// Cursor is this album's position in the order.
 	Cursor AlbumCursor
 }
@@ -151,6 +158,9 @@ func albumSummary(r store.ListAlbumSummariesRow) AlbumSummary {
 	a := AlbumSummary{
 		ID: r.ID, Revision: r.Revision, ArtistID: r.ArtistID, ArtistName: r.ArtistName, Title: r.Title,
 		Year: r.Year, Genre: r.Genre, Compilation: r.Compilation, Trashed: r.Trashed,
+		PublishedPath: r.PublishedPath, PublishedRevision: r.PublishedRevision,
+		PublishedRenderer: r.PublishedRenderer, JobState: r.JobState,
+		JobErrorCode: r.JobErrorCode, JobErrorMessage: r.JobErrorMessage,
 		Cursor: AlbumCursor{ArtistKey: r.ArtistKey, TitleKey: r.TitleKey, ID: r.ID},
 	}
 	if r.CoverHash != nil {

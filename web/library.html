@@ -1,0 +1,3 @@
+{{define "body"}}<form method="get" action="/"><label>Search title or artist <input name="q" value="{{.Query}}"></label><label>Artist <select name="artist"><option value="">All artists</option>{{range .Artists}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></label><label>Trash <input type="checkbox" name="trash" value="true" {{if .Trash}}checked{{end}}></label><button>Search</button></form>
+{{if .Albums}}<ul class="albums">{{range .Albums}}<li><a href="/albums/{{.ID}}">{{.ArtistName}} — {{.Title}}</a> <span class="badge">{{.Status}}</span></li>{{end}}</ul>{{else}}<p>No albums found.</p>{{end}}
+{{if .Next}}<a href="{{.Next}}" rel="next">Next page</a>{{end}}{{end}}

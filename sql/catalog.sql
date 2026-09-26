@@ -217,10 +217,13 @@ DELETE FROM tracks WHERE id = @id AND album_id = @album_id;
 SELECT al.id, al.revision, al.artist_id, ar.name AS artist_name, ar.folder_key AS artist_key,
        al.title, al.folder_key AS title_key, al.year, al.genre, al.compilation,
        (al.deleted_at IS NOT NULL)::boolean AS trashed,
-       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format
+       al.cover_hash, cb.size AS cover_size, cb.format AS cover_format,
+       al.published_path, al.published_revision, al.published_renderer,
+       j.state AS job_state, j.error_code AS job_error_code, j.error_message AS job_error_message
 FROM albums al
 JOIN artists ar ON ar.id = al.artist_id
 LEFT JOIN blobs cb ON cb.hash = al.cover_hash
+LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
 WHERE (al.deleted_at IS NOT NULL) = @trashed::boolean
   AND (NOT @by_artist::boolean OR al.artist_id = @artist_id::uuid)
   AND (@first::boolean
