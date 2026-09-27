@@ -1,6 +1,6 @@
 # Contributing to Musiclib
 
-Read the [README](README.md), [design](DESIGN.md) and relevant [decisions](NOTES.md) before changing behavior. The project license is still awaiting the owner's decision; clarify contribution and redistribution terms with the maintainer before submitting code or third-party material.
+Read the [README](README.md), [design](DESIGN.md) and relevant [decisions](NOTES.md) before changing behavior. Contributions of original code and documentation must be available under the project's [MIT License](LICENSE). Include the origin and applicable license of any third-party material, preserve its notices, and clarify compatibility with the maintainer before submitting it.
 
 ## Development setup
 
