@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"musiclib/internal/catalog"
 )
 
 func pageRequest(t *testing.T, e *env, path, host string) (int, http.Header, string) {
@@ -156,5 +158,27 @@ func TestStatusBadges(t *testing.T) {
 				t.Fatal(fmt.Sprintf("%s != %s", got, tc.want))
 			}
 		})
+	}
+}
+
+// Every download link the album page renders must reach a real endpoint.
+func TestAlbumPageLinksResolve(t *testing.T) {
+	e := newEnv(t)
+	e.srv.Close()
+	mux := http.NewServeMux()
+	mux.Handle("/api/", e.api)
+	mux.HandleFunc("/", e.api.Pages)
+	e.srv = httptest.NewServer(mux)
+	a := e.seedReal("Miles Davis", "Kind of Blue", catalog.FormatFLAC)
+	_, _, body := pageRequest(t, e, "/albums/"+a.id.String(), testHost)
+	links := regexp.MustCompile(`href="(/api/[^"]+)"`).FindAllStringSubmatch(body, -1)
+	if len(links) == 0 {
+		t.Fatal("no download links")
+	}
+	for _, m := range links {
+		path := html.UnescapeString(m[1])
+		if d := e.download("GET", path); d.status != http.StatusOK {
+			t.Errorf("%s: %d %s", path, d.status, d.body)
+		}
 	}
 }
