@@ -5537,3 +5537,76 @@ time; a consolidation review of the result found and fixed:
   refused by identity with `backup_destination`; the §12.3 acceptance keeps
   one edition trashed across backup/restore and checks it is not published.
 No `*.bak`, mutant or scratch file was found in the tree.
+
+### N-236 · Round 19 UI visual language — DECIDED (owner, 2026-09-27)
+DESIGN.md §10.3 fixes the behaviour of the four views, not their appearance,
+so the round changed presentation only: no endpoint, handler, template data,
+polling rule, confirmation or error semantic was touched. The owner asked
+mid-round for "uno stile brutalista un po' stile figma", so `web/app.css` was
+rewritten in a flat structural language: square corners (2px on controls,
+0 elsewhere), one hairline grid with a near-black 1px outline on every panel
+and control, **no shadows and no blur**, a monospaced stack for labels,
+badges, paths, numbers and timestamps, one electric accent, and a system sans
+for content. All colours are custom properties on `:root`, redefined under
+`@media (prefers-color-scheme: dark)`; `color-scheme: light dark` is kept and
+there is no theme switcher. `prefers-reduced-motion` disables the only
+animation (the pending status dot) and all transitions. Contrast was checked
+per token against its own background: `--link` is separate from `--accent`
+because a link needs 4.5:1 on the page while a filled button needs 4.5:1
+against its own label, and in dark mode the accent fill carries near-black
+text for the same reason.
+
+### N-237 · No image assets at all: the CSP blocks `data:` URIs — DECIDED
+`API.Pages` sends `default-src 'self'` with no `img-src`, so a `data:` SVG in
+`mask-image` is blocked and rendered as an empty box. The first attempt at
+folder/file glyphs in the import browser failed silently for exactly this
+reason. They are now drawn with `clip-path` polygons on `::before`, and
+`web/app.css` contains no `url()` at all. Any future icon must be CSS-drawn,
+inline SVG in the template, or added to the CSP by the owner — the latter is
+a security decision (§10.4), not a styling one.
+
+### N-238 · The album status chip colours follow the live status — DECIDED
+`web/album.html` renders `data-status` on `#status` next to the existing
+`data-pending`, and the CSS keys the four §10.3 values (Aligned / Queued /
+Processing / Error, plus Archived as the neutral default) off it. The 2-second
+poll in `web/app.js` already rewrote `textContent`; it now also writes
+`dataset.status` with the same label, so the colour cannot go stale while the
+text changes. No request, interval or state logic was modified.
+
+### N-239 · Only the applicable album action is shown — DECIDED
+`#editor` already carries `data-trashed`; CSS now hides `[data-action=restore]`
+on an active album and `[data-action=trash]` on a trashed one. Offering the
+inapplicable command was never useful, §10.3 only requires that restoring be
+explicit, and the attribute is server-rendered and refreshed by the reload
+that every command performs. The browser tests click trash while active and
+restore while trashed, so both remain visible when they apply.
+
+### N-240 · `TestLibraryCursor` pins the exact markup of the pager link — TO CONFIRM
+`internal/http/pages_test.go` matches `<a href="([^"]+)" rel="next">` with a
+regular expression, so the "Next page" link cannot carry a `class` (or any
+other attribute between `<a` and `rel`). It is styled through `.pager a`
+instead. The coupling is invisible from the template and cost one gate cycle
+to find; a future round may prefer to relax the assertion to a DOM query. No
+behaviour depends on it.
+
+### N-241 · Compact track table: `aria-label` replaces the per-cell labels — DECIDED
+The editor's track rows used a visible `<label>` per cell, duplicating the
+column header six times per track. Each control now carries an `aria-label`
+naming its field and its track ("Genre, track 1.2"), the real `<th>` header
+cells are unchanged, and the remove column's header keeps its text in a
+visually hidden span. Two consequences worth recording: the hidden span is
+absolutely positioned, which widened the document to 1273px at a 380px
+viewport until `.table-wrap` was made the containing block (measured in
+Chromium, not guessed); and the numeric inputs need a fixed `width`, not
+`100%`, or the auto table layout squeezes the disc column to a few pixels.
+
+### N-242 · The queue views' generated DOM is a test contract — DECIDED
+`web/queue.js` now builds rows instead of single text nodes (a `.row-head`
+first child, a `.row-error` paragraph, a `.warnings` list, a `.row-actions`
+container holding the links and the retry form). The chromedp tests read
+`li.firstChild.textContent` for the state and the source path, take the first
+`<a>` of `#source-entries`, the first `<button>` of `#jobs` and the first
+`<form>` of `#candidates`, and require non-navigable source entries to contain
+no link: the new structure preserves every one of these, and the whole gate
+passed without touching a single test line. Anyone restructuring these lists
+again must re-read `internal/http/*browser_test.go` first.

@@ -8,7 +8,7 @@ function text(parent, tag, value) {
 }
 function error(value, background = false) {
   errorBox.replaceChildren();
-  text(errorBox, 'strong', `${value.status ? value.status + ' ' : ''}${value.code || 'network_error'}: ${value.message || 'Cannot reach the server'}`);
+  text(errorBox, 'strong', `${value.status ? value.status + ' ' : ''}${value.code || 'network_error'}: ${value.message || 'Cannot reach the server'}`).className = 'notice-title';
   errorBox.hidden = false;
   if (!background) errorBox.focus();
 }
@@ -23,6 +23,12 @@ async function request(url, method = 'GET', payload, background = false) {
     return result;
   } catch { error({ code: 'network_error', message: 'Cannot reach the server' }, background); return null; }
 }
+function badge(parent, state) {
+  const node = text(parent, 'span', state);
+  node.className = 'badge';
+  node.dataset.state = state;
+  return node;
+}
 function link(parent, href, label) {
   const anchor = text(parent, 'a', label);
   anchor.href = href;
@@ -30,7 +36,13 @@ function link(parent, href, label) {
 }
 function warnings(parent, values) {
   parent.replaceChildren();
-  for (const w of values || []) text(parent, 'li', `${w.path || ''} ${w.code}: ${w.message}`);
+  for (const w of values || []) {
+    const item = text(parent, 'li', '');
+    if (w.path) text(item, 'span', w.path).className = 'warning-path';
+    text(item, 'span', w.code).className = 'warning-code';
+    text(item, 'span', w.message).className = 'warning-message';
+  }
+  parent.hidden = !parent.childElementCount;
 }
 function jobLinks(parent, job) {
   if (job.batch_id) link(parent, `/import?batch=${encodeURIComponent(job.batch_id)}`, 'Batch report');
@@ -39,15 +51,19 @@ function jobLinks(parent, job) {
 function retry(parent, job, refresh, overrides = false) {
   if (job.state !== 'failed') return;
   const form = text(parent, 'form', '');
+  form.className = 'retry-form';
   if (overrides && job.kind === 'import') {
     for (const field of ['artist', 'title']) {
-      const label = text(form, 'label', `${field === 'artist' ? 'Album artist' : 'Album title'} override (blank clears): `);
+      const label = text(form, 'label', '');
+      label.className = 'field';
+      text(label, 'span', `${field === 'artist' ? 'Album artist' : 'Album title'} (blank clears)`);
       const input = text(label, 'input', '');
       input.name = field;
       input.value = job.overrides?.[field] || '';
     }
   }
   const button = text(form, 'button', 'Retry');
+  button.className = 'btn btn-sm btn-primary';
   button.type = 'submit';
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -79,16 +95,29 @@ if (source) {
     entries.replaceChildren();
     if (data.path) {
       const up = data.path.split('/').slice(0, -1).join('/');
-      link(text(entries, 'li', ''), '#', '..').addEventListener('click', event => { event.preventDefault(); browse(up); });
+      const item = text(entries, 'li', '');
+      item.className = 'browser-entry entry-up';
+      const anchor = link(item, '#', '..');
+      anchor.className = 'entry-link';
+      anchor.setAttribute('aria-label', 'Parent directory');
+      anchor.addEventListener('click', event => { event.preventDefault(); browse(up); });
     }
     for (const entry of data.entries) {
       const li = text(entries, 'li', '');
+      li.className = 'browser-entry';
       if (entry.type === 'directory') {
-        link(li, '#', entry.name + '/').addEventListener('click', event => {
+        const anchor = link(li, '#', entry.name + '/');
+        anchor.className = 'entry-link entry-directory';
+        anchor.addEventListener('click', event => {
           event.preventDefault(); browse(data.path ? `${data.path}/${entry.name}` : entry.name);
         });
-      } else li.textContent = `${entry.name} (${entry.type}; not navigable)`;
+      } else {
+        li.classList.add('entry-inert');
+        text(li, 'span', entry.name).className = 'entry-name';
+        text(li, 'span', `${entry.type}; not navigable`).className = 'entry-kind';
+      }
     }
+    if (!entries.childElementCount) text(entries, 'li', 'This directory is empty.').className = 'empty-row';
   }
   async function loadReport(id, background = false) {
     const generation = reportGeneration;
@@ -113,16 +142,25 @@ if (source) {
     source.hidden = true; report.hidden = false;
     document.querySelector('#batch-state').textContent = `${data.path || '/import'} — ${data.state} — created ${data.created_at}`;
     document.querySelector('#scan').textContent = `${data.scan.state}${data.scan.error_code ? ': ' + data.scan.error_code + ' — ' + data.scan.error_message : ''}`;
-    warnings(document.querySelector('#scan-warnings'), data.scan.warnings);
+    const scanWarnings = document.querySelector('#scan-warnings');
+    warnings(scanWarnings, data.scan.warnings);
+    document.querySelector('#warnings-section').hidden = scanWarnings.hidden;
     const list = document.querySelector('#candidates'); list.replaceChildren();
-    if (!data.candidates.length) text(list, 'li', data.state === 'completed' ? 'No valid candidate. See scan error and warnings above.' : 'Scanning for candidates…');
+    if (!data.candidates.length) text(list, 'li', data.state === 'completed' ? 'No valid candidate. See scan error and warnings above.' : 'Scanning for candidates…').className = 'empty-row';
     for (const job of data.candidates) {
-      const li = text(list, 'li', `${job.source_rel} — ${job.state}`);
+      const li = text(list, 'li', '');
+      li.className = 'candidate';
       li.dataset.jobId = job.id;
-      if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`);
-      jobLinks(li, job);
-      const warningList = text(li, 'ul', ''); warnings(warningList, job.warnings);
-      retry(li, job, () => {
+      const head = text(li, 'div', '');
+      head.className = 'row-head';
+      text(head, 'span', job.source_rel).className = 'row-main';
+      badge(head, job.state);
+      if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`).className = 'row-error';
+      const warningList = text(li, 'ul', ''); warningList.className = 'warnings'; warnings(warningList, job.warnings);
+      const actions = text(li, 'div', '');
+      actions.className = 'row-actions';
+      jobLinks(actions, job);
+      retry(actions, job, () => {
         // A successful retry starts a new attempt: never carry its old form forward.
         invalidatedDrafts.add(job.id);
         reportGeneration++;
@@ -169,12 +207,24 @@ if (activity) {
     } while (after);
     activity.replaceChildren();
     for (const job of all) {
-      const li = text(activity, 'li', `${job.kind}${job.source_rel ? ' — ' + job.source_rel : ''} — ${job.state} — queued ${job.queued_at}, updated ${job.updated_at}`);
-      if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`);
-      jobLinks(li, job);
-      retry(li, job, refresh);
+      const li = text(activity, 'li', '');
+      li.className = 'job';
+      const head = text(li, 'div', '');
+      head.className = 'row-head';
+      badge(head, job.state);
+      text(head, 'span', `${job.kind}${job.source_rel ? ' — ' + job.source_rel : ''}`).className = 'row-main';
+      text(head, 'span', `queued ${job.queued_at}, updated ${job.updated_at}`).className = 'row-times';
+      if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`).className = 'row-error';
+      const actions = text(li, 'div', '');
+      actions.className = 'row-actions';
+      jobLinks(actions, job);
+      retry(actions, job, refresh);
     }
-    if (!all.length) text(activity, 'li', 'No pending, running or failed jobs.');
+    if (!all.length) {
+      const li = text(activity, 'li', 'No pending, running or failed jobs.');
+      li.className = 'empty-row';
+      text(li, 'p', 'Imports and renders appear here while they are pending, running or failed.').className = 'empty-hint';
+    }
     active = all.some(job => job.state === 'pending' || job.state === 'running');
     document.querySelector('#nav-active').hidden = !active;
     document.querySelector('#activity-state').textContent = `${all.length} jobs${active ? ' — work in progress' : ' — idle'}`;

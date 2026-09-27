@@ -16,15 +16,18 @@ if (editor) {
   function showError(error) {
     errorBox.replaceChildren();
     const title = document.createElement('strong');
+    title.className = 'notice-title';
     title.textContent = `${error.code || 'request_failed'}: ${error.message || 'Request failed'}`;
     errorBox.append(title);
     if (error.details && Object.keys(error.details).length) {
       const details = document.createElement('pre');
+      details.className = 'notice-details';
       details.textContent = JSON.stringify(error.details, null, 2);
       errorBox.append(details);
     }
     if (error.status === 412) {
       const message = document.createElement('p');
+      message.className = 'notice-hint';
       message.textContent = 'Another window saved a newer revision. Your edits are still here. Copy them or reload and re-apply them; this page will not overwrite the newer data.';
       errorBox.append(message);
     }
@@ -156,7 +159,9 @@ if (editor) {
       const data = await response.json();
       const state = data.job?.state;
       status.dataset.pending = state === 'pending' || state === 'running' ? 'true' : 'false';
-      status.textContent = state === 'failed' ? 'Error' : state === 'running' ? 'Processing' : state === 'pending' ? 'Queued' : data.trashed && !data.published_path ? 'Archived' : data.revision === data.published_revision && data.published_renderer === data.renderer && data.published_path ? 'Aligned' : 'Queued';
+      const label = state === 'failed' ? 'Error' : state === 'running' ? 'Processing' : state === 'pending' ? 'Queued' : data.trashed && !data.published_path ? 'Archived' : data.revision === data.published_revision && data.published_renderer === data.renderer && data.published_path ? 'Aligned' : 'Queued';
+      status.textContent = label;
+      status.dataset.status = label; // The chip colour follows the live status, not only the rendered one.
     } catch { /* Keep the pending state and retry on the next tick. */ }
   }
   // One timer per album page; no requests after activity ceases.

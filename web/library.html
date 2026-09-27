@@ -1,3 +1,7 @@
-{{define "body"}}<form method="get" action="/"><label>Search title or artist <input name="q" value="{{.Query}}"></label><label>Artist <select name="artist"><option value="">All artists</option>{{range .Artists}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></label><label>Trash <input type="checkbox" name="trash" value="true" {{if .Trash}}checked{{end}}></label><button>Search</button></form>
-{{if .Albums}}<ul class="albums">{{range .Albums}}<li><a href="/albums/{{.ID}}">{{.ArtistName}} — {{.Title}}</a> <span class="badge">{{.Status}}</span></li>{{end}}</ul>{{else}}<p>No albums found.</p>{{end}}
-{{if .Next}}<a href="{{.Next}}" rel="next">Next page</a>{{end}}{{end}}
+{{define "body"}}<form class="filterbar" method="get" action="/" role="search">
+<div class="field field-grow"><label for="filter-q">Search</label><input id="filter-q" name="q" value="{{.Query}}" placeholder="Title or artist" autocomplete="off"></div>
+<div class="field field-artist"><label for="filter-artist">Artist</label><select id="filter-artist" name="artist"><option value="">All artists</option>{{range .Artists}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></div>
+<div class="field-toggle"><input type="checkbox" id="filter-trash" name="trash" value="true" {{if .Trash}}checked{{end}}><label for="filter-trash">Trash only</label></div>
+<button class="btn btn-primary" type="submit">Search</button></form>
+{{if .Albums}}<ul class="albums">{{range .Albums}}<li><a class="album-row" href="/albums/{{.ID}}"><span class="album-names"><span class="album-artist">{{.ArtistName}}</span><span class="album-title">{{.Title}}</span></span><span class="badge" data-status="{{.Status}}">{{.Status}}</span></a></li>{{end}}</ul>{{else}}<div class="empty"><p class="empty-title">No albums found.</p><p class="empty-hint">{{if .Trash}}The trash is empty for this filter.{{else}}Adjust the search or import a directory from the Import view.{{end}}</p></div>{{end}}
+{{if .Next}}<nav class="pager" aria-label="Pagination"><a href="{{.Next}}" rel="next">Next page</a></nav>{{end}}{{end}}
