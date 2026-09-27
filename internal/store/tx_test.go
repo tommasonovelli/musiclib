@@ -221,8 +221,11 @@ func TestDeadlockRetried(t *testing.T) {
 			t.Fatalf("deadlocked transaction not retried: %v", err)
 		}
 	}
-	if n := runs.Load(); n != 3 {
-		t.Errorf("%d runs, want 3 (the deadlock victim once more)", n)
+	// The victim's first retry can take a REPEATABLE READ snapshot before
+	// the survivor commits. PostgreSQL then reports 40001 on that retry,
+	// requiring another run. Both outcomes exercise the real retry policy.
+	if n := runs.Load(); n < 3 || n > 8 {
+		t.Errorf("%d runs, want at least one retry and at most four per transaction", n)
 	}
 }
 

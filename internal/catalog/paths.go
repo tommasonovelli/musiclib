@@ -76,6 +76,12 @@ func (c claimSources) union() []Path {
 	return out
 }
 
+// ExpectedClaims exposes the same pure §5.3 union used by ReconcileClaims
+// to read-only integrity checks; no SQL or filesystem access is involved.
+func ExpectedClaims(desired *Path, published, journalNew, journalOld string) []Path {
+	return (claimSources{desired: desired, published: published, journalNew: journalNew, journalOld: journalOld}).union()
+}
+
 // albumClaims derives the claims an album must hold from its current state
 // in tx: the album row, its artist and the publication journal.
 func albumClaims(ctx context.Context, tx *store.CatalogTx, albumID uuid.UUID) ([]Path, error) {

@@ -5307,7 +5307,9 @@ test API's PUBLIC_ORIGIN and expected Host before browser navigation. The
 shared API test fixture retains its fixed origin outside browser tests. No
 product configuration or runtime Host check changed.
 
-### N-212 · Chromium dependency closure — DEFERRED (owner, 2026-09-26)
+### N-212 · Chromium dependency closure — DECIDED (Phase 6)
+The dev/test-only Chromium `.deb`, SHA-256 and its transitive Debian dependency closure are pinned to the signed Debian `trixie` and `trixie-security` snapshots at `20260926T000000Z` in `Dockerfile`. The snapshot contains the verified exact `154.0.8037.57-1~deb13u1` package. `docker build --no-cache --target toolchain --progress=plain -t musiclib-toolchain-snapshot .` passed on 2026-09-27, including SHA-256 check and the PostgreSQL 17.11 client installation; `scripts/check.sh` passed after this build. The runtime stage does not inherit Chromium, and `docker run --rm --entrypoint /bin/sh musiclib-app:local -c 'test ! -e /usr/bin/chromium && test ! -e /usr/local/bin/node'` passed with Git Bash path conversion disabled. Snapshot metadata is authenticated by apt's signed InRelease; snapshot reproducibility still depends on availability of the remote archive. Historical context follows (superseded):
+
 N-204's dev-only Chromium `.deb` hash and exact version remain pinned, but its
 transitive Debian dependency versions are **not** frozen. Freezing the full
 closure without a verified, available snapshot timestamp for Chromium
@@ -5350,3 +5352,188 @@ made the test fail at the new report (`previous attempt overwrote the new
 report`); removing the report generation guard made it fail after delivering
 the old response (same assertion). Both mutants were reverted. The test's
 fetch gates enforce the response ordering, not timer races.
+
+### N-214 · Maintenance marker retry and durability — DECIDED
+DESIGN.md §11.3–§11.4: a repeated maintenance operation on the same store
+reuses the existing, byte-identical marker and fsyncs its parent again; a
+marker for another operation or store is never changed. A partial temporary
+from an interrupted marker write may be removed before creating a new
+fsynced temporary; installation uses `RENAME_NOREPLACE` and the parent is
+synced. Marker removal verifies both fields before unlink and syncs the
+parent. Tests SIGKILL the actual child process at each marker transition,
+verify boot refusal while the marker exists, and repeat on ext4. Omitting
+marker installation made `TestMaintenanceMarkerCreationAndRefusals` fail;
+the mutant was restored. The marker is used by the completed `rebuild` and
+`restore` commands (N-218, N-221, N-235); Phase 6 is complete.
+
+### N-215 · Deadlock test has an extra serialization retry — DECIDED
+The whole-module gate exposed an existing scheduling-sensitive assumption in
+`store.TestDeadlockRetried`: four total runs rather than three. With two
+REPEATABLE READ transactions deadlocking, the victim can restart before the
+survivor commits and encounter 40001 on that snapshot, requiring another
+retry. The test now requires at least one retry and at most four runs per
+transaction, the existing §6.4 bound. No production retry setting or timeout
+changed. `-race -count=3` on the store and volume packages passes; the
+initial full gate failed on this test; the subsequent whole-module gate passed.
+
+### N-216 · Read-only doctor inventory — DECIDED (completed in Phase 6)
+DESIGN.md §11.3: `internal/maintenance.Doctor` uses sqlc inventory queries and
+confined fsops reads. `blobstore.OpenReadOnly` avoids the `work/blobs` creation
+performed by `blobstore.New`. Referenced originals are checked for existence
+and size; the deep scan hashes present originals and receipt-listed output.
+An unreferenced catalog blob or orphan on disk is informational and never
+removed. A missing unreferenced catalog blob is not damage; a present one is
+hashed by deep doctor. `TestDoctorDetectsUnchangedSizeAndMtimeDamage` killed a
+mutant that disabled deep output hashing. Tests exercise real PostgreSQL 17 and
+ext4 with symlinks, a journal, pending work, damaged files and claims.
+
+Historical warning resolved: the CLI takes the flock and uses read-only
+`IdentifyExisting` and `OpenExistingLayout`. Structural checks and real
+render/rebuild repair are now tested; the doctor leaves journals untouched.
+
+### N-217 · Offline doctor does not initialize or migrate — DECIDED
+DESIGN.md §11.3 calls doctor read-only. The CLI now uses
+`volume.IdentifyExisting` and `OpenExistingLayout`, not the server's
+initializing methods. It takes the flock before connecting; it pings
+PostgreSQL with a 10-second deadline and refuses an absent store marker or
+unreachable database. It does **not** apply migrations: even creating the
+goose version table would violate read-only inspection. Run the normal boot
+with new binaries first to apply migrations. `.lock` is the sole permitted
+volume write for an empty root, since acquiring the lock creates it.
+`doctor` emits findings to stdout and JSON lines to stderr; exit 0 = no
+errors (warnings allowed), 1 = damage, 2 = refusal/usage; an inspection failure after starting returns 1.
+The named `doctor_*` codes are findings. `TestDoctorReadOnlyAndRefusals`,
+`TestDoctorLockRefusal`, `volume.TestReadOnlyVolumeDoesNotInitialize` and
+`TestReadOnlyVolumeIdentifiesExistingWithoutChangingMarkers` run against
+real PostgreSQL and ext4. N-216's earlier warning predates this work.
+Real render repair and command-level tests are now included in the full gate.
+Backup and restore are implemented and tested (N-221–N-224).
+
+### N-218 · Rebuild resets only derived state, including trashed outputs — DECIDED
+DESIGN.md §4.3, §9.1 and §11.3: trashed albums keep their catalog metadata
+and originals, but their output is removed along with library/ and they do
+not receive new claims or render jobs. The catalog service executes journal,
+publication-state, render-job and reservation resets followed by the one
+`ReconcileClaims` and `EnqueueRender` per active album, all under one catalog
+transaction. Rebuild checks the store UUID against both markers (paired by
+`IdentifyExisting`) before installing its durable maintenance marker.
+`RemoveAll` never follows symlinks; `checkDeletionTree` preflights every
+directory's mount id, including nested bind mounts, before descending, and
+refuses top-level non-directories. The data volume cannot be remounted by the
+unprivileged process during maintenance; an external privileged remount
+concurrent with deletion is outside the one-process volume contract. Crashes
+at six named points were SIGKILL-tested three times each; retry on the same
+store converges from partial deletion or a committed transaction. A mutant
+omitting `RebuildClearPublished` failed
+`TestRebuildKeepsCatalogAndOriginals` (count 0 instead of 1); restored.
+Exit 2 refuses a missing/incorrect store id or an unavailable DB; exit 1
+means the operation was attempted but did not complete. When a marker exists,
+repeat the same command; **never delete the marker manually**. The real renderer/doctor convergence and command-level refusal tests pass.
+
+### N-219 · Backup, restore and release acceptance — RESOLVED (Phase 6)
+The earlier text below describes the pre-Phase-6 tree and is superseded. Offline backup and restore, real SIGKILL tests, an end-to-end restore and a real-process §12.3 collection are now implemented and included in the full gate. N-017 remains OPEN pending a native Linux Engine/ext4 run. Historical context:
+
+DESIGN.md §11.4, §12.2, §12.3 are not implemented or tested in this tree.
+The runtime lacks pg_dump/pg_restore and /backup; no backup/restore CLI or
+Compose scripts have been added. Neither a restore crash nor the end-to-end
+release acceptance exists. These are implementation gaps, **not** owner
+ambiguities or a tested blocker. Do not deploy this build as release-ready,
+do not clear a restore marker by hand, and do not claim the final three matrix
+rows are complete. N-017 (native Engine/ext4 run) and N-212 (Chromium closure)
+also remain OPEN.
+
+### N-220 · Shutdown select raced with a clean pool exit — RESOLVED
+The first `-race -count=2` repeat across touched packages failed once in
+`cmd/musiclibd.TestBootCleansWork`: `workers_stopped` instead of a normal
+stop. The pool's nil exit and the caller's canceled context can both be
+ready in `run`'s select, making the random branch classify the normal
+shutdown as an unsolicited worker exit. `run` now checks `ctx.Err()` on a
+nil pool result before reporting `workers_stopped`. Fatal worker errors
+still win even during cancellation. No timeout was changed. Re-running
+`TestBootCleansWork|TestShutdown` with `-race -count=10` passed. This is
+an existing scheduling bug exposed by the higher repeat count, not a new
+maintenance failure.
+
+### N-221 · Offline command migration and refusal policy — DECIDED
+DESIGN.md §11.1, §11.3–§11.4: doctor never migrates or initializes and does not resolve a journal. Backup and rebuild require an already initialized, paired volume and a supported/current schema; migrations are applied by the ordinary server boot before maintenance. Restore requires a genuinely empty PostgreSQL user schema (no table, view, materialized view or sequence, including goose metadata) and a `/data` root with only `.lock` and optionally an empty ext4 `lost+found` directory. It validates the complete backup first; once marked, it restores and applies only embedded forward migrations, refusing newer archive schemas. On interruption both destinations must be replaced; there is no restore resume. Exit 0 = success/no doctor errors, 1 = findings or attempted operation failure, 2 = refusal/invalid arguments. Restore cannot distinguish a deliberately forged self-consistent backup from the trusted source: §11.4 specifies hashes, not an authenticated signature. Store external backups securely. A backup failure leaves a uniquely named temporary for the operator to inspect and remove, never automatically cleaned.
+
+### N-222 · Backup client and Compose volume — DECIDED
+PostgreSQL 17.11 client tools are installed from the dated, signed Debian snapshot in both test/toolchain and runtime images. `pg_dump` custom and `pg_restore` run without a shell, use `PGPASSWORD` in their child-only environment and redact PostgreSQL URIs, password assignments and the configured password from capped stderr before reporting a failure. The default `/backup` named volume is separate from `/data` logically, but may share a physical disk: mount an external ext4 disk through `MUSICLIB_BACKUP` for real protection. The runtime image initializes `/backup` owned by the app UID for new named volumes. An existing volume with incompatible ownership must be corrected by the operator, never silently chowned on command start. A real Compose stop/backup/doctor/start run with a space-containing backup name passed on PostgreSQL 17; the first run exposed the missing `/backup` ownership and was corrected before retry.
+
+### N-223 · Doctor pending findings and deep repair — DECIDED
+DESIGN.md §11.3: warnings and info (journal, extra output, pending work, unreferenced blobs) do not set the damage exit status. A removed cover or attachment leaves immutable, unreferenced originals, so a successful post-restore deep doctor may report `doctor_unreferenced_blob` info; it need not have an empty finding list. `TestOfflineDoctorRepairAndRebuildConverge` proves same-size, restored-mtime FLAC damage is detected only by deep doctor, repaired by a forced real render and independently by rebuild, including the other active album. The real-process release test checks the final §5.1 multi-disc, compilation, cover/attachment/LRC layout.
+
+### N-224 · Test and backup failure paths — DECIDED
+`TestBackupCorruptBlobNeverPublishesFinalName` killed a mutant that bypassed the source-original SHA-256 check; `TestRestoreDamagedOriginalAndManifestRefused/original` killed a mutant bypassing archive blob hash validation. Both mutations were restored. `TestRestoreRealCrashWindows` and `TestBackupRealCrashWindows` use SIGKILL at their named points; repeat restore uses **new** database and volume. A one-time full-gate failure in `TestBrowserEditorConflictAndContent` was an asynchronous page reload race: the test asserted the unchanged input value before navigation completed and clicked a button on the stale page. Waiting for its existing navigation marker to disappear fixed it; four repeated browser runs and the subsequent full gate passed. No timeout was increased.
+
+### N-225 · Maintenance error and schema contract — DECIDED
+DESIGN.md §11.1, §11.3–§11.4, §13.2: `maintenance.Error` distinguishes precondition refusals (exit 2) from attempted-operation failures (exit 1), retaining a stable code and cause. Pre-marker verification failures have explicit archive codes and say nothing was written; a failed operation after the marker keeps it and requires new destinations. Normal doctor, backup and rebuild refuse a schema other than the latest embedded migration, without migration. Restore accepts a schema from 1 through latest and applies the supported forward migrations right after `pg_restore`, before any sqlc query reads the restored catalog (review item 1, N-230 D4; superseded order, see N-235); it then verifies the restored store identity and original inventory against the manifest, restores the originals and durably writes the volume identity. §11.4 lists the identity before the migrations; the two steps touch different stores (the file marker and the database) and both happen behind the restore marker, so the order change has no observable effect beyond sqlc queries always matching their schema. It then resets derived state and fails incomplete source jobs in one catalog transaction. Schema latest is derived from embedded migration filenames. Exit codes and codes are documented in docs/operations.md.
+
+### N-226 · Backup connection and runtime clients — DECIDED
+DESIGN.md §8.5, §11.4: pgx parses `DATABASE_URL` as a URI or key/value DSN; the libpq subprocess gets a newly constructed password-free URI with whitelisted connection settings. Passwords are passed as `PGPASSWORD` only to the child. Capped stderr is redacted for PostgreSQL URIs, `password=`/`sslpassword=` and the configured password. An uncached Docker toolchain build succeeded after the PostgreSQL 17.11 client was installed. `docker compose --profile app build app` and `docker run --rm --entrypoint /usr/lib/postgresql/17/bin/{pg_dump,pg_restore} musiclib-app:local --version` reported 17.11; the runtime contains neither Chromium nor Node. The Debian client brings perl and netbase as signed snapshot-pinned dependencies (review D3).
+
+### N-227 · Archive verification precedes marker — DECIDED (order deviation)
+DESIGN.md §11.4 lists marker creation before archive verification. This implementation checks destination emptiness and every archive hash first; on damage it refuses with exit 2 and writes only the flock file, avoiding a needless non-resumable incomplete restore. The marker is durably installed before `pg_restore` or any media/catalog modification. A trusted backup should still be stored securely: hashes do not authenticate a maliciously forged archive.
+
+### N-228 · Maintenance paths and leftover backup directories — DECIDED
+DESIGN.md §3.1, §11.4: backup's destination ancestors are checked for confinement and against the identities of `/data`, `originals`, `library` and `work`, as in N-197; neither media output nor the working area may contain a backup. Failed backups leave a unique `.musiclib-backup-*.tmp` for the operator to inspect/remove manually. Backup does not probe/write `/data/work`. The caller must mount `/backup` on a separate physical device for resilience; a separate default named volume can share the same physical disk. A privileged bind remount concurrently with the preflight is outside the supported one-process volume model.
+
+Host-path nesting (review of 2026-09-27): container paths and inodes cannot see that `MUSICLIB_BACKUP` is a host directory inside `MUSICLIB_DATA`'s host path, because the two binds are separate mounts. It is a plausible misconfiguration of the documented bind-mount setup (`/srv/musiclib/data`, `/mnt/backup/musiclib`) and would put a backup where rebuild deletes it (`library/`, `work/`) or doctor flags it (`originals/`), so it is checked rather than only documented. `fsops.SourceOf` maps a root's descriptor to its filesystem location: the mount by statx `STATX_MNT_ID`, the path by readlink of `/proc/self/fd/N`, both translated through that mount's `major:minor` and root in `/proc/self/mountinfo` (octal escapes decoded). The backup and restore destination check refuses with `backup_destination` when the destination's location equals or lies under the data root's on the same `major:minor` (`MountSource.Contains`, component-boundary prefix). Tests: synthetic mountinfo (escapes, `data` vs `data2`, whole-filesystem root, unknown id), the real kernel (a subdirectory maps under its parent, `Dev` equals `stat`'s device, the Docker gate's go-build-cache volume on the same disk is a sibling, not nested), and `outsideDataSource` refusing a nested directory opened by its own path. Mutating `Contains` into a bare string prefix failed `TestMountSourceContains`. Limits: a nested bind cannot be created unprivileged, so the Backup-level refusal is covered through `outsideDataSource`, not through a real second mount; the check cannot see through network filesystems, FUSE or overlay layers, or a btrfs subvolume reported with its own device; operations.md tells the operator to keep the two host paths plainly separate.
+
+### N-229 · Doctor transient journal and structural checks — DECIDED
+DESIGN.md §5.3, §9.3, §11.3: a journal's old/new paths can be temporarily missing or installed during INSTALL, so doctor reports the journal as pending work and suppresses output damage/extra findings for those paths until boot recovery. Reservation expectations share catalog's pure `ExpectedClaims` union. Structural inventory checks active albums without tracks, broken blob FKs and render jobs without an album; PostgreSQL FKs prevent some of these in a healthy schema. Unreadable directories/files produce per-entry error findings and scanning continues. A real rename journal regression test checks exit-worthy errors are absent and the journal is unchanged.
+
+### N-230 · Owner decisions D1–D5 — DECIDED (owner, 2026-09-27)
+DESIGN.md §11.3–§11.4. D1: after doctor exits 0 or 1 the scripts restart the app (if it was running); it stays stopped on doctor exit 2 and on any rebuild or restore failure. D2: restore tolerates an **empty** `lost+found` directory besides `.lock`; a nonempty `lost+found` is refused. D3: the runtime image uses Debian's signed, snapshot-pinned `postgresql-client-17` (17.11) package, accepting the perl and netbase footprint (N-226); the runtime `RUN` that installs it also runs `/usr/lib/postgresql/17/bin/pg_dump --version` and `pg_restore --version` (the absolute paths `musiclibd` executes), so a broken client fails the image build. D4: doctor, backup and rebuild never migrate and refuse a schema other than the latest embedded one; restore migrates forward right after `pg_restore` (N-225, N-235). D5: the Phase 6 handoff file is not committed and stays untracked; committed documentation does not reference it.
+
+### N-231 · Release prerequisite — OPEN
+DESIGN.md §2.1, §3.1, §12.1: N-017 remains a release prerequisite; all tests here run under Docker Desktop's Linux VM, not a native Ubuntu 24.04+ Engine with an ext4 host volume. `docs/operations.md` gives exact commands for that host, the full gate, crash repeats and the real-process §12.3 acceptance. A release must wait for the native run.
+
+### N-232 · Browser regression test stabilization — DECIDED
+The change in `internal/http/browser_test.go` (N-224) waits for the page's existing navigation marker rather than guessing when a page reload has completed. This is a test-only fix for a real observed race, unrelated to offline maintenance; no production behavior or timeout changed.
+
+### N-233 · Compose operations and final failure checks — DECIDED
+DESIGN.md §11.3–§11.4, §12.2: `scripts/lint-shell.sh` passed. An isolated Compose project on Docker Desktop ran `scripts/rebuild.sh` with the paired UUID, `scripts/backup.sh` with a space in its archive name, destroyed its **test-only** DB/data volumes while retaining the backup volume, then ran `scripts/restore.sh` successfully on new volumes; `scripts/doctor.sh --deep` and its stop/run/restart path also passed in an isolated Compose project. Test-only Compose volumes were removed after verification. An intentional mutant that skipped the journal transient-state check failed `TestDoctorRenameJournalIsPendingNotDamage` with `doctor_receipt_unreadable`, and was restored. Earlier hash and catalog-reset mutations (N-214, N-218, N-224) likewise failed their specified tests. `git diff --check` and the search for backup/mutant files passed at handoff.
+
+### N-234 · A backup is trusted against concurrent external writers — ACCEPTED
+DESIGN.md §11.4 requires verifying all archive bytes before restoring them, which `verifyBackup` does on confined file descriptors before installing the marker. The backup is not locked against an external administrator modifying or replacing a file between verification and `pg_restore`, or between verification and a blobstore put. `Restore` compares every blob's put hash and size again, but it does not hash the dump concurrently with `pg_restore`; an externally modified dump can fail after the marker is created and require fresh destinations. Keep completed backups read-only and offline during restore, as documented. A fully tamper-proof restore would need authenticated archives or a staged immutable copy, neither requested by §11.4. This is an operational risk, not a silent overwrite of existing data.
+
+### N-235 · Phase 6 consolidation after concurrent passes — DECIDED
+DESIGN.md §11.3–§11.4, §13.2. Two passes edited the Phase 6 tree at the same
+time; a consolidation review of the result found and fixed:
+- **Doctor was not read-only on an unmigrated database.** `store.SchemaVersion`
+  used goose's `GetDBVersion`, which creates `goose_db_version` (a table and
+  its sequence) when absent. The earlier handoff claimed a test proved the
+  opposite, but the concurrent pass had reverted that test: doctor ran the
+  identity check first, so the schema check was never reached. Now a sqlc
+  query (`SchemaVersionTableExists`, `to_regclass`) guards the goose call and
+  an unmigrated database is refused with `maintenance_schema`, creating
+  nothing; `cmd/musiclibd.TestDoctorReadOnlyAndRefusals` asserts zero
+  database objects afterwards and failed (2 objects) before the fix.
+- **Inconsistent command order.** doctor checked identity before the schema,
+  rebuild and backup the opposite. All three now check the schema first,
+  through one `maintenance.RequireCurrentSchema` (code `maintenance_schema`,
+  exit 2), which `Backup` also calls; the separate `backup_schema_unsupported`
+  code and `cmd/musiclibd/maintenance_schema.go` are gone.
+- **Codes of wrapped causes.** `codeOf` checked volume and store errors
+  before `maintenance.Error`, so a maintenance failure wrapping a store
+  error logged the store's code. The maintenance code now wins
+  (`TestCodeOfPrefersMaintenanceCode`).
+- **Restore migrations** now run right after `pg_restore`, before
+  `GetStoreID`/`DoctorBlobs` (N-225, review item 1, D4); a failure is
+  `restore_migrate`.
+- **Operator advice.** The four commands share one preamble
+  (`cmd/musiclibd/offline.go`: umask, non-root, config, flock, 10-second
+  connect/ping) and one exit mapping, `operationExit`: a typed refusal or a
+  maintenance-marker conflict is exit 2; any other failure is exit 1 and is
+  logged with its own code plus an `advice` field. A failed restore gives the
+  "recreate BOTH destinations" advice only when its marker exists; before the
+  marker it says nothing was restored. An untyped verification error keeps
+  its cause under `restore_archive_invalid`.
+- **Tests strengthened:** the clean-store doctor test compares the whole
+  `/data` tree (mode, size, mtime) before and after instead of an
+  unchangeable schema version; backup destinations directly inside `/data`,
+  `library/`, `work/`, `originals/` and a nested `work/` directory are
+  refused by identity with `backup_destination`; the §12.3 acceptance keeps
+  one edition trashed across backup/restore and checks it is not published.
+No `*.bak`, mutant or scratch file was found in the tree.

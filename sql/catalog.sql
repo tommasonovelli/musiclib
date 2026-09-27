@@ -7,6 +7,43 @@
 -- name: LockCatalog :exec
 SELECT pg_advisory_xact_lock(7884786317834415207);
 
+-- Offline integrity inventory (§11.3). References include trashed albums: their
+-- originals still belong to the catalog. The list includes unreferenced rows
+-- so doctor can distinguish them from missing files and orphaned files.
+-- name: DoctorBlobs :many
+SELECT b.hash, b.size, EXISTS (
+    SELECT 1 FROM tracks t WHERE t.blob_hash = b.hash OR t.lyrics_hash = b.hash
+) OR EXISTS (SELECT 1 FROM attachments a WHERE a.blob_hash = b.hash)
+  OR EXISTS (SELECT 1 FROM albums al WHERE al.cover_hash = b.hash) AS referenced
+FROM blobs b ORDER BY b.hash;
+
+-- name: DoctorAlbums :many
+SELECT al.id, ar.name AS artist_name, al.title,
+       (al.deleted_at IS NULL)::boolean AS active,
+       al.revision, al.published_path, al.published_revision,
+       al.published_renderer, al.published_build, al.published_receipt_hash,
+       j.state AS job_state
+FROM albums al JOIN artists ar ON ar.id = al.artist_id
+LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
+ORDER BY al.id;
+
+-- name: DoctorClaims :many
+SELECT path_key, path, album_id FROM path_claims ORDER BY path_key;
+
+-- name: DoctorPublication :many
+SELECT album_id, build_id, old_path, new_path FROM publication;
+
+-- name: DoctorStructuralIssues :many
+SELECT 'doctor_album_no_tracks'::text AS code, id::text AS entity
+FROM albums a WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id=a.id)
+UNION ALL
+SELECT 'doctor_missing_blob', t.id::text FROM tracks t LEFT JOIN blobs b ON b.hash=t.blob_hash WHERE b.hash IS NULL
+UNION ALL
+SELECT 'doctor_missing_blob', a.id::text FROM attachments a LEFT JOIN blobs b ON b.hash=a.blob_hash WHERE b.hash IS NULL
+UNION ALL
+SELECT 'doctor_missing_album', j.id::text FROM jobs j LEFT JOIN albums a ON a.id=j.album_id WHERE j.kind='render' AND a.id IS NULL
+ORDER BY code, entity;
+
 -- Blobs (§7.5, §7.6): the rows of blobs already pinned on disk. An existing
 -- row is kept; the caller compares size and format with GetBlobs.
 -- name: InsertBlobs :exec

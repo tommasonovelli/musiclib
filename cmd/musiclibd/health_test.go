@@ -95,7 +95,7 @@ func closedPort(t *testing.T) string {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{{"serve"}, {"healthcheck", "extra"}, {"doctor"}, {"--help"}} {
+	for _, args := range [][]string{{"serve"}, {"healthcheck", "extra"}, {"doctor", "--unknown"}, {"doctor", "--deep", "extra"}, {"rebuild"}, {"rebuild", "--store-id", "not-a-uuid"}, {"--help"}} {
 		var logs syncBuffer
 		if got := musiclibd(args, env(nil), &logs); got != exitUsage {
 			t.Fatalf("musiclibd %q = %d, want %d", args, got, exitUsage)

@@ -60,6 +60,12 @@ func New(originals, work *fsops.Root) (*Store, error) {
 	return &Store{originals: originals, work: work}, nil
 }
 
+// OpenReadOnly exposes only the existing originals for offline verification.
+// It does not create work/blobs, so doctor never modifies the volume (§11.3).
+func OpenReadOnly(originals *fsops.Root) *Store {
+	return &Store{originals: originals}
+}
+
 // Put copies src into the store following §7.5 and returns its hash and size.
 // A nil error means the blob is pinned, verified and durable; only then may a
 // transaction reference it. Putting content that is already pinned verifies

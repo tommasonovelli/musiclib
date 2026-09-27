@@ -68,6 +68,9 @@ type Command struct {
 	// Files are inherited as descriptors 3, 4, ... in this order. The child
 	// shares their file offsets.
 	Files []*os.File
+	// Env is an explicit child environment. Nil gives an empty environment;
+	// credentials for offline PostgreSQL tools must never be passed in argv.
+	Env []string
 	// Stdin, when not nil, is written to the tool's standard input through a
 	// pipe that is closed afterwards. A tool that exits successfully without
 	// reading all of it fails the call. Nil means /dev/null.
@@ -164,7 +167,7 @@ func start(c Command) (*proc, error) {
 	}
 
 	cmd := exec.Command(c.Path, c.Args...)
-	cmd.Env = []string{} // not nil: nil would inherit the environment
+	cmd.Env = append([]string{}, c.Env...) // not nil: never inherit the environment
 	cmd.Dir = "/"
 	cmd.Stdout = outW
 	cmd.Stderr = errW

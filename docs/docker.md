@@ -1,5 +1,7 @@
 # Docker: build, test and run
 
+For production procedures, backups, restore and native-Linux release checks see [the operations guide](operations.md).
+
 Everything in this repository is built, tested and run in Docker. The host needs
 only **Docker Engine (or Docker Desktop) with the Compose v2 plugin**. No Go,
 gcc, CMake, TagLib, PostgreSQL or ffmpeg on the host.
@@ -59,10 +61,7 @@ for `go get`. The test/dev image also contains **Chromium 154.0.8037.57-1~deb13u
 contains neither Chromium nor Node. The browser tests use a local listener
 inside the test container on an ephemeral localhost port, with the test
 `PUBLIC_ORIGIN` adjusted to that port; they require no published database or app port.
-The package comes from Debian's package repository at image build time;
-if that exact version is removed, or a transitive dependency changes,
-see NOTES.md N-204 and N-212 (dev/test image build risk only). UI usage is described
-in [docs/ui.md](ui.md).
+The dev/test-only package and its dependency closure come from a fixed, signed Debian snapshot (NOTES.md N-212). UI usage is described in [docs/ui.md](ui.md).
 
 `dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
 so `scripts/dev.sh go test ./internal/store/...` runs the PostgreSQL tests. `fuzz.sh` needs that, so a failing input is written back to
@@ -189,7 +188,10 @@ curl -s http://127.0.0.1:8080/health/ready        # {"status":"ready"}
 # Open http://127.0.0.1:8080/ in your browser (Library; Album editor,
 # Import and Activity navigation). Use the exact PUBLIC_ORIGIN host.
 docker compose logs -f app                        # JSON lines
-docker compose stop app && docker compose run --rm app doctor --deep && docker compose start app   # §11.3, Phase 6
+docker compose stop app
+# The app must already be stopped; never run maintenance alongside it.
+docker compose --profile app run --rm --no-deps app doctor --deep
+docker compose --profile app start app
 ```
 
 It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
@@ -198,6 +200,7 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
   through `MUSICLIB_DATA`.
 - `/import` is a read-only bind of `MUSICLIB_IMPORT` (default `./import`). It
   must exist; Compose does not create it.
+- `/backup` is `MUSICLIB_BACKUP` (default separate named volume); use an external disk for durable off-device backups.
 - `init: true`, `restart: unless-stopped`, 45 s stop grace.
 - Runs as `MUSICLIB_UID:MUSICLIB_GID` (default 1000:1000), with no
   capabilities, a read-only root filesystem and tmpfs `/tmp`. `musiclibd`
@@ -208,6 +211,38 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
 - Healthcheck: `musiclibd healthcheck` (the image has no curl). It queries
   `/health/ready` on `HTTP_ADDR` and exits 0 or 1; it takes no lock.
   `start_period` is 120 s, polled every second.
+
+### Offline inspection and rebuild (Phase 6)
+
+Stop the app first, but leave PostgreSQL running. `doctor` is read-only
+apart from taking `/data/.lock`; it never migrates the database, repairs
+files or resolves a journal. Run the server once after an upgrade to apply
+forward migrations before inspection. `--deep` streams hashes of originals
+and receipt-listed output. Exit 0 means no errors (warnings and pending work
+may be present), 1 means damage, 2 means refusal or invalid arguments.
+Both maintenance commands refuse immediately when the server holds the lock.
+`scripts/doctor.sh` and `scripts/rebuild.sh` perform the same stop, run and
+restart steps (see [operations.md](operations.md)); the raw commands are:
+
+```sh
+docker compose stop app
+docker compose --profile app run --rm --no-deps app doctor --deep
+# Inspect the findings before choosing whether to rebuild.
+docker compose --profile app run --rm --no-deps --entrypoint cat app /data/.musiclib-store
+# Copy the UUID printed after store_id=, without the prefix.
+docker compose --profile app run --rm --no-deps app rebuild --store-id 'THE-UUID-PRINTED-ABOVE'
+docker compose --profile app start app
+```
+
+Rebuild **deletes only `library/` and `work/`** and resets publication state,
+reservations and render jobs in one transaction; it never fixes a damaged
+original. It leaves the catalog and import reports intact and queues new
+renders of active albums, not trashed ones. Only rebuild after confirming
+the store id against the database and the marker. An interrupted rebuild
+leaves `.maintenance`: do not delete it or start the server; rerun exactly
+the same rebuild command until it succeeds. `backup` and `restore` use PostgreSQL 17.11 client tools in the runtime image.
+See [operations.md](operations.md) for the complete offline procedure and
+separate-volume restore. Do not rely on rebuild as a substitute for backup.
 
 ### What the app does at startup
 
@@ -221,7 +256,9 @@ step (`docker compose logs app`):
    with `volume_locked`.
 3. `/data/.maintenance` present: the boot stops with
    `volume_maintenance_pending` (or `_malformed`), before touching the
-   database. Repeat the rebuild or restore it names (Phase 6).
+   database. Repeat the rebuild with the same store id if it names rebuild.
+   Never remove a restore marker just to allow boot: recreate new empty
+   destinations and repeat restore.
 4. `database not reachable yet` (retried with backoff, 250 ms to 5 s) until
    `database reachable`; then the migrations.
 5. `volume identified`: `/data/.musiclib-store` and `settings.store_id` must
@@ -393,7 +430,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `config_invalid` (exit 2) | an environment variable is missing or invalid; the message lists all of them | fix `.env` / `compose.yaml` |
 | `run_as_root` (exit 2) | uid 0 | set `MUSICLIB_UID`/`MUSICLIB_GID` |
 | `volume_locked` | another process holds `/data/.lock` | stop the other instance or maintenance command |
-| `volume_maintenance_pending` / `_malformed` | a rebuild or restore did not finish | repeat it until it completes |
+| `volume_maintenance_pending` / `_malformed` | a rebuild or restore did not finish | repeat a rebuild using the same store id; do not manually clear a restore marker |
 | `volume_store_mismatch` | the volume belongs to another database | mount the right volume, or point `DATABASE_URL` at the right database |
 | `volume_db_uninitialized` | the volume is initialized, the database is new or reset | restore the database from the backup (§11.4) |
 | `volume_marker_missing` / `volume_not_empty` | `/data/.musiclib-store` is missing, and either the media storage is not empty or the database already has catalog content | check the `/data` mount (`MUSICLIB_DATA`): the marker is completed automatically only on an empty volume with a database that has no catalog yet |
@@ -405,7 +442,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `import_is_data` | `/import` is the data volume or one of its directories (§7.1) | point `MUSICLIB_IMPORT` at the collection to import, never at the data volume |
 | `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | rebuild the image from this repository (`docker compose --profile app build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
-| `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or `docker compose stop app` and run `rebuild` (Phase 6), which regenerates the whole library from the catalog |
+| `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or stop the app and use the explicit rebuild command below |
 | `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the process exits 1, since it may be transient, and the next start retries |
 | `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown (§6.4), in a worker (`fatal failure, stopping the workers`) or in an API request (`fatal failure in an API request, stopping`) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
 
@@ -427,6 +464,7 @@ Set them in `.env` next to `compose.yaml`.
 | `MUSICLIB_UID` / `MUSICLIB_GID` | `1000` | ids of the app process and owner of `/data` |
 | `MUSICLIB_DATA` | `musiclib-data` | named volume or absolute ext4 path for `/data` |
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |
+| `MUSICLIB_BACKUP` | `musiclib-backup` | external directory (prefer another ext4 disk) or named volume for `/backup` |
 | `MUSICLIB_BIND` / `MUSICLIB_PORT` | `127.0.0.1` / `8080` | published address |
 | `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | §10.4: the only `Host` (and `Origin`) the API accepts |
 | `WORKERS` | empty: `max(1, min(4, CPUs))` (§6.1) | worker pool size, 1..16 |

@@ -86,6 +86,197 @@ func (q *Queries) DeleteTrack(ctx context.Context, arg DeleteTrackParams) (int64
 	return result.RowsAffected(), nil
 }
 
+const doctorAlbums = `-- name: DoctorAlbums :many
+SELECT al.id, ar.name AS artist_name, al.title,
+       (al.deleted_at IS NULL)::boolean AS active,
+       al.revision, al.published_path, al.published_revision,
+       al.published_renderer, al.published_build, al.published_receipt_hash,
+       j.state AS job_state
+FROM albums al JOIN artists ar ON ar.id = al.artist_id
+LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
+ORDER BY al.id
+`
+
+type DoctorAlbumsRow struct {
+	ID                   uuid.UUID
+	ArtistName           string
+	Title                string
+	Active               bool
+	Revision             int64
+	PublishedPath        *string
+	PublishedRevision    int64
+	PublishedRenderer    *string
+	PublishedBuild       *uuid.UUID
+	PublishedReceiptHash *string
+	JobState             *string
+}
+
+func (q *Queries) DoctorAlbums(ctx context.Context) ([]DoctorAlbumsRow, error) {
+	rows, err := q.db.Query(ctx, doctorAlbums)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DoctorAlbumsRow
+	for rows.Next() {
+		var i DoctorAlbumsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ArtistName,
+			&i.Title,
+			&i.Active,
+			&i.Revision,
+			&i.PublishedPath,
+			&i.PublishedRevision,
+			&i.PublishedRenderer,
+			&i.PublishedBuild,
+			&i.PublishedReceiptHash,
+			&i.JobState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doctorBlobs = `-- name: DoctorBlobs :many
+SELECT b.hash, b.size, EXISTS (
+    SELECT 1 FROM tracks t WHERE t.blob_hash = b.hash OR t.lyrics_hash = b.hash
+) OR EXISTS (SELECT 1 FROM attachments a WHERE a.blob_hash = b.hash)
+  OR EXISTS (SELECT 1 FROM albums al WHERE al.cover_hash = b.hash) AS referenced
+FROM blobs b ORDER BY b.hash
+`
+
+type DoctorBlobsRow struct {
+	Hash       string
+	Size       int64
+	Referenced *bool
+}
+
+// Offline integrity inventory (§11.3). References include trashed albums: their
+// originals still belong to the catalog. The list includes unreferenced rows
+// so doctor can distinguish them from missing files and orphaned files.
+func (q *Queries) DoctorBlobs(ctx context.Context) ([]DoctorBlobsRow, error) {
+	rows, err := q.db.Query(ctx, doctorBlobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DoctorBlobsRow
+	for rows.Next() {
+		var i DoctorBlobsRow
+		if err := rows.Scan(&i.Hash, &i.Size, &i.Referenced); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doctorClaims = `-- name: DoctorClaims :many
+SELECT path_key, path, album_id FROM path_claims ORDER BY path_key
+`
+
+func (q *Queries) DoctorClaims(ctx context.Context) ([]PathClaim, error) {
+	rows, err := q.db.Query(ctx, doctorClaims)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PathClaim
+	for rows.Next() {
+		var i PathClaim
+		if err := rows.Scan(&i.PathKey, &i.Path, &i.AlbumID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doctorPublication = `-- name: DoctorPublication :many
+SELECT album_id, build_id, old_path, new_path FROM publication
+`
+
+type DoctorPublicationRow struct {
+	AlbumID uuid.UUID
+	BuildID uuid.UUID
+	OldPath *string
+	NewPath *string
+}
+
+func (q *Queries) DoctorPublication(ctx context.Context) ([]DoctorPublicationRow, error) {
+	rows, err := q.db.Query(ctx, doctorPublication)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DoctorPublicationRow
+	for rows.Next() {
+		var i DoctorPublicationRow
+		if err := rows.Scan(
+			&i.AlbumID,
+			&i.BuildID,
+			&i.OldPath,
+			&i.NewPath,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doctorStructuralIssues = `-- name: DoctorStructuralIssues :many
+SELECT 'doctor_album_no_tracks'::text AS code, id::text AS entity
+FROM albums a WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id=a.id)
+UNION ALL
+SELECT 'doctor_missing_blob', t.id::text FROM tracks t LEFT JOIN blobs b ON b.hash=t.blob_hash WHERE b.hash IS NULL
+UNION ALL
+SELECT 'doctor_missing_blob', a.id::text FROM attachments a LEFT JOIN blobs b ON b.hash=a.blob_hash WHERE b.hash IS NULL
+UNION ALL
+SELECT 'doctor_missing_album', j.id::text FROM jobs j LEFT JOIN albums a ON a.id=j.album_id WHERE j.kind='render' AND a.id IS NULL
+ORDER BY code, entity
+`
+
+type DoctorStructuralIssuesRow struct {
+	Code   string
+	Entity string
+}
+
+func (q *Queries) DoctorStructuralIssues(ctx context.Context) ([]DoctorStructuralIssuesRow, error) {
+	rows, err := q.db.Query(ctx, doctorStructuralIssues)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DoctorStructuralIssuesRow
+	for rows.Next() {
+		var i DoctorStructuralIssuesRow
+		if err := rows.Scan(&i.Code, &i.Entity); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const findActiveAlbumByFolder = `-- name: FindActiveAlbumByFolder :one
 SELECT id, title FROM albums
 WHERE artist_id = $1 AND folder_key = $2 AND deleted_at IS NULL AND id <> $3

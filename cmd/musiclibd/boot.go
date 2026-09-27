@@ -136,6 +136,14 @@ func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Lo
 			log.Error("fatal failure in an API request, stopping", "code", codeOf(err))
 			return err
 		case err := <-d.poolDone:
+			// Cancellation and a clean worker exit can become ready in the
+			// same select: shutdown wins, rather than reporting an ordinary
+			// SIGTERM as workers_stopped (N-220).
+			if err == nil && ctx.Err() != nil {
+				d.poolDone = make(chan error, 1)
+				d.poolDone <- nil
+				return d.serveErr()
+			}
 			// §6.4: an uncertain commit, a lost database or a publication left
 			// pending stopped the workers. The process exits non-zero so that
 			// Docker restarts it; the next boot recovers (N-070, N-135).

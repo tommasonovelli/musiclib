@@ -84,8 +84,8 @@ func TestBrowserEditorConflictAndContent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	browserEval(t, tab1, `document.querySelector('#metadata [name=title]').value='Winner'; document.querySelector('#metadata button[type=submit]').click(); ''`)
-	browserWait(t, tab1, `document.querySelector('#metadata [name=title]')?.value === 'Winner' && document.querySelector('#error')?.hidden`)
+	browserEval(t, tab1, `window.navigationMarker='before'; document.querySelector('#metadata [name=title]').value='Winner'; document.querySelector('#metadata button[type=submit]').click(); ''`)
+	browserWait(t, tab1, `typeof window.navigationMarker === 'undefined' && document.querySelector('#metadata [name=title]')?.value === 'Winner' && document.querySelector('#error')?.hidden`)
 	browserEval(t, tab2, `document.querySelector('#metadata [name=title]').value='Loser'; document.querySelector('#metadata button[type=submit]').click(); ''`)
 	browserWait(t, tab2, `!document.querySelector('#error').hidden`)
 	if got := browserEval(t, tab2, `document.querySelector('#error').textContent + '|' + document.querySelector('#metadata [name=title]').value`); !strings.Contains(got, "precondition_failed") || !strings.Contains(got, "Loser") {

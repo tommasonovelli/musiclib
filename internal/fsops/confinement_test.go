@@ -459,6 +459,9 @@ func TestNoOperationOnStringBuiltPaths(t *testing.T) {
 		"unix.Open":    "OpenRoot",
 		"unix.Openat2": "sysOpenat2",
 		"unix.Close":   "closeFD",
+		// The fixed /proc/self views of SourceOf (N-228), never user paths.
+		"os.ReadFile": "procView",
+		"os.Readlink": "procView",
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil {

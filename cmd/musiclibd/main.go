@@ -8,8 +8,8 @@
 // max(1, min(4, CPUs)), 1..16, §6.1). The data volume is always /data and the
 // import source always /import. Logs are JSON lines on stderr.
 //
-// Subcommands never start the server and, except for healthcheck, take the
-// volume lock (§11.3); the maintenance subcommands arrive in Phase 6.
+// Offline doctor, rebuild, backup and restore take the volume lock and never
+// start the server (DESIGN.md §11.3–§11.4).
 package main
 
 import (
@@ -22,10 +22,13 @@ import (
 	"os/signal"
 	"runtime"
 
+	"github.com/google/uuid"
+
 	"golang.org/x/sys/unix"
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/fsops"
+	"musiclib/internal/maintenance"
 	"musiclib/internal/media"
 	"musiclib/internal/publish"
 	"musiclib/internal/render"
@@ -72,8 +75,23 @@ func musiclibd(args []string, getenv func(string) string, stderr io.Writer) int 
 		return serve(log, getenv, defaultPaths)
 	case len(args) == 1 && args[0] == "healthcheck":
 		return healthcheck(log, getenv)
+	case len(args) == 1 && args[0] == "doctor":
+		return runDoctor(getenv, defaultPaths, false, os.Stdout, log)
+	case len(args) == 2 && args[0] == "doctor" && args[1] == "--deep":
+		return runDoctor(getenv, defaultPaths, true, os.Stdout, log)
+	case len(args) == 3 && args[0] == "backup" && args[1] == "--to":
+		return runBackup(getenv, defaultPaths, args[2], os.Stdout, log)
+	case len(args) == 3 && args[0] == "restore" && args[1] == "--from":
+		return runRestore(getenv, defaultPaths, args[2], os.Stdout, log)
+	case len(args) == 3 && args[0] == "rebuild" && args[1] == "--store-id":
+		id, err := uuid.Parse(args[2])
+		if err == nil && id != uuid.Nil && id.String() == args[2] {
+			return runRebuild(getenv, defaultPaths, id, os.Stdout, log)
+		}
+		log.Error("rebuild requires a canonical non-nil UUID for --store-id", "code", "usage")
+		return exitUsage
 	default:
-		log.Error("usage: musiclibd [healthcheck]", "code", "usage", "args", args)
+		log.Error("usage: musiclibd [healthcheck|doctor [--deep]|rebuild --store-id UUID|backup --to /backup/NAME|restore --from /backup/NAME]", "code", "usage", "args", args)
 		return exitUsage
 	}
 }
@@ -162,11 +180,16 @@ func codeOf(err error) string {
 		se *store.Error
 		bl *blobstore.Error
 		me *media.Error
+		mt *maintenance.Error
 		re *render.Error
 	)
 	switch {
 	case errors.As(err, &be):
 		return be.code
+	// A maintenance error is the outer operation's code; it may wrap a
+	// volume, store or media cause that must not replace it.
+	case errors.As(err, &mt):
+		return mt.Code
 	case errors.As(err, &ve):
 		return ve.Code
 	case errors.As(err, &se):

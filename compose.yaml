@@ -114,6 +114,9 @@ services:
       # /data must be ext4 (DESIGN.md §3.1). MUSICLIB_DATA may be a named
       # volume (default) or an absolute host path on ext4 owned by MUSICLIB_UID.
       - ${MUSICLIB_DATA:-musiclib-data}:/data
+      # Backups are not inside /data. Prefer an external ext4 disk mounted
+      # through MUSICLIB_BACKUP; the default is a separate named volume.
+      - ${MUSICLIB_BACKUP:-musiclib-backup}:/backup
       - type: bind
         source: ${MUSICLIB_IMPORT:-./import}
         target: /import
@@ -224,6 +227,7 @@ networks:
 volumes:
   pgdata:
   musiclib-data:
+  musiclib-backup:
   # Go build cache (also holds the fuzzing cache), shared by test and dev.
   go-build-cache:
   # Module cache for `dev`; seeded from the image on first use.

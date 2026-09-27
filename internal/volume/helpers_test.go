@@ -206,6 +206,25 @@ func helperMain(mode string) string {
 			return "close error " + err.Error()
 		}
 		return "acquired"
+	case "crash-maintenance":
+		v, err := Acquire(os.Getenv("VOLUME_DIR"))
+		if err != nil {
+			return "error " + err.Error()
+		}
+		v.failpoints = faulttest.Crash(os.Getenv("CRASH_AT"))
+		id, err := uuid.Parse(os.Getenv("STORE_ID"))
+		if err != nil {
+			return "error " + err.Error()
+		}
+		if os.Getenv("MAINTENANCE_ACTION") == "end" {
+			err = v.EndMaintenance(OpRebuild, id)
+		} else {
+			err = v.BeginMaintenance(OpRebuild, id)
+		}
+		if err != nil {
+			return "error " + err.Error()
+		}
+		return "completed without reaching " + os.Getenv("CRASH_AT")
 	case "crash-first-init":
 		// A real crash: the process is killed at the named point, with no
 		// deferred cleanup, no Close and the database connection dropped.

@@ -27,7 +27,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Go module (`musiclib`, Go 1.25.0, `golang.org/x/text v0.41.0` pinned)
 - [x] Normalization: text, segments, truncation, keys, relative paths (§5.2) — `internal/names`
 - [x] Containerized toolchain and gate: build/vet/gofmt/`go test -race` in Docker, TMPDIR on an ext4 volume (§3.1, §12.1) — `scripts/check.sh`, `docs/docker.md`
-- [ ] Full repository layout (§2.3): every package of §2.3 up to Phase 3 exists (`internal/publish` since round 9, `internal/http` since round 11); `internal/maintenance` and `web/` arrive with their phases
+- [x] Full repository layout (§2.3): `internal/maintenance` implements doctor, rebuild, backup and restore; `scripts/` supplies the offline Compose commands.
 - [x] Docker Compose: `app` + PostgreSQL 17, digests pinned (§2.1, §10.4, §11.1) — non-root, `init`, `restart: unless-stopped`, loopback only, healthcheck via `musiclibd healthcheck`; verified end to end (N-071). ffmpeg/ffprobe (N-073) and the static TagLib helper `musiclib-tags` (N-083) are in the runtime image since Phase 2
 - [x] `goose` migrations of the normative schema (§4.2), applied forward only under an advisory lock — `migrations/`, `store.Migrate`
 - [x] `sqlc` setup (§2.1): pinned image, generated code committed, `sqlc diff` in the gate — `sqlc.yaml`, `sql/`, `internal/store`; Phase 1 queries only (store id, migration lock)
@@ -60,7 +60,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] `path_claims` and global `pg_advisory_xact_lock` (§5.3) — `store.InCatalogTx`, `catalog.ReconcileClaims`
 - [x] Conditional APIs: strong ETag, `If-Match`, 412/428 (§10.1) — `internal/http` (round 11): ETags `"album:<uuid>:<rev>"` / `"artist:<uuid>:<rev>"`, the If-Match rules of N-147, the revision compared by the catalog in the transaction of the change; two concurrent saves of one revision give exactly one 412 and lose nothing
 - [x] Artist rename and album reassignment (§4.3) — `PUT /api/artists/{id}` (`RenameArtist`) and `PUT /api/albums/{id}` with another `artist_id` (`UpdateAlbum`), tested over HTTP on real PostgreSQL and end to end through the server
-- [x] Named failpoints and failure matrix (§12.2) — one mechanism (`internal/failpoint`, `internal/faulttest`, N-142); real SIGKILL crashes for every row about durability or idempotency; a really full filesystem (N-143); the matrix is below. Rows that need doctor, rebuild, restore, backup (Phase 6) or the UI (Phase 5) are marked for their phase
+- [x] Named failpoints and failure matrix (§12.2) — one mechanism (`internal/failpoint`, `internal/faulttest`, N-142); real SIGKILL crashes for every row about durability or idempotency; a really full filesystem (N-143); the matrix is below. Every row now has real tests (the Phase 6 rows since the maintenance commands)
 
 ## Phase 4 — Formats and content
 
@@ -83,13 +83,25 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 
 ## Phase 6 — Operations
 
-- [ ] `doctor`, normal and `--deep` (§11.3)
-- [ ] `rebuild` with maintenance marker (§11.3)
-- [ ] `backup` / `restore` (§11.4)
+- [x] `doctor`, normal and `--deep` (§11.3) — read-only CLI and typed findings; real rendered-album corruption, forced-render repair, rebuild/deep convergence and structural tests (`maintenance.TestDoctor*`, `cmd/musiclibd.TestOfflineDoctorRepairAndRebuildConverge`).
+- [x] `rebuild` with maintenance marker (§11.3) — confirmed store UUID, confined deletion, atomic derived-state reset/reenqueue, SIGKILL/repeat windows, real server convergence, trashed outputs excluded (`maintenance.TestRebuild*`).
+- [x] `backup` / `restore` (§11.4) — streaming verified originals and PostgreSQL 17 custom dump/restore, complete manifest, durable rename, fresh-destination preconditions, crash windows and real fresh-volume end-to-end release tests (`maintenance.TestBackup*`, `TestRestore*`, `cmd/musiclibd.TestBackupLossRestoreBootAndDoctor`, `TestReleaseCollectionInterruptedAndRestored`).
 - [x] Space budget and `statfs` check (§11.2) — the conservative estimates of the import and of the build, reserved atomically in the process budget `jobs.Budget` against `statfs` minus the 1 GiB margin (N-114, N-139); ENOSPC handled by every write
-- [ ] Operations guide with Compose examples (§11)
+- [x] Operations guide and tested Compose stop/run/start scripts (§11) — `docs/operations.md`, `scripts/{doctor,rebuild,backup,restore}.sh`; lint and actual Compose backup/doctor/start with a space-containing archive name.
 
 ---
+
+## §12.1 and §12.3 acceptance
+
+All §12.1 levels are covered by the full Docker gate: unit and planner tests,
+real PostgreSQL 17 transactions, redistributable FLAC/MP3/AAC/ALAC fixtures,
+real ext4/openat2/rename/fsync and SIGKILL crash tests, real Chromium UI tests,
+and `go test -race`. N-024 documents the deliberate Compose PostgreSQL
+substitution for testcontainers without mounting the Docker socket. The
+§12.3 seven-album real-process API/import/edit/SIGKILL/backup-loss-restore test
+is `cmd/musiclibd.TestReleaseCollectionInterruptedAndRestored`, run by the gate.
+**Release gap:** N-017: rerun the gate and acceptance on native Ubuntu 24.04+
+Docker Engine/ext4; Docker Desktop's VM is not a native-host acceptance run.
 
 ## The §12.2 failure matrix
 
@@ -97,7 +109,7 @@ Status: **crash** = tested with a real process crash (SIGKILL of a child
 process at a named failpoint, then the next boot), or a real process
 losing the database or its helpers; **in-process** = tested with real
 PostgreSQL 17, real ext4 and the real tools, failures injected at the
-named points; **later** = the phase that brings the feature.
+named points. No row remains deferred.
 
 | §12.2 row | Required property | Status | Tests |
 |---|---|---|---|
@@ -115,12 +127,12 @@ named points; **later** = the phase that brings the feature.
 | Disco pieno durante build | Vecchio album e originali intatti | really full fs + in-process | `publish.TestExecuteRenderOnAReallyFullDisk` (a real album on the full tmpfs `/fullfs`; ENOSPC at the copies, the attachment, the receipt; N-143), `TestExecuteRenderMP3OnAReallyFullDisk` (ENOSPC inside the tag helper's own write: `insufficient_space`); `media.TestTagsMP3NoSpace`; `blobstore.TestPutOnAReallyFullFilesystem`; `render.TestBuildNoSpace` (ext4's ENOSPC at fsync, injected) |
 | Errore DB dopo rename | Journal completato al riavvio | in-process (real wire loss) + crash | `publish.TestRecoverDatabaseErrorAfterRename` (the FINALIZE commit cut, its answer lost, through `pgtest.Proxy`); `cmd/musiclibd.TestProcessDatabaseLossMidWork` |
 | Tag writer altera i campioni o perde un tag non gestito | Album non pubblicato | in-process | `render.TestBuildTagWriterAltersSamples`, `TestBuildTagWriterLosesUnmanagedField`, `TestBuildMP3OpaqueField`; `media.TestVerifyTags`, `TestVerifyTagsID3v1Migration`, `TestTagsMP3MutationSweep` |
-| Modifica dell'output con size/mtime invariati | Doctor deep la rileva e render/rebuild la ripara | **later: Phase 6** (doctor, rebuild) | render repairing damaged own output: `publish.TestPublishReplacesDamagedOwnOutput` |
+| Modifica dell'output con size/mtime invariati | Doctor deep la rileva e render/rebuild la ripara | in-process (real ext4 and renderer) | `maintenance.TestDoctorDetectsUnchangedSizeAndMtimeDamage`, `cmd/musiclibd.TestOfflineDoctorRepairAndRebuildConverge`: deep-only detection, forced render repairs real FLAC, rebuild converges again |
 | Symlink, path assoluti, traversal, collisione file/directory | Nessuna operazione fuori root, errore prima della pubblicazione | in-process | round 16: `http.TestImportSource` (the /import listing: `..`, absolute paths, empty segments, NUL, symlinks to /data, outside and inside, through a symlink, a FIFO, never followed nor opened, no absolute path answered), `cmd/musiclibd.TestBootRefusals` (`import_is_data`); `http.TestPostAttachment` (round 14: an uploaded attachment's absolute, `..`, empty-segment, NUL and too-deep paths refused before its body is read; file/directory, case, NFC and sanitization collisions 409, nothing pinned), `catalog.TestAddAttachment`; `fsops.TestInvalidPathsRejectedBeforeDisk`, `TestLeafSymlinkRejected`, `TestIntermediateSymlinkComponentRejected`, `TestTOCTOUConcurrentSymlinkSwap`; `render.TestPlanCollisions`, `TestPlanRefusals`; `publish.TestPublishRefusesSymlinksAndSpecialFiles`, `TestRecoverIllegalStates` |
 | Due finestre UI salvano revisioni diverse | Una riceve 412, nessuna modifica persa silenziosamente | real Chromium + PostgreSQL (round 17), API in-process (round 11) | `http.TestBrowserEditorConflictAndContent` (two real tabs, one winner, loser keeps edit and sees 412; track deletion, cover, trash/restore); `http.TestConcurrentCoverUploads` (round 14: two cover uploads on one revision, exactly one 412, the loser's blob absent or pinned and unreferenced), `http.TestUploadFailsAfterThePut` (a change between the put and the transaction: 412, the blob unreferenced), `catalog.TestDeleteTrackConcurrent`; `http.TestTwoClientsSaveDifferentRevisions` (20 rounds of two concurrent PUTs of one revision through a real server: exactly one 412 naming the winner's revision, the loser reloads and re-applies, both changes kept); `catalog.TestUpdateAlbumRevisions` (412/428 in the change's transaction) |
 | SIGTERM/SIGKILL con più worker e helper attivi | Nessun helper del vecchio tentativo resta in attività | crash | `cmd/musiclibd.TestProcessSignalsWithHelpersActive`, `TestProcessDatabaseLossMidWork`; `media.TestRunToolDiesWithParent` (Pdeathsig), `TestRunCancelKillsAndReapsWholeGroup` |
-| Crash durante rebuild o restore | Marker impedisce il boot su una manutenzione incompleta | **later: Phase 6** (rebuild, restore); the marker's boot refusal is done | `volume.TestMaintenanceMarkerBlocksBoot`; the `cmd/musiclibd` maintenance refusals |
-| Backup, perdita DB/volume, restore su volumi nuovi | Catalogo e originali recuperati, output rigenerato verificabile | **later: Phase 6** | — |
+| Crash durante rebuild o restore | Marker impedisce il boot su una manutenzione incompleta | crash | `maintenance.TestRebuildRealCrashWindows` (six SIGKILL points, marker refusal and repeat), `TestRestoreRealCrashWindows` (six SIGKILL points, marker refusal then new destinations), `volume.TestMaintenanceMarkerCrashWindows` |
+| Backup, perdita DB/volume, restore su volumi nuovi | Catalogo e originali recuperati, output rigenerato verificabile | in-process + crash (real server, tools, PostgreSQL/ext4) | `cmd/musiclibd.TestBackupLossRestoreBootAndDoctor`, `TestReleaseCollectionInterruptedAndRestored` (real server SIGKILL before backup, fresh DB/volume, real render, deep doctor); `maintenance.TestBackupRealCrashWindows`, `TestRestoreRealCrashWindows` |
 
 Beyond the rows, with real crashes: the first initialization
 (`volume.TestFirstInitInterruptedAtEveryStep`, 7 points, N-061) and an
@@ -136,6 +148,101 @@ scripts/dev.sh go test -race -count=5 -timeout 50m -run 'TestCrash|ReallyFull|An
 ---
 
 ## Details of what is done
+
+### Phase 6: offline maintenance (`internal/maintenance`, `internal/volume`, `cmd/musiclibd`, `scripts/`) ✔
+
+Public API of `internal/maintenance` (the caller holds the volume flock):
+
+| Function | Role |
+|---|---|
+| `Doctor(ctx, db, v, deep) (Report, error)` | read-only inspection (§11.3); `Report.Findings` of `Finding{Severity, Code, Entity, Advice}`, `HasErrors()` |
+| `Rebuild(ctx, db, v, confirmedStoreID, hook) error` | marker, delete only `library/` and `work/`, one-transaction derived reset, recreate, remove marker (§11.3) |
+| `Backup(ctx, db, v, to, dbURL, hook) error` | new temporary, `pg_dump` custom, verified originals, manifest, fsync, no-replace rename (§11.4) |
+| `Restore(ctx, db, v, from, dbURL, hook) error` | empty destinations, full archive verification, marker, `pg_restore`, forward migrations, originals via `blobstore.Put`, identity, derived reset (§11.4) |
+| `RequireCurrentSchema(ctx, db) error` | doctor/rebuild/backup refuse a schema other than the latest embedded one, never migrating nor creating goose's table (N-225, N-235) |
+| `Error{Code, Message, Refusal, Err}` | typed error: `Refusal` = precondition refused (exit 2), otherwise an attempted operation failed (exit 1) |
+| `Manifest`, `BackupBlob` | the backup's `manifest.json`: store id, schema, app and render versions, dump SHA-256, sorted blob list |
+
+- **Doctor.** Five sqlc inventory queries (`sql/catalog.sql`) plus structural
+  checks (active album without tracks, broken blob references, render job
+  without album). Normal mode: referenced blobs exist with their size,
+  reservations equal the pure §5.3 union shared with `catalog.ExpectedClaims`,
+  receipts match `published_receipt_hash` and list existing regular files,
+  extra output is reported; pending renders and outdated renderers are
+  `info`, a journal is a `warning` and its old/new paths are not judged as
+  damage (N-229). Deep mode streams SHA-256 of every present original and
+  every receipt-listed file (audio, tags, cover, attachments, lyrics).
+  Symlinks, special and unreadable entries are per-entry findings, never
+  followed. `blobstore.OpenReadOnly` avoids creating `work/blobs`.
+- **Marker** (`internal/volume`). `BeginMaintenance` installs `.maintenance`
+  by an fsynced temporary, `RENAME_NOREPLACE` and a directory fsync; the same
+  operation and store may repeat, a foreign marker is refused;
+  `EndMaintenance` checks ownership, unlinks and syncs. `IdentifyExisting` and
+  `OpenExistingLayout` pair and open an existing store without initializing
+  anything; `PrepareRestoreLayout`/`CompleteRestoreIdentity` create the
+  restored layout and then the identity marker behind the restore marker.
+- **Rebuild.** Store id confirmed against both identities; `checkDeletionTree`
+  refuses another mount or a non-directory before `RemoveAll` (never follows
+  symlinks, survives partial deletion); `catalog.ResetDerivedForRebuild`
+  clears journal, published columns, render jobs and all claims, then
+  reconciles claims and enqueues a render for each active album in one
+  catalog transaction. Trashed albums lose their output and get no claim or
+  render (N-218).
+- **Backup.** Destination confined: absolute, no symlink component, no
+  ancestor with the identity of `/data`, `originals/`, `library/` or `work/`
+  (N-228), and not under the data root on the host either (nested bind
+  mounts: device and root from `/proc/self/mountinfo` via `fsops.SourceOf`,
+  N-228). Credentials go to `pg_dump` only through `PGPASSWORD`; its stderr
+  is capped and redacted (N-226). Originals are copied with SHA-256 checked
+  during the copy; any unexpected entry fails the backup. A failure leaves
+  one `.musiclib-backup-*.tmp` for the operator (N-221).
+- **Restore.** Refuses any database object and any volume entry besides
+  `.lock` and an empty `lost+found` (N-221, N-230 D2); verifies the canonical
+  manifest, the dump hash and every original **before** the marker (N-227);
+  then `pg_restore --single-transaction`, `store.Migrate`, store id and
+  inventory checks, `blobstore.Put` of every original, identity marker,
+  `catalog.ResetDerivedForRestore` (the rebuild reset plus nonterminal
+  scan/import jobs failed with `source_needs_verification`), marker removal.
+- **Commands.** `musiclibd doctor [--deep]`, `rebuild --store-id UUID`,
+  `backup --to DIR`, `restore --from DIR` share one preamble
+  (`cmd/musiclibd/offline.go`: umask 022, non-root, config, non-blocking flock,
+  10-second connect) and never start the server. Human report on stdout, JSON
+  logs on stderr; exit 0 success, 1 damage or failed operation (logged with an
+  `advice` field), 2 refusal or usage (N-221, N-235). SIGTERM/SIGINT cancel.
+- **Scripts.** `scripts/{doctor,rebuild,backup,restore}.sh` with
+  `scripts/lib/maintenance.sh`: stop the app, `compose run --rm --no-deps app
+  …`, restart only after success (doctor also after exit 1) and only if it was
+  running (N-230 D1); quoted names with spaces; lint-clean; run for real
+  against an isolated Compose project (N-233).
+- **Images.** Runtime and toolchain carry PostgreSQL 17.11 clients from a
+  dated signed Debian snapshot; `/backup` is created owned by the app UID;
+  the toolchain's Chromium closure is frozen on the same snapshot (N-212,
+  N-222, N-226); the runtime build runs `pg_dump --version` and
+  `pg_restore --version` at the paths `musiclibd` executes (N-230 D3). Owner
+  decisions D1–D5 are recorded in N-230 (2026-09-27). `docs/operations.md` is the Ubuntu/ext4 operations guide and
+  native release procedure (N-017, N-231).
+
+Tests (real PostgreSQL 17, ext4, tools and processes): `maintenance.TestDoctor*`
+(clean, missing/short/same-size-damaged originals, missing/extra output,
+receipt damage, same-size same-mtime output damage caught only by deep,
+claims, pending work, journal untouched, rename journal not damage, symlinks);
+`TestRebuild*` (catalog and originals kept, trashed albums, symlinks, partial
+deletion, six SIGKILL windows with convergence checks); `TestBackup*`
+(manifest, refusals by identity and by host path, corrupt original, missing
+zero-size referenced blob, five SIGKILL windows leaving
+only the temporary); `TestRestore*` (fresh destinations, `lost+found`,
+nonempty DB/volume, corrupt archive refused before the marker, pending import
+failed, six SIGKILL windows then new destinations);
+`volume.TestMaintenanceMarker*`, `TestReadOnlyVolume*`; `cmd/musiclibd`:
+`TestDoctor*` (schema refusal creating nothing, `/data` tree unchanged),
+`TestBackupRestore*` (lock, DB, stable corruption codes),
+`TestRebuildCommandRefusesWrongStoreIDWithoutWriting`,
+`TestOfflineDoctorRepairAndRebuildConverge`,
+`TestBackupLossRestoreBootAndDoctor` and the §12.3
+`TestReleaseCollectionInterruptedAndRestored`. Mutants killed: deep output
+hashing, published-state reset, backup source hash, restore archive hash,
+marker creation, journal transient handling, missing-blob presence check,
+host-path prefix boundary (N-214, N-218, N-224, N-228, N-233).
 
 ### `internal/names` — normalization (§5.2) ✔
 
@@ -189,6 +296,7 @@ Public API:
 | `Root.Lock` / `Lock.Close` | exclusive non-blocking `flock` (`fs_lock_busy`), `O_CLOEXEC` |
 | `Root.StatFS` | total and unprivileged-available bytes (§11.2) |
 | `SameMount` / `Root.CheckAccess` | mount id via statx `STATX_MNT_ID`; faccessat2 with `AT_EACCESS` (boot checks, N-063; Linux 5.8) |
+| `SourceOf(r) (MountSource, error)` / `MountSource.Contains` | a root's `major:minor` and path inside its filesystem from `/proc/self/mountinfo`, independent of the mount point; nesting at a component boundary (backup destination check, N-228) |
 | `RemoveProbeLeftovers` | removes `.musiclib-probe-*` directories left by an interrupted probe (N-033) |
 | `FileType`, `FileInfo`, `DirEntry` | entry types (`IsSpecial`), identity (dev/ino), permissions |
 | `Error` / `Code` | stable `fs_*` codes plus the relative location(s); never an absolute path |
@@ -428,8 +536,7 @@ scripts/dev.sh go test -race -count=20 ./internal/volume/
 ### `cmd/musiclibd` — the server's boot, health and shutdown (§2.3, §6.1, §10.4, §11.1) ✔
 
 `musiclibd` runs the server. `musiclibd healthcheck` queries `/health/ready`
-and exits 0 or 1. Any other argument is a usage error (exit 2). The Phase 6
-subcommands are not there yet.
+and exits 0 or 1. The Phase 6 `doctor [--deep]`, `rebuild --store-id UUID`, `backup --to /backup/NAME` and `restore --from /backup/NAME` commands run offline. Unknown arguments are usage errors (exit 2).
 
 Configuration comes from the environment only, and every problem is reported
 at once (`config_invalid`, exit 2):

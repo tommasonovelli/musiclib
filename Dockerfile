@@ -214,12 +214,19 @@ COPY --from=build-lame /opt/lame/bin/lame /usr/local/bin/lame
 # for the hostile-input tests (toolchain images only).
 COPY --from=build-tags /opt/musiclib-tags/bin/musiclib-tags /opt/musiclib-tags/bin/musiclib-tags-asan /usr/local/bin/
 
-# Dev/test-only real browser for the §12.1 UI tests. The exact Chromium
-# package version is pinned; the runtime stage does not inherit it.
+# Dev/test-only real browser for the §12.1 UI tests. Freeze the entire
+# Debian dependency closure at a signed snapshot (N-212); the runtime stage
+# does not inherit these apt sources or Chromium. The snapshot predates the
+# build and contains the exact verified Chromium package below.
+RUN printf '%s\n' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260926T000000Z trixie main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260926T000000Z trixie-security main' \
+      > /etc/apt/sources.list \
+ && rm -f /etc/apt/sources.list.d/debian.sources
 RUN apt-get update \
  && apt-get download chromium=154.0.8037.57-1~deb13u1 \
  && echo 'd70bab9fbcb7bfbb7227b9510fb5cf1f7290bd6d6af3dd168b19ba4cc9b8035d  chromium_154.0.8037.57-1~deb13u1_amd64.deb' | sha256sum -c - \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./chromium_154.0.8037.57-1~deb13u1_amd64.deb \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./chromium_154.0.8037.57-1~deb13u1_amd64.deb postgresql-client-17=17.11-0+deb13u1 \
  && rm -f chromium_*.deb && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 USER dev
@@ -267,6 +274,24 @@ FROM ${RUNTIME_IMAGE} AS runtime
 ARG APP_UID=1000
 ARG APP_GID=1000
 
+# PostgreSQL 17.11 clients used by the offline backup/restore commands.
+# Debian's signed, dated snapshot pins the entire dependency closure. The
+# slim base has no CA bundle; apt authenticates signed InRelease and Packages
+# metadata even when fetching this fixed snapshot over HTTP. The two binaries
+# are run at the absolute paths musiclibd uses, so a broken client (missing
+# shared library, wrong layout) fails the image build instead of a backup
+# (N-230 D3).
+RUN printf '%s\n' \
+      'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260926T000000Z trixie main' \
+      'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260926T000000Z trixie-security main' \
+      > /etc/apt/sources.list \
+ && rm -f /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-client-17=17.11-0+deb13u1 \
+ && rm -rf /var/lib/apt/lists/* \
+ && /usr/lib/postgresql/17/bin/pg_dump --version \
+ && /usr/lib/postgresql/17/bin/pg_restore --version
+
 # ffmpeg and ffprobe (DESIGN.md §2.1, §8.4): static, the same bytes as in the
 # test and dev images. musiclibd checks their version at boot (§11.1 step 3).
 COPY --from=build-ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
@@ -274,7 +299,7 @@ COPY --from=build-ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/loc
 # test and dev images. musiclibd checks its version at boot.
 COPY --from=build-tags /opt/musiclib-tags/bin/musiclib-tags /usr/local/bin/
 
-RUN install -d -o "${APP_UID}" -g "${APP_GID}" -m 0755 /data \
+RUN install -d -o "${APP_UID}" -g "${APP_GID}" -m 0755 /data /backup \
  && install -d -o root -g root -m 0755 /import
 
 COPY --from=build-app /home/dev/out/musiclibd /usr/local/bin/musiclibd
