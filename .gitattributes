@@ -2,3 +2,5 @@
 # shell scripts, Go sources and Compose files must keep LF line endings on
 # every checkout, whatever core.autocrlf says (NOTES.md N-059).
 * text=auto eol=lf
+# Fonts are binary: never normalize them (NOTES.md N-244).
+*.woff2 binary

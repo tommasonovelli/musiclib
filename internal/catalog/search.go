@@ -27,6 +27,10 @@ type AlbumFilter struct {
 	// Trashed lists the trash instead of the active albums (§10.3: "il
 	// cestino è un filtro della libreria").
 	Trashed bool
+	// Failed lists only the albums whose render job failed (§10.3
+	// "Errore"), active or trashed alike; Trashed is then ignored. It is
+	// the Library's "Da sistemare" filter (NOTES.md N-245).
+	Failed bool
 	// After is the cursor the page starts after; nil is the first page.
 	After *AlbumCursor
 	// Limit is 1..MaxPageSize.
@@ -108,7 +112,7 @@ func (s *Service) ListAlbums(ctx context.Context, f AlbumFilter) (AlbumPage, err
 	err = store.InSnapshotTx(ctx, s.db, func(qs *store.Queries) error {
 		page = AlbumPage{}
 		p := store.ListAlbumSummariesParams{
-			Trashed: f.Trashed, ByArtist: f.ArtistID != uuid.Nil, ArtistID: f.ArtistID, First: f.After == nil,
+			Failed: f.Failed, Trashed: f.Trashed, ByArtist: f.ArtistID != uuid.Nil, ArtistID: f.ArtistID, First: f.After == nil,
 			Lim: int32(batch),
 		}
 		if f.After != nil {
@@ -167,4 +171,45 @@ func albumSummary(r store.ListAlbumSummariesRow) AlbumSummary {
 		a.Cover = &BlobRef{Hash: *r.CoverHash, Size: deref(r.CoverSize), Format: deref(r.CoverFormat)}
 	}
 	return a
+}
+
+// CountFailedAlbums is the number of albums ListAlbums lists with Failed:
+// the albums whose render job failed (§10.3 "Errore"). The Library shows
+// it on every page as its "Da sistemare" count (NOTES.md N-245).
+func (s *Service) CountFailedAlbums(ctx context.Context) (int64, error) {
+	var n int64
+	err := store.InSnapshotTx(ctx, s.db, func(qs *store.Queries) error {
+		var err error
+		if n, err = qs.CountFailedAlbums(ctx); err != nil {
+			return dbErr("counting the albums to fix", err)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// MatchArtists keeps the artists whose name contains query, with the same
+// normalization and comparison key as the album search (§5.2, N-191), in
+// the order given, at most limit of them. An empty query matches none: the
+// Library offers artists only while the user searches (NOTES.md N-246).
+// It does no I/O.
+func MatchArtists(artists []Artist, query string, limit int) ([]Artist, error) {
+	q, err := names.NormalizeText(query)
+	if err != nil {
+		return nil, textError("search text", err)
+	}
+	if q == "" {
+		return nil, nil
+	}
+	needle := names.Key(q)
+	var out []Artist
+	for _, a := range artists {
+		if len(out) == limit {
+			break
+		}
+		if strings.Contains(names.Key(a.Name), needle) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }

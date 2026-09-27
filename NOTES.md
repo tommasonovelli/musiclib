@@ -5581,7 +5581,7 @@ explicit, and the attribute is server-rendered and refreshed by the reload
 that every command performs. The browser tests click trash while active and
 restore while trashed, so both remain visible when they apply.
 
-### N-240 · `TestLibraryCursor` pins the exact markup of the pager link — TO CONFIRM
+### N-240 · `TestLibraryCursor` pins the exact markup of the pager link — RESOLVED (N-249)
 `internal/http/pages_test.go` matches `<a href="([^"]+)" rel="next">` with a
 regular expression, so the "Next page" link cannot carry a `class` (or any
 other attribute between `<a` and `rel`). It is styled through `.pager a`
@@ -5610,3 +5610,279 @@ container holding the links and the retry form). The chromedp tests read
 no link: the new structure preserves every one of these, and the whole gate
 passed without touching a single test line. Anyone restructuring these lists
 again must re-read `internal/http/*browser_test.go` first.
+
+## UI redesign, round 19: foundations and Library (2026-09-27)
+
+The owner approved a new UI direction, "musiclib — Web UI: principles and
+design" (called `webui-principles.md` below, in Italian). It is normative for
+the redesign the way DESIGN.md is for behaviour, and it supersedes the visual
+language of N-236 (the "flat structural" style is gone). Round 19 covers the
+foundations and the Library; round 20 is the album editor, round 21 Import
+and Activity.
+
+### N-243 · Owner decisions for the whole redesign — DECIDED (owner, 2026-09-27)
+1. **The UI language is Italian.** User-visible copy follows the glossary and
+   the voice of `webui-principles.md`; code, identifiers, comments, tests,
+   docs and API error codes stay English. This supersedes the English-labels
+   part of N-203. Round 19 translated the shell (`lang="it"`, the sidebar,
+   the skip link «Vai al contenuto», the page titles Libreria / Importa /
+   Attività / Cestino / Da sistemare, the back link) and the whole Library.
+   Until rounds 20–21 the album, import and activity bodies stay English under
+   an Italian shell: a deliberate interim, not an oversight.
+2. **The font is Hanken Grotesk**, the only family, self-hosted from
+   `/static/`, the stack ending in `system-ui, sans-serif` (N-244).
+3. **Covers in the grid are the originals**, with `loading="lazy"`,
+   `decoding="async"` and `width`/`height` 200: no server thumbnails; §8.5 is
+   unchanged.
+4. **Saving without a reload** belongs to round 20; nothing changed here.
+
+### N-244 · Font provenance and serving — DECIDED
+- Source: the Google Fonts CSS API
+  (`fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900`, fetched
+  2026-09-27), which serves `fonts.gstatic.com/s/hankengrotesk/v12/…`. Only
+  the `latin` and `latin-ext` subsets are shipped, as two files with the
+  API's own `unicode-range`s, renamed with the API version:
+  `web/hanken-grotesk-v12-latin.woff2` (34,704 bytes, SHA-256
+  `e9201eddf1d41d0b62253295d869ce3cf65768f7102b797f02c7f8c876b4a9d5`) and
+  `web/hanken-grotesk-v12-latin-ext.woff2` (19,588 bytes, SHA-256
+  `768af2923e0ab1549f1dfba0a5c8ea749c4c01f01d8e77ffaf7fcd12f57a0a24`).
+  Their `name` table says `Version 3.013`, variable axis `wght` 100–900
+  (checked with fontTools 4.60.1 in a throwaway `python:3.13-slim`
+  container). 54 KB in all, under the ~100 KB target: no subsetting or
+  conversion was needed.
+- `web/OFL.txt` is `ofl/hankengrotesk/OFL.txt` of `google/fonts` at commit
+  `c1eda9233c33ad7775b27efd794f931095cf6133` (SHA-256
+  `e02ccb89a86839b22feff7872ff5cc355cc0f58318d29eee20e2cf83a612f16d`);
+  upstream is `marcologous/hanken-grotesk` at `1ab416e82130b2d3ddb7710abf7ceabf07156a13`
+  (METADATA.pb).
+- The figures of this font are tabular by default (all 560 units wide);
+  `font-variant-numeric: tabular-nums` is still declared on the number
+  columns so that the `system-ui` fallback lines up too.
+- `web/embed.go` embeds `*.woff2 OFL.txt`; `.gitattributes` marks `*.woff2`
+  binary. `/static/` now serves an explicit allowlist with exact types:
+  `font/woff2` with `Cache-Control: public, max-age=31536000, immutable` (the
+  file name carries the version, so a new font is a new URL), `OFL.txt` as
+  `text/plain; charset=utf-8`, CSS and JS as before (`no-store`, so an
+  upgraded server never runs a stale module). The latin file is preloaded
+  (`<link rel=preload … crossorigin>`) against a late swap.
+- N-237 still holds for images; `app.css` now has exactly two `url()`s, the
+  same-origin fonts, which `default-src 'self'` allows. The CSP is unchanged.
+
+### N-245 · «Da sistemare»: count and filter — DECIDED
+"Albums in error" is §10.3 Error: a failed render job (one per album,
+`jobs_render_album_key`). `CountFailedAlbums` (sqlc) counts them;
+`ListAlbumSummaries` gained `@failed`, which keeps only those albums and then
+ignores `@trashed`: a trashed album whose removal failed needs fixing too and
+appears in the filter. The page parameter is `fix=true`; combining it with
+`trash=true` is refused (422), as is any other value. Search, artist and
+cursor compose with it. `renderPage` reads the count for every page (one
+indexed `count(*)` per page view); it is never polled. In the sidebar the
+entry shows a red dot and the count (a grey dot at zero); on narrow screens it
+becomes a compact red dot and number after the four views, and disappears at
+zero. The JSON API is unchanged: `AlbumFilter.Failed` is used by the page
+only. The failed filter lists the albums whatever their trash state and says
+so nowhere else; failed import jobs are not albums and are not counted.
+
+### N-246 · Live search and loading on scroll reuse the server page — DECIDED
+The brief allows "the existing search or list API". `GET /api/albums`
+deliberately carries no processing state (§10.1, N-190), so it cannot draw the
+status dots without one status request per album, which N-205 avoided. The
+module therefore fetches the Library page itself (`/?q=…`, and the «Mostra
+altri» `href`, which carries the round-16 cursor), parses it with `DOMParser`
+into an inert document and **adopts** the `#results` nodes. Catalog text is
+thus escaped once, by `html/template`; no string is ever assigned to
+`innerHTML`/`insertAdjacentHTML`, and every node the module creates itself
+gets its text through `textContent`. Searches are debounced (250 ms), abort
+the previous request and are dropped if a newer one started (a generation
+counter); the URL follows with `history.replaceState`; an `sr-only`
+`role="status"` announces "N album". Loading on scroll observes the real
+«Mostra altri» link with `IntersectionObserver` (800 px ahead) and observes
+it again after each page, so a short page chains; a click on the link loads in
+place. Without JS the form is a GET and the link a plain next page.
+**The artist is chosen through the same search:** when `q` is set, the server
+lists up to six matching artists (`catalog.MatchArtists`: the §5.2 key as a
+substring, as N-191) above the grid, as links to `?artist=<id>` that keep the
+trash or fix view. The artist filter titles the page with the artist's name
+and offers «Tutti gli artisti». The artist `<select>` and the trash checkbox
+are gone (Cestino is in the sidebar).
+
+### N-247 · The open album: layout, colour, focus, transition — DECIDED
+- The panel is an `<li class="album-panel">` inserted after the last tile of
+  the clicked tile's row (the tiles with the same `offsetTop`) and spanning
+  the grid. It opens from `grid-template-rows: 0fr` to `1fr` in 400 ms on
+  the system curve while its own row gap opens with it (a negative margin
+  going to 0), so the rows below slide down without a jump. Another cover of
+  the same row swaps the panel in place; one of another row closes the old
+  panel and opens a new one. Esc, a second click, Enter or Space close it.
+  It is placed again on resize and after more tiles load. A notch in the
+  panel's colour points at the open cover.
+- Colour: the grid's own `<img>` (same origin, already decoded) is drawn on a
+  32×32 `<canvas>`; pixels with alpha below 128 are skipped; the others go
+  into a histogram of colours quantised to 4 bits per channel (4,096 bins),
+  each bin keeping its mean colour. The most frequent bin is the background;
+  the text is the most frequent colour whose WCAG 2 contrast with it is at
+  least 4.5:1; if none reaches it, the text is white or black, whichever
+  contrasts more (one of the two always reaches 4.58:1). The two values are
+  written only as `--cover-bg` / `--cover-ink` with `style.setProperty` on the
+  panel. All panel text, its hairlines and its one filled button («Modifica
+  album», ink on background) derive from these two and no opacity is applied
+  to text, so every text pair keeps 4.5:1. Without a cover the panel is
+  `--paper`, with 1px hairlines above and below instead of a colour.
+- ARIA and focus: with JS each tile link gets `role="button"` and
+  `aria-expanded`, plus `aria-controls="album-panel"` while open; the panel
+  is a `region` labelled by its title, which receives focus on open; closing
+  returns focus to the cover. Arrow keys move by one tile or one row
+  (columns counted on the first row), Home/End to the ends. A modified click
+  (Ctrl, Cmd, Shift, Alt, or not the main button) still opens the album page.
+- Data: title, artist, status and cover come from the tile at once, so the
+  panel never opens empty; tracks, genre and year from `GET
+  /api/albums/{id}`. Tracks are grouped by disc only when there is more than
+  one disc, and set in two columns only from nine tracks up.
+- View transition: `@view-transition { navigation: auto }` inside
+  `prefers-reduced-motion: no-preference`; the album page names its `.cover`
+  `album-cover` (only one of the read-only and editor covers is ever
+  rendered), and the Library names **only** the open panel's cover, in the
+  click handler of «Modifica album», after clearing any earlier name.
+
+### N-248 · Status in the Library — DECIDED (owner, 2026-09-27: follow the principles)
+The brief said "an orange slowly pulsing dot while it updates
+(Queued/Processing)"; the principles' status list gives graphite to «in
+attesa» (Queued) and the pulsing orange to «in aggiornamento» (Processing).
+The engineer implemented the brief and recommended keeping orange for both.
+**The owner decided to follow the document:** Queued («In attesa») is a
+still graphite dot, Processing («In aggiornamento») an orange slowly pulsing
+dot, Error («Da sistemare») a red dot, Aligned nothing. The review applied it
+in `web/app.css` §5 for the grid, the panel and, for consistency ("stessi
+nomi … in tutte le viste"), the album page's status chip and the queue
+badges of Import/Activity: `pending` and `Queued` are graphite and still,
+only `running`/`Processing` pulse (the album chip used to pulse on
+`data-pending`, which included Queued). The sidebar's activity dot
+(`#nav-active`) stays orange and pulsing: it marks the queue's work in
+progress, as before, not an album's status.
+`TestBrowserLibraryGridPanelAndKeys` pins the computed colour and animation
+of all three dots (N-255). Related choices: the status word is visible text in a caption line under the
+tile (the principles require real words, not colour alone) and appears only
+for Error, Queued and Processing; Aligned and Archived show nothing. The dot
+sits on the cover with a 2px `--paper` outline (an outline, not a second
+shadow). The status colours have dark-theme twins (`#ff6961`, `#ff9f0a`,
+`#30d158`) so that an 8px dot stays visible on black; the light values are
+the principles' own. In dark mode a filled accent button carries dark text
+(`--on-accent: #1d1d1f`), because white on `#2997ff` is only 3.0:1.
+
+### N-249 · Test contracts changed deliberately — DECIDED
+- N-240 is resolved: `TestLibraryCursor` now matches `href="…" rel="next">Mostra
+  altri</a>` and counts `class="tile"` instead of `class="badge"`; the second
+  page must have no next link.
+- `TestLibraryFiltersAndProcessingState` checks `data-status="Queued"` and the
+  word «In attesa» instead of the English badge text.
+- `TestPagesCatalogEscapingAndBoundary` also pins `app.js`'s type and
+  `no-store`. New server tests pin the tile markup, status words, initials,
+  empty states, artist hits, the fix filter and its count on every page, and
+  the static allowlist.
+- N-242's contract is untouched: `queue.js` and every id the browser tests
+  use (`#nav-active`, `#error`, `#jobs`, `#candidates`, …) are unchanged;
+  `#nav-active` is now an 8px pulsing dot with `sr-only` text. The album page
+  keeps every id and `data-*` its tests read.
+- The tile's `data-status` (the English §10.3 value) is the stable hook for
+  CSS and tests; the Italian word is presentation.
+
+### N-250 · Round-19 mutation checks — DECIDED
+Each mutant was applied alone, the named tests run against real PostgreSQL
+and Chromium, and the file restored (no mutant left; `sqlc diff` clean):
+- contrast threshold `>= 4.5` → `>= 1`: `TestBrowserLibraryGridPanelAndKeys`
+  failed ("cover colours rgb(122 31 43) on rgb(122 31 43): 1.00");
+- fallback always white: same test failed ("single colour rgb(255 255 255) on
+  rgb(119 119 119): 4.48");
+- panel title through `innerHTML`: same test failed ("panel escaping");
+- `html/template` → `text/template`: `TestPagesCatalogEscapingAndBoundary`
+  and `TestLibraryEmptyStatesAndTrash` failed;
+- loading more from the first page instead of the cursor `href`:
+  `TestBrowserLibrarySearchAndScroll` timed out waiting for 53 distinct tiles;
+- Esc no longer closes: `TestBrowserLibraryGridPanelAndKeys` timed out on the
+  closed panel and returned focus;
+- the page ignores `fix=true`: `TestLibraryFixFilterAndCount` and
+  `TestBrowserLibraryFixAndTrash` failed;
+- the SQL `@failed` branch keeps every album: `TestListAlbumsFailedAndCount`
+  failed; the count without `state = 'failed'`: `TestLibraryFixFilterAndCount`
+  failed on every page.
+
+### N-251 · Performance budget and grid geometry — DECIDED
+CSS + JS, uncompressed: `app.css` 25,519, `app.js` 9,247, `queue.js` 11,566,
+`library.js` 13,370 bytes: 59,702 bytes in all (< 60,000; figures after the
+review fixes N-253–N-255, which added 381 bytes of CSS); the Library page
+loads 48,136 of them. Fonts 54,292 bytes, cached as immutable. The budget is
+nearly spent: rounds 20–21 must remove as much CSS as they add. The grid is
+`repeat(auto-fill, minmax(160px, 1fr))` with 24px column gaps: columns stay
+within 160–200px from five columns up (5 × ~180px at 1280px); with two to four
+columns (phones, narrow windows) they can reach ~220px, preferred to a ragged
+right edge under the right-aligned search. The search head is sticky with a
+solid `--paper` background (never translucent), and `scroll-padding-top`
+keeps focused tiles and the panel below it. `corner-shape: squircle` is
+applied under `@supports`, with the radii scaled ×1.6 so that the continuous
+corner reads the same size.
+
+### N-252 · Review screenshots and the test browser's fonts — DECIDED
+`TestBrowserLibraryScreenshots` writes PNGs of the grid, the grid scrolled
+under the stuck search head (added in review, N-253), the open panel, the
+empty state and the album, import and activity pages, light and dark, at
+1280 and 390px, with reduced motion, when `MUSICLIB_UI_SHOTS` names a
+directory; it is skipped otherwise, so the gate is unaffected (docs/ui.md).
+The dev image's Chromium has no CJK fonts, so the Japanese fixture renders as
+boxes there; that is the container, not the product (a desktop browser falls
+back through `system-ui`). The repository's `/tmp/` is gitignored for these
+shots.
+
+### N-253 · The stuck search head: page-wide, with a hairline only while stuck — DECIDED (review)
+The screenshots showed the first row of covers cut by the sticky head with
+nothing marking the edge, and the covers' shadows showing in the page gutter
+beside it, so the head read as a floating box. The head now spans the page
+gutter (`margin-inline: calc(-1 * var(--gutter))` with the same padding;
+`--gutter` is 32px, 16px below 52rem) and is a `container-type:
+scroll-state` container; `@container scroll-state(stuck: top)` draws a 1px
+`--hairline` under it only while it is stuck, never at the top of the page.
+Two traps found on the way: a container cannot be queried by its own
+`::after`, so the line is the title's `::after`, absolutely placed against
+the head (its nearest positioned ancestor); and an at-rule adds no
+specificity, so the line is generated only inside the query rather than
+toggled from a more specific base rule. Browsers without scroll-state
+queries (Firefox, Safari today) show no line: a progressive enhancement, the
+head stays solid. `TestBrowserLibrarySearchAndScroll` checks no line at the
+top, a line after scrolling, none again back at the top.
+
+### N-254 · A track's own artist in the open album — DECIDED (review)
+The panel set a track's artist inline after its title in the same size and
+weight («Freddie Freeloader Miles & Cannonball»). Graphite is not an option
+there: the panel's colours come from the cover and only `--cover-ink` is
+guaranteed 4.5:1 against `--cover-bg`, and no opacity is applied to panel
+text (N-247). The artist is now its own line in the Note size (13/18,
+weight 400) under the title, in `--cover-ink`. The markup is unchanged (a
+`span.track-artist` after a space inside `.track-title`), so the text a
+screen reader reads is unchanged. `TestBrowserLibraryGridPanelAndKeys`
+checks the artist is a block of 13px text in the panel's ink, below the
+title's first line.
+
+### N-255 · Review: status fixtures, years and mutation checks — DECIDED (review)
+- The screenshot fixture had two albums without a job update (so both
+  Queued, one of them «Sunday at the Village Vanguard») and one failed: in
+  light theme the `#c93400` pulsing dot then read as red next to «In
+  attesa». With N-248 applied, the fixture now shows one album in each state
+  that appears: Error (Sigur Rós), Processing (Bill Evans, a running render
+  job) and Queued (the Japanese title), each with its word. Light
+  `#c93400` («arancio» in the principles) and `#d70015` are close at 8px;
+  they are the document's values and are kept; the word under the cover
+  and the pulse tell them apart.
+- Years: every fixture album had 1959. The screenshot fixture now gives each
+  album its own year (1961 + 3i), and `TestLibraryGridTiles` sets one album
+  to 1961 and checks its tile shows 1961; the screenshots show the right
+  year on every tile and in the panel. There was no year bug.
+- `TestLibraryGridTiles` also covers a Processing tile («In aggiornamento»);
+  `TestBrowserLibraryGridPanelAndKeys` pins Error `rgb(215, 0, 21)` still,
+  Queued `rgb(110, 110, 115)` still, Processing `rgb(201, 52, 0)` pulsing, and
+  no dot or word on Aligned. The test helper `runRender` makes a render job
+  running (`claimed = requested`, as `jobs_claimed_check` requires).
+- Mutants re-run by the reviewer, each alone and restored: contrast
+  `>= 4.5` → `>= 1` (killed: "cover colours … 1.00"); Esc → `'Esc'`
+  (killed: timeout on the closed panel and returned focus); Queued pulsing
+  orange again (killed: "grid state"); the hairline query `stuck` →
+  `scrollable` (killed: timeout on the line); the track artist appended as
+  plain text (killed: the track-artist check).

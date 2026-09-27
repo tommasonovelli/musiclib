@@ -1,5 +1,14 @@
 {{define "layout"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{.Title}} — musiclib</title><link rel="stylesheet" href="/static/app.css"><script type="module" src="/static/app.js"></script>{{if .Queue}}<script type="module" src="/static/queue.js"></script>{{end}}</head>
-<body><a class="skip-link" href="#main">Skip to content</a>
-<header class="topbar"><div class="topbar-inner"><a href="/" class="brand"><span class="brand-mark" aria-hidden="true"></span>musiclib</a><nav aria-label="Main navigation" class="mainnav"><a href="/">Library</a><a href="/import">Import</a><a href="/activity">Activity <span id="nav-active" hidden aria-label="work in progress">●</span></a></nav></div></header>
-<main id="main" class="page">{{if .Back}}<a class="backlink" href="/">← Library</a>{{end}}<h1 class="page-title">{{.Title}}</h1>{{template "body" .}}</main></body></html>{{end}}
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>{{.Title}} — musiclib</title>
+<link rel="preload" href="/static/hanken-grotesk-v12-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css"><script type="module" src="/static/app.js"></script>{{if .Queue}}<script type="module" src="/static/queue.js"></script>{{end}}{{if .Library}}<script type="module" src="/static/library.js"></script>{{end}}</head>
+<body><a class="skip-link" href="#main">Vai al contenuto</a>
+<div class="app"><nav class="sidebar" aria-label="Sezioni"><a class="brand" href="/">musiclib</a>
+<ul class="nav">
+<li><a href="/"{{if eq .Nav "library"}} aria-current="page"{{end}}>Libreria</a></li>
+<li><a href="/import"{{if eq .Nav "import"}} aria-current="page"{{end}}>Importa</a></li>
+<li><a href="/activity"{{if eq .Nav "activity"}} aria-current="page"{{end}}>Attività<span id="nav-active" class="dot dot-busy" hidden><span class="sr-only">, lavoro in corso</span></span></a></li>
+<li><a href="/?trash=true"{{if eq .Nav "trash"}} aria-current="page"{{end}}>Cestino</a></li>
+</ul>
+<a class="fix-filter" href="/?fix=true" data-count="{{.FixCount}}"{{if eq .Nav "fix"}} aria-current="page"{{end}}><span class="dot dot-error" aria-hidden="true"></span>Da sistemare<span class="count"><span class="sr-only">: </span>{{.FixCount}}</span></a></nav>
+<main id="main" class="page" tabindex="-1">{{if .Back}}<a class="backlink" href="/">Libreria</a>{{end}}<header class="page-head"><h1 class="page-title">{{.Title}}</h1>{{block "tools" .}}{{end}}</header>{{template "body" .}}</main></div></body></html>{{end}}

@@ -35,6 +35,20 @@ func (q *Queries) CountAlbumTracks(ctx context.Context, albumID uuid.UUID) (int6
 	return count, err
 }
 
+const countFailedAlbums = `-- name: CountFailedAlbums :one
+SELECT count(*)::bigint AS failed FROM jobs WHERE kind = 'render' AND state = 'failed'
+`
+
+// The number of albums the Library's "Da sistemare" filter lists: one
+// render job per album (jobs_render_album_key), so the failed render jobs
+// count the albums in §10.3 "Errore", active or trashed (NOTES.md N-245).
+func (q *Queries) CountFailedAlbums(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countFailedAlbums)
+	var failed int64
+	err := row.Scan(&failed)
+	return failed, err
+}
+
 const deleteAttachment = `-- name: DeleteAttachment :execrows
 DELETE FROM attachments WHERE id = $1 AND album_id = $2
 `
@@ -875,16 +889,18 @@ FROM albums al
 JOIN artists ar ON ar.id = al.artist_id
 LEFT JOIN blobs cb ON cb.hash = al.cover_hash
 LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
-WHERE (al.deleted_at IS NOT NULL) = $1::boolean
-  AND (NOT $2::boolean OR al.artist_id = $3::uuid)
-  AND ($4::boolean
+WHERE (CASE WHEN $1::boolean THEN j.state IS NOT DISTINCT FROM 'failed'
+            ELSE (al.deleted_at IS NOT NULL) = $2::boolean END)
+  AND (NOT $3::boolean OR al.artist_id = $4::uuid)
+  AND ($5::boolean
        OR (ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id)
-          > ($5::text, $6::text, $7::uuid))
+          > ($6::text, $7::text, $8::uuid))
 ORDER BY ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id
-LIMIT $8::int
+LIMIT $9::int
 `
 
 type ListAlbumSummariesParams struct {
+	Failed      bool
 	Trashed     bool
 	ByArtist    bool
 	ArtistID    uuid.UUID
@@ -922,9 +938,12 @@ type ListAlbumSummariesRow struct {
 // artist's folder key, then the album's, then the id, byte-wise (COLLATE
 // "C"). Keyset pagination: the page starts after the cursor's triple
 // (NOTES.md N-190). The text search is applied by the caller with the
-// normalization of internal/names, never with SQL lower() (§5.2).
+// normalization of internal/names, never with SQL lower() (§5.2). With
+// @failed the page keeps only the albums whose render job failed (§10.3
+// "Errore"), active or trashed, and @trashed is ignored (NOTES.md N-245).
 func (q *Queries) ListAlbumSummaries(ctx context.Context, arg ListAlbumSummariesParams) ([]ListAlbumSummariesRow, error) {
 	rows, err := q.db.Query(ctx, listAlbumSummaries,
+		arg.Failed,
 		arg.Trashed,
 		arg.ByArtist,
 		arg.ArtistID,

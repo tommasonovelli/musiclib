@@ -71,7 +71,10 @@ func TestPagesCatalogEscapingAndBoundary(t *testing.T) {
 	if status != 421 {
 		t.Errorf("bad Host = %d", status)
 	}
-	_, _, body := pageRequest(t, e, "/static/app.js", testHost)
+	status, headers, body := pageRequest(t, e, "/static/app.js", testHost)
+	if status != 200 || headers.Get("Content-Type") != "text/javascript; charset=utf-8" || headers.Get("Cache-Control") != "no-store" {
+		t.Fatalf("app.js: %d %v", status, headers)
+	}
 	if !strings.Contains(body, "If-Match") || !strings.Contains(body, "X-Musiclib-Request") {
 		t.Fatal("mutation guards missing from embedded module")
 	}
@@ -88,7 +91,7 @@ func TestLibraryFiltersAndProcessingState(t *testing.T) {
 	id := e.seed("Artist One", "Find Me")
 	other := e.seed("Artist Two", "Other Title")
 	_, _, body := pageRequest(t, e, "/", testHost)
-	if !strings.Contains(body, "Find Me") || !strings.Contains(body, "Other Title") || !strings.Contains(body, "Queued") || !strings.Contains(body, "/albums/"+id.String()) {
+	if !strings.Contains(body, "Find Me") || !strings.Contains(body, "Other Title") || !strings.Contains(body, `data-status="Queued"`) || !strings.Contains(body, "In attesa") || !strings.Contains(body, "/albums/"+id.String()) {
 		t.Fatalf("library page missing catalog/status: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/?q=find", testHost)
@@ -120,15 +123,15 @@ func TestLibraryCursor(t *testing.T) {
 		e.seed("Cursor Artist", fmt.Sprintf("Cursor %03d", i))
 	}
 	_, _, first := pageRequest(t, e, "/?q=cursor", testHost)
-	match := regexp.MustCompile(`<a href="([^"]+)" rel="next">`).FindStringSubmatch(first)
+	match := regexp.MustCompile(` href="([^"]+)" rel="next">Mostra altri</a>`).FindStringSubmatch(first)
 	if len(match) != 2 {
 		t.Fatal("50-entry page has no cursor link")
 	}
-	if strings.Count(first, `class="badge"`) != 50 {
+	if strings.Count(first, `class="tile"`) != 50 {
 		t.Fatal("first page must contain 50 albums")
 	}
 	_, _, second := pageRequest(t, e, html.UnescapeString(match[1]), testHost)
-	if strings.Count(second, `class="badge"`) != 1 || !strings.Contains(second, "Cursor 050") {
+	if strings.Count(second, `class="tile"`) != 1 || strings.Contains(second, `rel="next"`) || !strings.Contains(second, "Cursor 050") {
 		t.Fatalf("cursor page: %s", second)
 	}
 }

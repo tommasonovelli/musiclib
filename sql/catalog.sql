@@ -249,7 +249,9 @@ DELETE FROM tracks WHERE id = @id AND album_id = @album_id;
 -- artist's folder key, then the album's, then the id, byte-wise (COLLATE
 -- "C"). Keyset pagination: the page starts after the cursor's triple
 -- (NOTES.md N-190). The text search is applied by the caller with the
--- normalization of internal/names, never with SQL lower() (§5.2).
+-- normalization of internal/names, never with SQL lower() (§5.2). With
+-- @failed the page keeps only the albums whose render job failed (§10.3
+-- "Errore"), active or trashed, and @trashed is ignored (NOTES.md N-245).
 -- name: ListAlbumSummaries :many
 SELECT al.id, al.revision, al.artist_id, ar.name AS artist_name, ar.folder_key AS artist_key,
        al.title, al.folder_key AS title_key, al.year, al.genre, al.compilation,
@@ -261,10 +263,17 @@ FROM albums al
 JOIN artists ar ON ar.id = al.artist_id
 LEFT JOIN blobs cb ON cb.hash = al.cover_hash
 LEFT JOIN jobs j ON j.kind = 'render' AND j.album_id = al.id
-WHERE (al.deleted_at IS NOT NULL) = @trashed::boolean
+WHERE (CASE WHEN @failed::boolean THEN j.state IS NOT DISTINCT FROM 'failed'
+            ELSE (al.deleted_at IS NOT NULL) = @trashed::boolean END)
   AND (NOT @by_artist::boolean OR al.artist_id = @artist_id::uuid)
   AND (@first::boolean
        OR (ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id)
           > (@after_artist::text, @after_title::text, @after_id::uuid))
 ORDER BY ar.folder_key COLLATE "C", al.folder_key COLLATE "C", al.id
 LIMIT @lim::int;
+
+-- The number of albums the Library's "Da sistemare" filter lists: one
+-- render job per album (jobs_render_album_key), so the failed render jobs
+-- count the albums in §10.3 "Errore", active or trashed (NOTES.md N-245).
+-- name: CountFailedAlbums :one
+SELECT count(*)::bigint AS failed FROM jobs WHERE kind = 'render' AND state = 'failed';
