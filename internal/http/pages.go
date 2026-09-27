@@ -79,13 +79,14 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 }
 
 type pageData struct {
-	Title, AlbumLink, Query, Next, Status string
-	Trash, Pending, Queue                 bool
-	Artists                               []pageArtist
-	Albums                                []pageAlbum
-	Album                                 albumJSON
-	ETag                                  string
-	ImageAttachments, LyricsAttachments   []attachmentJSON
+	Title, Query, Next, Status string
+	// Back shows the link back to the library above the title.
+	Back, Trash, Pending, Queue         bool
+	Artists                             []pageArtist
+	Albums                              []pageAlbum
+	Album                               albumJSON
+	ETag                                string
+	ImageAttachments, LyricsAttachments []attachmentJSON
 }
 type pageArtist struct {
 	ID, Name string
@@ -135,9 +136,6 @@ func (a *API) libraryPage(w http.ResponseWriter, r *http.Request, c *catalog.Ser
 		return
 	}
 	d := pageData{Title: "Library", Query: f.Query, Trash: f.Trashed}
-	if len(page.Albums) != 0 {
-		d.AlbumLink = "/albums/" + page.Albums[0].ID.String()
-	}
 	for _, ar := range artists {
 		d.Artists = append(d.Artists, pageArtist{ar.ID.String(), ar.Name, ar.ID == f.ArtistID})
 	}
@@ -173,7 +171,7 @@ func (a *API) albumPage(w http.ResponseWriter, r *http.Request, c *catalog.Servi
 		a.fail(w, r, err)
 		return
 	}
-	d := pageData{Title: v.Title, AlbumLink: r.URL.Path, Album: albumRep(v), ETag: ETag(KindAlbum, v.ID, v.Revision)}
+	d := pageData{Title: v.Title, Back: true, Album: albumRep(v), ETag: ETag(KindAlbum, v.ID, v.Revision)}
 	for _, ar := range artists {
 		d.Artists = append(d.Artists, pageArtist{ar.ID.String(), ar.Name, ar.ID == v.ArtistID})
 	}

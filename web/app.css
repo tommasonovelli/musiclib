@@ -96,6 +96,8 @@ body {
 a { color: var(--link); }
 a:hover { text-decoration-thickness: 2px; }
 
+.backlink { display: inline-block; margin-bottom: var(--s2); font-size: .875rem; }
+
 h1, h2, h3 { line-height: 1.2; text-wrap: balance; }
 .page-title {
   margin: 0 0 var(--s4);
@@ -139,8 +141,6 @@ h3 { margin: var(--s5) 0 var(--s2); font-size: .75rem; font-family: var(--mono);
   font-size: .875rem; font-weight: 600;
 }
 .mainnav a:hover { border-color: var(--line); color: var(--text); }
-.mainnav [aria-disabled="true"] { color: var(--text-faint); }
-.nav-note { font-weight: 400; font-size: .75rem; font-family: var(--mono); }
 #nav-active { color: var(--warn-fg); font-size: .7rem; line-height: 1; }
 
 .page { max-width: 96rem; margin: 0 auto; padding: var(--s5) var(--s4) var(--s6); }
