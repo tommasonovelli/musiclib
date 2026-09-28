@@ -132,7 +132,9 @@ func TestEndToEndImportThroughAPI(t *testing.T) {
 	mixedID := mixed["id"].(string)
 	rr := d.mustAPI(t, http.MethodPost, "/api/jobs/"+mixedID+"/retry", "",
 		map[string]any{"artist": nil, "title": "Portrait and Sunday"}, http.StatusAccepted)
-	if rr.body["state"] != "pending" || rr.body["ticket"].(float64) <= mixed["ticket"].(float64) {
+	// The answer is the job read after the retry's commit and the pool's
+	// wake-up: a worker may already have claimed it (NOTES.md N-306).
+	if (rr.body["state"] != "pending" && rr.body["state"] != "running") || rr.body["ticket"].(float64) <= mixed["ticket"].(float64) {
 		t.Fatalf("retry: %v", rr.body)
 	}
 	r = d.waitCompleted(t, id)

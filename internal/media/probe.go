@@ -396,6 +396,16 @@ func duration(s ffprobeStream) time.Duration {
 	return time.Duration(ns.Int64())
 }
 
+// DurationMS is an AudioInfo.Duration in whole milliseconds, rounded down,
+// the unit in which the catalog keeps it for display (NOTES.md N-300). ok is
+// false for 0, a container that declares no duration: unknown, not zero.
+func DurationMS(d time.Duration) (ms int64, ok bool) {
+	if d <= 0 {
+		return 0, false
+	}
+	return d.Milliseconds(), true
+}
+
 // declaredFrames returns the exact frame count the container declares, 0
 // when it declares none or only an estimate:
 //   - FLAC: STREAMINFO's total, which ffprobe reports as duration_ts in a

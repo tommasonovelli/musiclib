@@ -13,7 +13,7 @@ const key = f => (f.closest('[data-track]')?.dataset.track || '') + f.name;
 const value = f => f.type == 'checkbox' ? String(f.checked)
   : f.name == 'genre' && f.closest('[data-track]')?.querySelector('[name=nogenre]').checked ? '\0' : f.value;
 const changed = () => fields().filter(f => value(f) !== saved.get(key(f)));
-const count = () => changed().filter(f => f.name != 'nogenre').length;
+const count = () => changed().filter(f => !/^(nogenre|new_artist)$/.test(f.name)).length;
 const fold = s => s.normalize('NFKC').trim().toLowerCase();
 const artist = () => $$('#artists option').find(o => fold(o.value) == fold($('#artist-name').value));
 
@@ -27,11 +27,17 @@ function wrong() {
   for (const r of $$('.is-wrong')) r.classList.remove('is-wrong');
 }
 
-// Artist, inherited placeholders (N-259), Save bar.
+// Artist, inherited placeholders (N-259), Save bar. «Create artist» only
+// stages the name while the field says it; Save creates it (N-298).
 function update() {
-  const o = artist(), name = $('#artist-name').value, id = $('[name=artist_id]'), n = count();
+  const o = artist(), name = $('#artist-name').value, id = $('[name=artist_id]'), staged = $('[name=new_artist]');
+  if (o || fold(staged.value) != fold(name)) staged.value = '';
   if (o) id.value = o.dataset.id;
-  $('#create-artist').hidden = !!o || !name.trim();
+  else if (staged.value) id.value = '';
+  else id.value ||= saved.get('artist_id');
+  const n = count();
+  $('#create-artist').hidden = !!o || !name.trim() || !!staged.value;
+  $('#new-artist').hidden = !staged.value;
   $('#rename-artist').hidden = !o || id.value != saved.get('artist_id');
   for (const r of $$('[data-track]')) {
     $('[name=artist]', r).placeholder = name;
@@ -78,6 +84,7 @@ async function refresh(tag) {
     f.value = v;
     f.checked = checked;
     if (k == 'artist_id') $('#artist-name').value = $(`#artists [data-id="${v}"]`)?.value ?? '';
+    if (k == 'new_artist' && v) $('#artist-name').value = v;
   }
   update();
   document.getElementById(focused)?.focus();
@@ -114,6 +121,7 @@ const sentences = {
   artist: 'Choose an artist from the list, or create it.',
   artist_exists: exists,
   artist_folder_conflict: exists,
+  artist_not_found: 'This artist isn’t in your library any more: choose another, or create it.',
   album_folder_conflict: 'The artist already has an album with this title: change it.',
   text_empty: 'A title or a name is empty: fill it in.',
   text_control_char: 'A text has a line break or an invisible character: remove it.',
@@ -143,6 +151,7 @@ function sentence(e) {
 
 function fail(e, box) {
   const [p, again, details] = box.children;
+  if (/^artist_(exists|folder|not)/.test(e.code)) artists();
   p.textContent = sentence(e);
   again.hidden = e.code != 'precondition_failed';
   details.hidden = !e.status;
@@ -169,12 +178,13 @@ async function ask(text, verb, value) {
   return await modal($('#ask')) && (value == null || input.value.trim());
 }
 
-async function create() {
-  const a = await call('/api/artists', 'POST', json({ name: $('#artist-name').value.trim() }), $('#head-notice'), '');
-  if (!a) return;
-  await refresh(etag);
-  $('#artist-name').value = a.name;
-  update();
+// The artists as the server has them now, after an answer that says the
+// list was out of date; the edits stay.
+async function artists() {
+  try {
+    $('#artists').replaceWith(document.adoptNode($('#artists', await page())));
+    update();
+  } catch { /* The notice already says what happened. */ }
 }
 
 // §4.3: each album of the artist gets a revision; only this one's is taken.
@@ -260,7 +270,10 @@ on('click', e => {
     for (const n of $$('.notice', document)) n.hidden = true;
     refresh();
   }
-  if (b.id == 'create-artist') create();
+  if (b.id == 'create-artist') {
+    $('[name=new_artist]').value = $('#artist-name').value.trim();
+    update();
+  }
   if (b.id == 'rename-artist') rename();
   if (b.id == 'extra-add') {
     const path = $('#extra-path').value.trim(), box = $('#extras-notice');
@@ -291,14 +304,14 @@ for (const type of ['dragover', 'dragleave', 'drop']) {
 on('submit', async e => {
   if (e.target.id != 'metadata') return;
   e.preventDefault();
-  if (!artist()) return fail({ code: 'artist' }, $('#head-notice'));
+  const v = (name, root = editor) => $(`[name=${name}]`, root).value, own = s => s.trim() ? s : null;
+  if (!artist() && !v('new_artist')) return fail({ code: 'artist' }, $('#head-notice'));
   wrong();
   const sent = new Map(fields().map(f => [key(f), value(f)]));
-  const v = (name, root = editor) => $(`[name=${name}]`, root).value, own = s => s.trim() ? s : null;
   busy = true;
   update();
   const album = await call(base, 'PUT', json({
-    artist_id: v('artist_id'), title: v('title'), year: v('year') ? +v('year') : null, genre: own(v('genre')),
+    artist_id: v('artist_id') || null, new_artist: v('new_artist') || null, title: v('title'), year: v('year') ? +v('year') : null, genre: own(v('genre')),
     compilation: $('[name=compilation]').checked,
     tracks: $$('[data-track]').map(r => ({
       id: r.dataset.track, disc: +v('disc', r), no: +v('no', r), title: v('title', r),

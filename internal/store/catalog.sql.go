@@ -83,6 +83,22 @@ func (q *Queries) DeleteClaim(ctx context.Context, arg DeleteClaimParams) (int64
 	return result.RowsAffected(), nil
 }
 
+const deleteOrphanArtist = `-- name: DeleteOrphanArtist :execrows
+DELETE FROM artists ar
+WHERE ar.id = $1 AND NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)
+`
+
+// An artist left without any album, active or trashed, is deleted in the
+// transaction that took its last album away (owner decision, NOTES.md
+// N-297). One row or none: an artist that still has an album is kept.
+func (q *Queries) DeleteOrphanArtist(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOrphanArtist, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteTrack = `-- name: DeleteTrack :execrows
 DELETE FROM tracks WHERE id = $1 AND album_id = $2
 `
@@ -717,23 +733,30 @@ type InsertAttachmentsParams struct {
 }
 
 const insertBlobs = `-- name: InsertBlobs :exec
-INSERT INTO blobs (hash, size, format, created_at)
-SELECT u.hash, u.size, NULLIF(u.format, ''), now()
+INSERT INTO blobs (hash, size, format, duration_ms, created_at)
+SELECT u.hash, u.size, NULLIF(u.format, ''), NULLIF(u.duration_ms, -1), now()
 FROM (SELECT unnest($1::text[]) AS hash, unnest($2::bigint[]) AS size,
-             unnest($3::text[]) AS format) AS u
+             unnest($3::text[]) AS format, unnest($4::bigint[]) AS duration_ms) AS u
 ON CONFLICT (hash) DO NOTHING
 `
 
 type InsertBlobsParams struct {
-	Hashes  []string
-	Sizes   []int64
-	Formats []string
+	Hashes    []string
+	Sizes     []int64
+	Formats   []string
+	Durations []int64
 }
 
 // Blobs (§7.5, §7.6): the rows of blobs already pinned on disk. An existing
-// row is kept; the caller compares size and format with GetBlobs.
+// row is kept; the caller compares size and format with GetBlobs. A
+// duration of -1 is unknown (NULL, NOTES.md N-300).
 func (q *Queries) InsertBlobs(ctx context.Context, arg InsertBlobsParams) error {
-	_, err := q.db.Exec(ctx, insertBlobs, arg.Hashes, arg.Sizes, arg.Formats)
+	_, err := q.db.Exec(ctx, insertBlobs,
+		arg.Hashes,
+		arg.Sizes,
+		arg.Formats,
+		arg.Durations,
+	)
 	return err
 }
 
@@ -1038,7 +1061,7 @@ func (q *Queries) ListAlbumSummaries(ctx context.Context, arg ListAlbumSummaries
 
 const listAlbumTrackViews = `-- name: ListAlbumTrackViews :many
 SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
-       t.blob_hash, b.size AS blob_size, b.format AS blob_format, t.lyrics_hash
+       t.blob_hash, b.size AS blob_size, b.format AS blob_format, b.duration_ms AS blob_duration_ms, t.lyrics_hash
 FROM tracks t
 JOIN blobs b ON b.hash = t.blob_hash
 WHERE t.album_id = $1
@@ -1046,17 +1069,18 @@ ORDER BY t.disc, t.no, t.id
 `
 
 type ListAlbumTrackViewsRow struct {
-	ID         uuid.UUID
-	Disc       int32
-	No         int32
-	Title      string
-	Artist     *string
-	Genre      *string
-	SourcePath string
-	BlobHash   string
-	BlobSize   int64
-	BlobFormat *string
-	LyricsHash *string
+	ID             uuid.UUID
+	Disc           int32
+	No             int32
+	Title          string
+	Artist         *string
+	Genre          *string
+	SourcePath     string
+	BlobHash       string
+	BlobSize       int64
+	BlobFormat     *string
+	BlobDurationMs *int64
+	LyricsHash     *string
 }
 
 func (q *Queries) ListAlbumTrackViews(ctx context.Context, albumID uuid.UUID) ([]ListAlbumTrackViewsRow, error) {
@@ -1079,6 +1103,7 @@ func (q *Queries) ListAlbumTrackViews(ctx context.Context, albumID uuid.UUID) ([
 			&i.BlobHash,
 			&i.BlobSize,
 			&i.BlobFormat,
+			&i.BlobDurationMs,
 			&i.LyricsHash,
 		); err != nil {
 			return nil, err
@@ -1259,6 +1284,27 @@ type SetAlbumTrashedParams struct {
 func (q *Queries) SetAlbumTrashed(ctx context.Context, arg SetAlbumTrashedParams) error {
 	_, err := q.db.Exec(ctx, setAlbumTrashed, arg.Trashed, arg.ID)
 	return err
+}
+
+const setBlobDuration = `-- name: SetBlobDuration :execrows
+UPDATE blobs SET duration_ms = $1
+WHERE hash = $2 AND duration_ms IS NULL AND format IN ('flac', 'mp3', 'm4a-aac', 'm4a-alac')
+`
+
+type SetBlobDurationParams struct {
+	DurationMs *int64
+	Hash       string
+}
+
+// A probed duration replaces "unknown", never a known one (N-300, N-301):
+// the first value recorded stays, whatever a later probe says. Only an audio
+// blob has one (blobs_duration_check); any other row is left alone.
+func (q *Queries) SetBlobDuration(ctx context.Context, arg SetBlobDurationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setBlobDuration, arg.DurationMs, arg.Hash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setBlobFormat = `-- name: SetBlobFormat :execrows

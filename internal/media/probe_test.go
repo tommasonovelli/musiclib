@@ -291,3 +291,22 @@ func TestMP3EstimationWarningOfThePinnedTool(t *testing.T) {
 		}
 	}
 }
+
+// DurationMS (NOTES.md N-300, N-307): whole milliseconds, rounded down; a
+// container that declares no duration (0) is unknown, never a 0 ms track.
+func TestDurationMS(t *testing.T) {
+	for _, tc := range []struct {
+		d  time.Duration
+		ms int64
+		ok bool
+	}{
+		{0, 0, false},
+		{-time.Second, 0, false},
+		{1500*time.Millisecond + 999*time.Microsecond, 1500, true},
+		{9*time.Minute + 22*time.Second, 562_000, true},
+	} {
+		if ms, ok := DurationMS(tc.d); ms != tc.ms || ok != tc.ok {
+			t.Errorf("DurationMS(%v) = %d, %v; want %d, %v", tc.d, ms, ok, tc.ms, tc.ok)
+		}
+	}
+}

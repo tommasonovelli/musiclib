@@ -89,6 +89,10 @@ type Track struct {
 	// Tags are the managed tags the file must carry (§8.2); zero values are
 	// removals.
 	Tags media.TagValues
+	// ProbeDuration: the catalog does not know the blob's duration yet, so
+	// the build reads it from the verified copy and reports it in
+	// Result.Durations (NOTES.md N-301). It changes nothing in the output.
+	ProbeDuration bool
 }
 
 // Copy is a file copied byte for byte (§9.1 step 7).
@@ -233,7 +237,7 @@ func planTracks(s *jobs.RenderSnapshot, cover *Cover, ns *namespace) ([]Track, [
 			return nil, nil, errorf(CodeInvalidSnapshot, "the file name of %s lost its extension", name)
 		}
 		tr := Track{Path: dir + file, Blob: blob, Format: t.Blob.Format,
-			Tags: expectedTags(s, t, discTotal, trackTotals[t.Disc])}
+			Tags: expectedTags(s, t, discTotal, trackTotals[t.Disc]), ProbeDuration: !t.DurationKnown}
 		if err := ns.add(entry{path: tr.Path, name: name}); err != nil {
 			return nil, nil, err
 		}

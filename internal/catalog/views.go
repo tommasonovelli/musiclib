@@ -65,6 +65,10 @@ type TrackView struct {
 	// (N-099), exactly as it was on disk.
 	SourcePath string
 	Blob       BlobRef
+	// DurationMS is the audio's duration in milliseconds, nil while unknown
+	// (NOTES.md N-300): a fact of the blob, read-only, filled by the import
+	// or by a later render without a new revision.
+	DurationMS *int64
 	// LyricsHash is the blob of the associated LRC, if any (§7.4).
 	LyricsHash *string
 }
@@ -177,7 +181,7 @@ func readAlbumView(ctx context.Context, q *store.Queries, id uuid.UUID) (AlbumVi
 		v.Tracks[i] = TrackView{
 			ID: t.ID, Disc: t.Disc, No: t.No, Title: t.Title, Artist: t.Artist, Genre: t.Genre,
 			SourcePath: t.SourcePath, Blob: BlobRef{Hash: t.BlobHash, Size: t.BlobSize, Format: deref(t.BlobFormat)},
-			LyricsHash: t.LyricsHash,
+			DurationMS: t.BlobDurationMs, LyricsHash: t.LyricsHash,
 		}
 	}
 	atts, err := q.ListAlbumAttachmentViews(ctx, id)

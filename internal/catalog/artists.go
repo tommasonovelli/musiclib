@@ -73,37 +73,20 @@ func folderConflict(name string, existing store.Artist) *Error {
 // renamed. In both conflicts the existing artist is returned together with
 // the error, read in the same transaction, so that the caller can offer it
 // (§10.2: "conflitto restituisce anche l'artista esistente"). A new artist
-// has no album and changes no output: nothing is enqueued.
+// has no album and changes no output: nothing is enqueued. It is an API
+// client's explicit request, so it stays without albums until one arrives
+// (NOTES.md N-299); the UI never calls it, it names a new artist in the
+// album update instead (N-298).
 func (s *Service) CreateArtist(ctx context.Context, name string) (Artist, error) {
 	name, err := names.NormalizeRequiredText(name)
 	if err != nil {
 		return Artist{}, textError("artist name", err)
 	}
-	key := names.FolderKey(name)
 	var out Artist
 	err = store.InCatalogTx(ctx, s.db, func(tx *store.CatalogTx) error {
-		out = Artist{}
-		existing, err := tx.GetArtistByFolderKey(ctx, key)
-		if err == nil {
-			out = Artist{ID: existing.ID, Name: existing.Name, Revision: existing.Revision}
-			if !SameArtistName(name, existing.Name) {
-				return folderConflict(name, existing)
-			}
-			return &Error{
-				Code:    CodeArtistExists,
-				Message: fmt.Sprintf("the artist %q already exists as %q", name, existing.Name),
-				Details: Details{ArtistID: existing.ID, Names: []string{name, existing.Name}},
-			}
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return dbErr("looking up the artist folder "+key, err)
-		}
-		id := store.NewID()
-		if err := tx.InsertArtist(ctx, store.InsertArtistParams{ID: id, Name: name, FolderKey: key}); err != nil {
-			return dbErr("creating artist "+id.String(), err)
-		}
-		out = Artist{ID: id, Name: name, Revision: 1}
-		return nil
+		var err error
+		out, err = insertArtist(ctx, tx, name)
+		return err
 	})
 	if err != nil {
 		if c := Code(err); c == CodeArtistExists || c == CodeArtistFolderConflict {
@@ -112,6 +95,51 @@ func (s *Service) CreateArtist(ctx context.Context, name string) (Artist, error)
 		return Artist{}, err
 	}
 	return out, nil
+}
+
+// insertArtist creates the artist name, already normalized, at revision 1
+// in the caller's transaction: the rule of CreateArtist, shared with the
+// album update that names a new artist (NOTES.md N-298). On a conflict it
+// returns the existing artist together with the error.
+func insertArtist(ctx context.Context, tx *store.CatalogTx, name string) (Artist, error) {
+	key := names.FolderKey(name)
+	existing, err := tx.GetArtistByFolderKey(ctx, key)
+	if err == nil {
+		out := Artist{ID: existing.ID, Name: existing.Name, Revision: existing.Revision}
+		if !SameArtistName(name, existing.Name) {
+			return out, folderConflict(name, existing)
+		}
+		return out, &Error{
+			Code:    CodeArtistExists,
+			Message: fmt.Sprintf("the artist %q already exists as %q", name, existing.Name),
+			Details: Details{ArtistID: existing.ID, Names: []string{name, existing.Name}},
+		}
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Artist{}, dbErr("looking up the artist folder "+key, err)
+	}
+	id := store.NewID()
+	if err := tx.InsertArtist(ctx, store.InsertArtistParams{ID: id, Name: name, FolderKey: key}); err != nil {
+		return Artist{}, dbErr("creating artist "+id.String(), err)
+	}
+	return Artist{ID: id, Name: name, Revision: 1}, nil
+}
+
+// leaveArtist is the owner's rule N-297 (2026-09-28), applied by the one
+// change that takes an album away from an artist (the album update, §10.2):
+// an artist left without any album, active or trashed, is deleted in the
+// same transaction. It runs under the catalog lock like every catalog
+// mutation (§5.3), so an album arriving at the artist in another
+// transaction is either already committed (the artist stays) or waits for
+// this one (and then finds no artist: CodeArtistNotFound). An artist that
+// still has an album, in the trash included, is kept. The artist's folder
+// in library/ follows its albums' renders: the publisher removes it only
+// when it is empty (§9.3).
+func leaveArtist(ctx context.Context, tx *store.CatalogTx, artistID uuid.UUID) error {
+	if _, err := tx.DeleteOrphanArtist(ctx, artistID); err != nil {
+		return dbErr("deleting artist "+artistID.String()+" left without albums", err)
+	}
+	return nil
 }
 
 // RenameArtist renames an artist (§4.3, §10.2 PUT /api/artists/{id}):

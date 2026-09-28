@@ -255,8 +255,14 @@ func TestBrowserAlbumArtistPickerAndRename(t *testing.T) {
 	if got := js(t, tab, `return [$('#create-artist').hidden, getComputedStyle($('#rename-artist')).display].join('|')`); got != "false|none" {
 		t.Fatalf("new name: %s", got)
 	}
+	// «Create artist» only stages the name (N-298): nothing is created yet.
 	js(t, tab, `$('#create-artist').click();return ''`)
-	browserWait(t, tab, `document.querySelector('#create-artist').hidden && [...document.querySelectorAll('#artists option')].some(o => o.value === 'Cannonball Adderley')`)
+	if got := js(t, tab, `return [$('#create-artist').hidden, $('#new-artist').hidden, $('#new-artist').textContent, $('[name=artist_id]').value, $('[name=new_artist]').value, $('#changes').textContent].join('|')`); got != "true|false|New artist||Cannonball Adderley|1 change" {
+		t.Fatalf("staged: %s", got)
+	}
+	if e.count(`SELECT count(*) FROM artists WHERE name = 'Cannonball Adderley'`) != 0 {
+		t.Fatal("«Create artist» created the artist before the save")
+	}
 	js(t, tab, `$('#save').click();return ''`)
 	browserWait(t, tab, `document.querySelector('#changes').textContent === 'Saved'`)
 	if body, _ := e.album(id); body["artist_name"] != "Cannonball Adderley" {
@@ -307,7 +313,7 @@ func TestBrowserAlbumConflictReapply(t *testing.T) {
 	api := "/api/albums/" + id.String()
 	js(t, tab2, `window.sneak=true;const f=window.fetch;window.fetch=async(u,o)=>{if(window.sneak&&String(u)===location.pathname){window.sneak=false;`+
 		`const a=await(await f('`+api+`')).json();await f('`+api+`',{method:'PUT',headers:{'X-Musiclib-Request':'1','If-Match':a.etag,'Content-Type':'application/json'},`+
-		`body:JSON.stringify({artist_id:a.artist_id,title:a.title,year:a.year,genre:'Sneaky',compilation:a.compilation,tracks:a.tracks.map(t=>({id:t.id,disc:t.disc,no:t.no,title:t.title,artist:t.artist,genre:t.genre}))})})}return f(u,o)};`+
+		`body:JSON.stringify({artist_id:a.artist_id,new_artist:null,title:a.title,year:a.year,genre:'Sneaky',compilation:a.compilation,tracks:a.tracks.map(t=>({id:t.id,disc:t.disc,no:t.no,title:t.title,artist:t.artist,genre:t.genre}))})})}return f(u,o)};`+
 		`set($('#album-year'),'1970');$('#save').click();return ''`)
 	browserWait(t, tab2, `document.querySelector('#changes').textContent === 'Saved' && document.querySelector('#album-genre').value === 'Sneaky'`)
 	js(t, tab2, `set($('#album-title'),'Late');$('#save').click();return ''`)

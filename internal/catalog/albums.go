@@ -147,8 +147,14 @@ func checkTrackNumbers(tracks []trackFields, label func(i int) string) error {
 
 // AlbumUpdate is the body of PUT /api/albums/{id} (§10.2): the album's
 // metadata and exactly its current tracks. Blobs and ids are not editable.
+//
+// The album's artist is exactly one of ArtistID, an existing artist, and
+// NewArtist, the name of an artist to create in the update's own
+// transaction (NOTES.md N-298): if the update fails, for a stale revision
+// or an invalid value, the artist is not created either.
 type AlbumUpdate struct {
 	ArtistID    uuid.UUID
+	NewArtist   *string
 	Title       string
 	Year        *int
 	Genre       *string
@@ -182,10 +188,26 @@ type TrackUpdate struct {
 // album (CodePathReserved); an album in the trash can be renamed freely
 // before its restore (§4.3).
 //
+// A new artist (u.NewArtist) is created after the revision check, with
+// CreateArtist's rule: a name that exists already is CodeArtistExists, one
+// that shares an existing artist's folder CodeArtistFolderConflict, both
+// with the existing artist in Details (N-298). An artist the album leaves
+// is deleted if it has no album left, in the same transaction (N-297).
+//
 // It returns the album's revision and whether anything changed.
 func (s *Service) UpdateAlbum(ctx context.Context, albumID uuid.UUID, ifMatch int64, u AlbumUpdate) (int64, bool, error) {
 	if ifMatch == 0 {
 		return 0, false, checkRevision("album", albumID, 0, 0)
+	}
+	if (u.ArtistID == uuid.Nil) == (u.NewArtist == nil) {
+		return 0, false, errorf(CodeInvalidArgument, "an album update names either an existing artist or a new one")
+	}
+	if u.NewArtist != nil {
+		name, err := names.NormalizeRequiredText(*u.NewArtist)
+		if err != nil {
+			return 0, false, textError("artist name", err)
+		}
+		u.NewArtist = &name
 	}
 	fields, err := normalizeAlbum(u.Title, u.Year, u.Genre, u.Compilation)
 	if err != nil {
@@ -208,7 +230,13 @@ func (s *Service) UpdateAlbum(ctx context.Context, albumID uuid.UUID, ifMatch in
 // applyUpdate compares the update with the stored album and writes what
 // differs. It returns whether anything did.
 func applyUpdate(ctx context.Context, tx *store.CatalogTx, al store.Album, u AlbumUpdate, f albumFields, tracks []trackFields, genreFits GenreFits) (bool, error) {
-	if _, err := tx.GetArtist(ctx, u.ArtistID); errors.Is(err, pgx.ErrNoRows) {
+	if u.NewArtist != nil {
+		a, err := insertArtist(ctx, tx, *u.NewArtist)
+		if err != nil {
+			return false, err
+		}
+		u.ArtistID = a.ID
+	} else if _, err := tx.GetArtist(ctx, u.ArtistID); errors.Is(err, pgx.ErrNoRows) {
 		return false, errorf(CodeArtistNotFound, "artist %s does not exist", u.ArtistID)
 	} else if err != nil {
 		return false, dbErr("reading artist "+u.ArtistID.String(), err)
@@ -257,6 +285,11 @@ func applyUpdate(ctx context.Context, tx *store.CatalogTx, al store.Album, u Alb
 		})
 		if err != nil {
 			return false, dbErr("updating album "+al.ID.String(), err)
+		}
+		if al.ArtistID != u.ArtistID {
+			if err := leaveArtist(ctx, tx, al.ArtistID); err != nil {
+				return false, err
+			}
 		}
 	}
 	for _, i := range changedTracks {

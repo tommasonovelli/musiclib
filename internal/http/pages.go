@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -162,6 +163,9 @@ type editorData struct {
 	// the disc headings: only when there is more than one disc.
 	Discs     []pageDisc
 	MultiDisc bool
+	// Length is the line under the tracks: their number and how long the
+	// album plays (albumLength).
+	Length string
 	// ImageAttachments are the attachments the cover can be chosen from
 	// (coverCandidate); LyricsAttachments the .lrc ones.
 	ImageAttachments, LyricsAttachments []attachmentJSON
@@ -182,11 +186,14 @@ type pageDisc struct {
 
 // pageTrack is a track row. Artist and Genre are the track's own values,
 // "" when it inherits the album's (§4.1); GenreNone is the explicit «no
-// genre» (genre "" in the API), whose field is empty too.
+// genre» (genre "" in the API), whose field is empty too. Time is the
+// read-only duration (N-302), "" while unknown, and Length its HTML
+// duration string for <time datetime>.
 type pageTrack struct {
 	ID, Title, Artist, Genre string
 	Disc, No                 int32
 	GenreNone, Lyrics        bool
+	Time, Length             string
 }
 
 func trackRow(t trackJSON) pageTrack {
@@ -197,7 +204,57 @@ func trackRow(t trackJSON) pageTrack {
 	if t.Genre != nil {
 		p.Genre, p.GenreNone = *t.Genre, *t.Genre == ""
 	}
+	if t.DurationMS != nil {
+		s := seconds(*t.DurationMS)
+		p.Time, p.Length = clock(s), fmt.Sprintf("PT%dS", s)
+	}
 	return p
+}
+
+// seconds is a duration in milliseconds rounded to the nearest second, the
+// precision the page shows (N-302); library.js rounds the same way.
+func seconds(ms int64) int64 { return (ms + 500) / 1000 }
+
+// clock is a track's duration as a player shows it: m:ss, or h:mm:ss from
+// one hour.
+func clock(s int64) string {
+	if s >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
+// albumLength is the discreet line under the track table (N-302): the
+// number of tracks and, when every duration is known, how long the album
+// plays, in words: «12 tracks, 45 minutes», «1 track, 1 hour 3 minutes».
+// A total with unknown parts would be wrong, so it is left out.
+func albumLength(tracks []trackJSON) string {
+	out := plural(len(tracks), "track")
+	var ms int64
+	for _, t := range tracks {
+		if t.DurationMS == nil {
+			return out
+		}
+		ms += *t.DurationMS
+	}
+	s := seconds(ms)
+	switch m := (s + 30) / 60; {
+	case s < 60:
+		return out + ", " + plural(int(s), "second")
+	case m < 60:
+		return out + ", " + plural(int(m), "minute")
+	case m%60 == 0:
+		return out + ", " + plural(int(m/60), "hour")
+	default:
+		return out + ", " + plural(int(m/60), "hour") + " " + plural(int(m%60), "minute")
+	}
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }
 
 // libraryData is the Library view: its filters, the artists matching the
@@ -456,6 +513,7 @@ func (a *API) albumPage(w http.ResponseWriter, r *http.Request, c *catalog.Servi
 		ed.Discs[len(ed.Discs)-1].Tracks = append(ed.Discs[len(ed.Discs)-1].Tracks, trackRow(t))
 	}
 	ed.MultiDisc = len(ed.Discs) > 1
+	ed.Length = albumLength(ed.Album.Tracks)
 	for _, at := range ed.Album.Attachments {
 		if coverCandidate(at) {
 			ed.ImageAttachments = append(ed.ImageAttachments, at)

@@ -2,8 +2,10 @@ package importer
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +81,52 @@ func TestImportMixedFLACMP3AndM4A(t *testing.T) {
 	if len(a.Tracks) != 3 || *a.Tracks[0].BlobFormat != media.FormatFLAC || *a.Tracks[1].BlobFormat != media.FormatMP3 ||
 		*a.Tracks[2].BlobFormat != media.FormatM4AALAC || a.Tracks[2].Title != "Three" {
 		t.Fatalf("tracks %+v", a.Tracks)
+	}
+}
+
+// N-300: the import records each track's duration from the probe it runs,
+// for FLAC (0.2 s, exact from STREAMINFO), MP3 (0.3 s of LAME with its
+// gapless header), AAC and ALAC M4A (0.3 s each), exactly what the pinned
+// ffprobe says of the same file.
+func TestImportRecordsDurations(t *testing.T) {
+	e := newEnv(t)
+	files := map[string][]byte{
+		"Mixed/01.flac": track{tags: []string{"TITLE=One", "ARTIST=A", "ALBUM=Mixed", "TRACKNUMBER=1"}}.flac(t),
+		"Mixed/02.mp3": mp3(t, 550, id3v23(id3Frame23("TIT2", latin1("Two")), id3Frame23("TPE1", latin1("A")),
+			id3Frame23("TALB", latin1("Mixed")), id3Frame23("TRCK", latin1("2")))),
+		"Mixed/03.m4a": m4a(t, 660, "aac", nil, "title=Three", "artist=A", "album=Mixed", "track=3"),
+		"Mixed/04.m4a": m4a(t, 770, "alac", nil, "title=Four", "artist=A", "album=Mixed", "track=4"),
+	}
+	for rel, b := range files {
+		e.put(rel, b)
+	}
+	a := e.done(e.importDir(""), "Mixed")
+	if len(a.Tracks) != 4 {
+		t.Fatalf("tracks %+v", a.Tracks)
+	}
+	for i, rel := range []string{"Mixed/01.flac", "Mixed/02.mp3", "Mixed/03.m4a", "Mixed/04.m4a"} {
+		tr := a.Tracks[i]
+		if tr.Duration == nil {
+			t.Fatalf("%s: no duration recorded", rel)
+		}
+		lo, hi := int64(290), int64(340)
+		if i == 0 {
+			lo, hi = 200, 200
+		}
+		if *tr.Duration < lo || *tr.Duration > hi {
+			t.Errorf("%s (%s): %d ms, want %d..%d", rel, *tr.BlobFormat, *tr.Duration, lo, hi)
+		}
+		f, err := os.Open(filepath.Join(e.src, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := tools(t).Probe(context.Background(), f)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if ms, ok := media.DurationMS(p.Audio.Duration); err != nil || !ok || ms != *tr.Duration {
+			t.Errorf("%s: recorded %d ms, the probe says %d (%v, %v)", rel, *tr.Duration, ms, ok, err)
+		}
 	}
 }
 

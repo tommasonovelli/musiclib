@@ -69,6 +69,8 @@ scripts/doctor.sh --deep
 
 If `start app` reports no existing container, use `docker compose --profile app up -d --build --wait` instead. The restored catalog and originals keep their identities; all published output is regenerated. Wait until Activity is idle before deep doctor. Corrupt dump, manifest or originals are refused. Keep the completed backup read-only and unchanged throughout restore; an external change between verification and pg_restore may leave a marker and require new destinations. Never use a temporary backup directory as restore input.
 
+A backup made before schema 3 restores the same way: the boot adds the track durations' column, and the renders that regenerate the output record the duration of every active album's tracks (trashed albums get theirs when restored). On an installation that stays up, **Rebuild the library folder** (Activity → Advanced) does the same. Such a backup may also hold artists without albums, created before the rule that removes them (NOTES.md N-297); NOTES.md N-299 has the SQL to list them and to delete them, to run by hand with the app stopped.
+
 ## Security and troubleshooting
 
 The default published address is **127.0.0.1 only**. LAN use needs both `MUSICLIB_BIND` and matching `PUBLIC_ORIGIN`; do not expose it directly to the Internet. For remote access put an authenticated reverse proxy in front (outside this application's scope). The API checks Host, Origin and `X-Musiclib-Request: 1`; it does not implement users or CORS. Mount `/import` read-only and never point it into `/data`.

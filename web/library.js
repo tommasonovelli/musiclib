@@ -179,6 +179,21 @@ function statusLine(tile) {
   return line;
 }
 
+// A track's duration as the album page shows it (N-302): m:ss, h:mm:ss from
+// one hour, to the nearest second; an en dash while unknown.
+function duration(ms) {
+  const time = element('span', 'track-time');
+  if (ms === null) {
+    const dash = element('span', '', '–');
+    dash.setAttribute('aria-hidden', 'true');
+    time.append(dash, element('span', 'sr-only', 'Duration unknown'));
+    return time;
+  }
+  const s = Math.round(ms / 1000), two = n => String(n).padStart(2, '0'), m = Math.floor(s / 60);
+  time.append(element('span', 'sr-only', 'Duration '), `${s >= 3600 ? `${Math.floor(s / 3600)}:${two(m % 60)}` : m}:${two(s % 60)}`);
+  return time;
+}
+
 function tracks(album) {
   const list = element('ol', 'panel-tracks');
   const discs = new Set(album.tracks.map(track => track.disc)).size > 1;
@@ -192,7 +207,7 @@ function tracks(album) {
     item.append(element('span', 'track-no', String(track.no)));
     const title = element('span', 'track-title', track.title);
     if (track.artist && track.artist !== album.artist_name) title.append(' ', element('span', 'track-artist', track.artist));
-    item.append(title);
+    item.append(title, duration(track.duration_ms));
     list.append(item);
   }
   return list;

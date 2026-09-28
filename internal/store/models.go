@@ -45,10 +45,11 @@ type Attachment struct {
 }
 
 type Blob struct {
-	Hash      string
-	Size      int64
-	Format    *string
-	CreatedAt time.Time
+	Hash       string
+	Size       int64
+	Format     *string
+	CreatedAt  time.Time
+	DurationMs *int64
 }
 
 type ImportBatch struct {

@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
@@ -21,10 +22,13 @@ import (
 type importFile struct {
 	src  *srcFile
 	blob blobstore.Blob
-	// audio, format and tags are set for a track.
-	audio  bool
-	format string
-	tags   media.Inspection
+	// audio, format, tags and duration are set for a track. duration is
+	// what the container declares, 0 when it declares nothing (unknown,
+	// NOTES.md N-300).
+	audio    bool
+	format   string
+	tags     media.Inspection
+	duration time.Duration
 	// disc is the number of the track's disc directory in a multi-disc
 	// candidate, 0 in a single-disc one (§7.3).
 	disc int
@@ -263,7 +267,7 @@ func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warni
 	if err != nil {
 		return nil, corrupt(rel, err, readerFailures...)
 	}
-	f.audio, f.format, f.tags = true, p.Format, in
+	f.audio, f.format, f.tags, f.duration = true, p.Format, in, p.Audio.Duration
 	ws, err := tagWarnings(rel, in)
 	if p.Format == media.FormatMP3 {
 		ws = append(ws, genreWarnings(rel, in.Managed.Genre)...)
@@ -471,7 +475,8 @@ func (im *Importer) blobIsUTF8(ctx context.Context, b blobstore.Blob) (bool, err
 
 // assemble builds the closed input of catalog.CommitImport: every blob once
 // with its content-derived format (audio from the probe, the cover from its
-// decode, anything else unknown: N-118), the tracks by disc and number, the
+// decode, anything else unknown: N-118) and, for a track, the duration its
+// probe read (N-300), the tracks by disc and number, the
 // attachments by path, and the fingerprint of every file (§7.6).
 func assemble(c *jobs.Claim, meta albumMeta, tracks, others []*importFile, lyrics map[string]string, cover *catalog.Blob) (catalog.ImportCandidate, error) {
 	cand := catalog.ImportCandidate{
@@ -494,6 +499,11 @@ func assemble(c *jobs.Claim, meta albumMeta, tracks, others []*importFile, lyric
 	for i, t := range tracks {
 		entries = append(entries, fingerprintEntry{Path: t.src.Rel, Size: t.blob.Size, Hash: t.blob.SHA256})
 		add(t.blob, t.format)
+		if ms, ok := media.DurationMS(t.duration); ok {
+			b := blobs[t.blob.SHA256]
+			b.DurationMS = &ms
+			blobs[t.blob.SHA256] = b
+		}
 		m := meta.Tracks[i]
 		it := catalog.ImportTrack{SourcePath: m.Path, Disc: m.Disc, No: m.No, Title: m.Title,
 			Artist: m.Artist, Genre: m.Genre, BlobHash: t.blob.SHA256}

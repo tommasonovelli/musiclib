@@ -69,7 +69,9 @@ type Config struct {
 	// at an exact moment, or crash the process at the build's named points
 	// (§12.2, NOTES.md N-142): reserved (the space reserved, nothing
 	// created yet), write (before each write of a copy or of the receipt;
-	// Path and File), tags_written (after a track's tag write; Path and
+	// Path and File), duration (before the probe of a duration the catalog
+	// does not know, N-301: an error there is a failed probe; Path and
+	// File), tags_written (after a track's tag write; Path and
 	// File), fsync_file and fsync_dir (before each fsync; Path relative to
 	// the album, or to work for a directory).
 	Failpoints failpoint.Hook
@@ -121,6 +123,11 @@ type Result struct {
 	// nil for a removal. The staging still occupies that space until it is
 	// installed or discarded: the caller releases it then (N-114).
 	Space *jobs.Reservation
+	// Durations are the durations read for the tracks whose Track asked
+	// for one (ProbeDuration), by blob hash, in milliseconds: only those the
+	// probe could read. They are for the catalog (NOTES.md N-301) and play
+	// no part in the output, the receipt or the checks of §9.1.
+	Durations map[string]int64
 }
 
 // StagingDir is the album directory of a build, relative to /data/work.
@@ -203,6 +210,7 @@ func (b *Builder) Build(ctx context.Context, p Plan) (res Result, err error) {
 		return res, err
 	}
 	res.Staging = StagingDir(res.BuildID)
+	res.Durations = bd.durations
 	return res, nil
 }
 
@@ -256,6 +264,8 @@ type build struct {
 	// it.
 	dirs  map[string]bool
 	files []ReceiptFile
+	// durations is Result.Durations.
+	durations map[string]int64
 }
 
 // stage creates the build's directory exclusively (a new UUIDv7 never
@@ -369,6 +379,11 @@ func (bd *build) track(ctx context.Context, t Track, cover *media.Cover, expecte
 	if err != nil {
 		return err
 	}
+	if t.ProbeDuration {
+		// A probe that fails leaves the duration unknown for a later render:
+		// it is never the build's failure (N-301), so its error stops here.
+		_ = bd.duration(ctx, t, f)
+	}
 	in, err := tools.Inspect(ctx, f, t.Format)
 	if err != nil {
 		return err
@@ -405,6 +420,33 @@ func (bd *build) track(ctx context.Context, t Track, cover *media.Cover, expecte
 	bd.files = append(bd.files, ReceiptFile{RelativePath: t.Path, Size: size, SHA256: sum})
 	closed = true
 	return bd.syncClose(f, t.Path)
+}
+
+// duration reads the duration of a track whose blob's duration the catalog
+// does not know yet (NOTES.md N-301), from f: the verified copy of the
+// original, before its tag write, so the bytes probed are the original's.
+// It is one more ffprobe, which reads a few packets, and only while the
+// duration is unknown: once recorded the plan no longer asks for it. It
+// returns the probe's failure (the failpoint "duration" stands for one),
+// which the caller drops: the duration then stays unknown, to be read again
+// by a later render, as it does for a container that declares none. The
+// digests before and after the tag write, the checks and the output are not
+// touched.
+func (bd *build) duration(ctx context.Context, t Track, f *os.File) error {
+	if err := bd.b.failpoints.HitFile("duration", t.Path, f); err != nil {
+		return err
+	}
+	p, err := bd.b.tools.Probe(ctx, f)
+	if err != nil {
+		return err
+	}
+	if ms, ok := media.DurationMS(p.Audio.Duration); ok && p.Class == media.ClassAudio {
+		if bd.durations == nil {
+			bd.durations = map[string]int64{}
+		}
+		bd.durations[t.Blob.Hash] = ms
+	}
+	return nil
 }
 
 func describe(d media.Digest) string {

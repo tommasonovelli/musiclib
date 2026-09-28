@@ -73,6 +73,10 @@ func TestReleaseCollectionInterruptedAndRestored(t *testing.T) {
 	if n := queryInt(t, db, `SELECT count(*) FROM jobs WHERE state='failed'`); n != 0 {
 		t.Fatalf("failed jobs: %d; logs: %s", n, s.stderr)
 	}
+	// Every imported track has its duration (N-300).
+	if n := queryInt(t, db, `SELECT count(*) FROM tracks t JOIN blobs b ON b.hash = t.blob_hash WHERE b.duration_ms IS NULL OR b.duration_ms <= 0`); n != 0 {
+		t.Fatalf("%d tracks without a duration", n)
+	}
 	var id, artist uuid.UUID
 	if err := db.QueryRow(t.Context(), `SELECT a.id,a.artist_id FROM albums a WHERE a.title='One'`).Scan(&id, &artist); err != nil {
 		t.Fatal(err)
@@ -281,5 +285,5 @@ func acceptancePut(a map[string]any) map[string]any {
 		t := raw.(map[string]any)
 		tracks = append(tracks, map[string]any{"id": t["id"], "disc": t["disc"], "no": t["no"], "title": t["title"], "artist": t["artist"], "genre": t["genre"]})
 	}
-	return map[string]any{"artist_id": a["artist_id"], "title": a["title"], "year": a["year"], "genre": a["genre"], "compilation": a["compilation"], "tracks": tracks}
+	return map[string]any{"artist_id": a["artist_id"], "new_artist": nil, "title": a["title"], "year": a["year"], "genre": a["genre"], "compilation": a["compilation"], "tracks": tracks}
 }

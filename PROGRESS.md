@@ -89,7 +89,7 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Space budget and `statfs` check (§11.2) — the conservative estimates of the import and of the build, reserved atomically in the process budget `jobs.Budget` against `statfs` minus the 1 GiB margin (N-114, N-139); ENOSPC handled by every write
 - [x] Operations guide and tested Compose stop/run/start scripts (§11) — `docs/operations.md`, `scripts/{doctor,rebuild,backup,restore}.sh`; lint and actual Compose backup/doctor/start with a space-containing archive name.
 
-## UI redesign (rounds 19–21, `webui-principles.md`, NOTES.md N-243 to N-296)
+## UI redesign (rounds 19–22, `webui-principles.md`, NOTES.md N-243 to N-307)
 
 - [x] Round 19 — design tokens (colours light/dark, type scale, 4px steps, radii with `corner-shape: squircle`, the one cover shadow, one curve and two durations, focus ring, tabular numbers, reduced motion) in `web/app.css`; the "flat structural" style removed (N-243, N-251)
 - [x] Round 19 — Hanken Grotesk self-hosted (latin + latin-ext woff2, OFL.txt), served as `font/woff2` and cached as immutable (N-244)
@@ -107,6 +107,10 @@ Doubts, bugs and uncertainties live in **`NOTES.md`**, not here.
 - [x] Round 21 — the Library head compacts while stuck without ever changing the page height (owner, N-284); leftovers removed, N-271 resolved; mutation checks and screenshots (N-292 to N-294)
 - [x] Review of round 21 — the owner's five live failures checked against the supersede rule; two unguarded behaviours (the focus handed to a neighbour when a focused row leaves, no Dismiss on failed renders) and the Italian guard over the sentences of `queuepages.go` now tested; mutation checks (N-295)
 - [x] Round 21 — owner decisions after the review: N-287 decided as implemented; the queue pages render only what has something to say (no idle «in progress», no «And 0 more», no empty notices or «Details», no empty groups), with polling across empty and back (N-296)
+- [x] Round 22 — no orphan artists (owner): an artist whose last album, active or trashed, moves to another artist is deleted in the same transaction, under the catalog lock; concurrent moves and arrivals tested (N-297)
+- [x] Round 22 — `PUT /api/albums/{id}` takes `new_artist` (exactly one of it and `artist_id`), created in the save's transaction: a 412 or a refused save creates nothing; «Create artist» only stages the name until Save; `POST /api/artists` kept for API clients; the SQL for the existing orphans in NOTES, to run by hand (N-298, N-299)
+- [x] Round 22 — track durations: `blobs.duration_ms` (migration 00003), recorded at import from the probe and, while unknown, by the render as a permanent rule (never overwritten, a failing probe never fails a render); `duration_ms` in the album JSON; a read-only Duration column (m:ss, dash when unknown, phone layout), the album's length under the tracks, the times in the Library's panel (N-300 to N-302); tests, mutation checks, screenshots (N-303 to N-305)
+- [x] Review of round 22 — orphan deletion, the `new_artist` contract, the durations and the N-299 SQL checked; four unguarded behaviours (a duration lost on a blob of unknown format, 0 taken as a known duration, the minute rounding of the album length, the album's artist restored when a staged name is dropped) now tested; mutation checks (N-307)
 
 ---
 
@@ -1995,6 +1999,17 @@ scripts/dev.sh go test -race -count=10 -timeout 60m ./internal/publish/
 - **Review (N-295):** the owner's live failures checked against N-285's rule; `TestBrowserImportDraftSurvivesPolling` (the focus goes to the next row when its row leaves), `TestBrowserActivityActionsAndIdle` (Dismiss on import rows only), `TestPagesSpeakEnglish` (the results, folder and missing views, and every sentence of the code table) extended; six review mutants, two survivors now killed.
 - **After the review (N-296, owner):** the dot's label only while work runs, «And N more» only when some are not listed, notices made by `queue.js` when an error happens, groups and empty-state sentences as `data-part` elements added and removed by the poll, «Retry all» delegated; `TestQueuePagesRenderOnlyWhatIsThere`, `TestBrowserActivityActionsAndIdle`, `TestBrowserImportAndOverride` extended; six mutants killed.
 
+### Round 22: no orphan artists, the track duration (`internal/catalog`, `internal/http`, `internal/importer`, `internal/render`, `internal/publish`, `internal/jobs`, `internal/media`, `sql/`, `migrations/00003_blob_duration.sql`, `web/`) ✔
+
+- **Spec:** DESIGN.md §4.1–§4.3, §5.3, §7.6, §9.1, §10.1–§10.3; `webui-principles.md` «Album», «Tipografia», «Cura nei dettagli invisibili»; the owner's decisions of 2026-09-28 (no orphan artists; no temporary data-migration code; a read-only Duration column).
+- **No orphan artists** (N-297): `catalog.leaveArtist` (sqlc `DeleteOrphanArtist`) runs in `applyUpdate` right after `UpdateAlbumMetadata`, the one writer of `albums.artist_id`, whenever the artist changed: the artist left without any album, active or trashed, is deleted in the same catalog transaction. The FK RESTRICT is the second guard. The folder on disk follows the renders, removed by the publisher only when empty (§9.3).
+- **A new artist with the save** (N-298): `catalog.AlbumUpdate.NewArtist`; `UpdateAlbum` normalizes it, then creates it inside the transaction after the If-Match check with `CreateArtist`'s rule (`insertArtist`, shared): a failed save creates nothing, a name that exists is 409 with the existing artist's id and both names. The PUT body gains the required key `new_artist` (exactly one of it and `artist_id` non-null). The editor's «Create artist» stages the name in a hidden field («New artist», one change), dropped when the field names another artist; after a 409 or `artist_not_found` the page takes the server's current list. `POST /api/artists` stays for API clients (N-299); the exact SQL to list and delete the existing orphans is in N-299.
+- **Durations** (N-300, N-301): migration `00003` adds `blobs.duration_ms` (NULL = unknown, `blobs_duration_check`: ≥ 0 and audio blobs only). The importer passes the duration of its existing probe (`catalog.Blob.DurationMS`, `media.DurationMS`); `InsertBlobs` stores it for new rows, `catalog.RecordDurations` (`SetBlobDuration`) fills only unknown ones, never overwriting. The render snapshot says which blobs are unknown (`SnapshotTrack.DurationKnown`), the plan marks those tracks (`Track.ProbeDuration`), the builder probes their verified copies once more (failpoint `duration`; a failure is dropped, never the build's) and returns `Result.Durations`, which `publish.ExecuteRender` records in its own short transaction (a failure is logged). No revision, no render, no effect on `AudioDigest`, the fingerprint, the receipt or the output. «Rebuild the library folder» fills an existing library once.
+- **API and UI** (N-302): each track of the album JSON has `duration_ms` (number or null, read-only). The album page's track table has a read-only Duration cell (server-rendered, so also without JavaScript): m:ss or h:mm:ss to the nearest second in `<time datetime>`, an en dash with «Duration unknown» for screen readers, graphite Note, tabular, right-aligned, beside the title on a phone; never a form control, so never an edit. Under the table «N tracks» and, when every duration is known, the album's length in words. The Library's open album shows the same times.
+- **Budget:** CSS + JS 78,606 bytes (N-305).
+- **Tests:** `catalog.TestLastAlbumLeavesArtist`, `TestUpdateAlbumNewArtist`, `TestOrphanArtistConcurrency`, `TestBlobDurations`, `TestBlobDurationValidation`; `importer.TestImportRecordsDurations` (FLAC, MP3, AAC and ALAC M4A, against the pinned ffprobe); `publish.TestRenderRecordsUnknownDurations` (filled, kept, a failed probe, no probe once known, the same files); `http.TestAlbumNewArtist` (header, 428, 412, refusals inside the transaction, 409, concurrent saves naming one new artist), `TestAlbumReassignment`, `TestUpdateAlbum` (the new key's refusals), `TestGetAlbumAndStatus` (the track keys), `TestAlbumPageMarkup`, `TestDurationWords`; in Chromium `TestBrowserNoOrphanArtist` (the owner's scenario, failed saves, a stale list), `TestBrowserTrackDurations` (column, dash, not dirty after save and reload, phone, panel), `TestBrowserAlbumArtistPickerAndRename` (staging); `cmd/musiclibd.TestReleaseCollectionInterruptedAndRestored` (every imported track has a duration); screenshots `tracks` and `staged`. Mutation checks N-304. A rare race in `cmd/musiclibd.TestEndToEndImportThroughAPI` (a retry answered after a worker had already claimed the job) fixed in the test (N-306).
+- **Review (N-307):** `catalog.TestBlobDurationAfterUnknownFormat`, `media.TestDurationMS`, `TestDurationWords` (nearest minute), `TestBrowserNoOrphanArtist` (the album's artist back, nothing to save, when a staged name is dropped) added or extended; four review mutants, all four survivors now killed.
+
 ### `internal/http` — the API's conventions, security boundary and first endpoints (§2.3, §10.1, §10.2, §10.4) ✔ (round 11)
 
 The API is plain `net/http` (Go 1.22 method and wildcard patterns). There
@@ -2396,6 +2411,14 @@ scripts/dev.sh go test -race -count=5 -run 'TestUploadSlot|TestCreateImportConcu
    `job_superseded` and `job_needs_attention`), §10.2 gains `POST
    /api/jobs/{id}/dismiss`, and §6.4's «Riprova falliti» leaves dismissed and
    superseded failures alone (NOTES.md N-285).
+6. **Orphan artists and the new artist of a save (owner, round 22).** An
+   artist left without albums by a save is deleted in that save's
+   transaction, beyond §4.3's «non vengono mostrati» (N-297); §10.2's PUT
+   body gains the required key `new_artist`, the name of an artist created
+   by the save (N-298).
+7. **Track durations (owner, round 22).** §4.2's `blobs` gains
+   `duration_ms` (migration 00003), informational, recorded at import and
+   by renders (N-300, N-301); the album JSON's tracks carry it (N-302).
 
 ## Open questions for the spec
 

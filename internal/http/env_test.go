@@ -271,7 +271,8 @@ func ptr[T any](v T) *T { return &v }
 // seed imports an album through the catalog's import commit, as the
 // importer would after its copies: a batch and a running import job
 // written by SQL (the scan's part), then catalog.CommitImport. Two tracks
-// (the first with an LRC), a cover kept as an attachment, a booklet.
+// (the first with an LRC and a duration of 9:05, the second's unknown), a
+// cover kept as an attachment, a booklet.
 func (e *env) seed(artist, title string) uuid.UUID {
 	e.t.Helper()
 	ctx := context.Background()
@@ -289,7 +290,7 @@ func (e *env) seed(artist, title string) uuid.UUID {
 		Attempt:     jobs.Attempt{JobID: job, Ticket: ticket},
 		Fingerprint: newHash(),
 		Blobs: []catalog.Blob{
-			{Hash: a1, Size: 3000, Format: catalog.FormatFLAC},
+			{Hash: a1, Size: 3000, Format: catalog.FormatFLAC, DurationMS: ptr(int64(545_499))},
 			{Hash: a2, Size: 2500, Format: catalog.FormatFLAC},
 			{Hash: lrc, Size: 20},
 			{Hash: cover, Size: 500, Format: catalog.FormatJPEG},
@@ -330,7 +331,7 @@ func putBody(a map[string]any) map[string]any {
 		})
 	}
 	return map[string]any{
-		"artist_id": a["artist_id"], "title": a["title"], "year": a["year"], "genre": a["genre"],
+		"artist_id": a["artist_id"], "new_artist": nil, "title": a["title"], "year": a["year"], "genre": a["genre"],
 		"compilation": a["compilation"], "tracks": tracks,
 	}
 }

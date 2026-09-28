@@ -3333,7 +3333,7 @@ nothing about the server's state:
   Origin check removed; `Origin: null` accepted; the header check removed;
   any header value accepted.
 
-### N-146 · `GET /api/artists` lists every artist — DECIDED (owner decision, 2026-09-24)
+### N-146 · `GET /api/artists` lists every artist — DECIDED (owner decision, 2026-09-24; since round 22 an artist does not outlive its last album, N-297)
 **Owner decision (2026-09-24):** `GET /api/artists` lists **all** the
 artists of the catalog, including those just created with
 `POST /api/artists` and still without an album. It is the list the Phase 5
@@ -6056,7 +6056,7 @@ rule, the server's, for the word and the dot, and about 700 bytes less
 script. Cost: a page request (a handful of indexed queries) every 2 s while
 a render is in progress, on a single-user local service.
 
-### N-266 · The artist field — DECIDED
+### N-266 · The artist field — DECIDED («Create artist» stages the name since round 22, N-298)
 A text field with a native `<datalist>` of every artist (the list of `GET
 /api/artists`, server-rendered with each artist's id and ETag). A name equal
 to an existing artist's (NFKC, trimmed, case-insensitive) chooses it and
@@ -7037,3 +7037,390 @@ without CSS, and «Stati vuoti» wants the empty page to be one sentence.
   action already adopts the dot); removing it is not observable in a test.
 - Budget (N-267): CSS + JS 76,612 bytes, from 74,119 (`queue.js` 13,507,
   +2,493: the notices it now makes and the parts it adds and removes).
+
+## Round 22: no orphan artists, the track duration (2026-09-28)
+
+Owner rule of the round: no code whose only purpose is to migrate existing
+data. Schema-only migrations are fine (00003); existing data is completed by
+permanent rules; a genuine one-off fix is exact SQL here, run by hand by the
+site manager after the owner confirms, never committed as code.
+
+### N-297 · An artist whose last album leaves it is deleted with that change — DECIDED (owner, 2026-09-28)
+**What the owner hit:** in the album editor a new name typed in the artist
+field and created with «Create artist», then the old artist put back: the
+new artist stayed in the catalog without albums, invisible in the Library
+but offered by the artist field forever (`GET /api/artists` lists every
+artist, N-146). DESIGN.md §4.3 «Gli artisti senza album non vengono
+mostrati nell'elenco principale. Non c'è un comando separato per eliminarli
+nella v1» is kept to the letter (no delete command); the owner's permanent
+rule keeps the list clean by construction.
+- **The rule.** An artist left without any album, active or trashed, by a
+  change that moves its last album to another artist is deleted **in the
+  same transaction** (`catalog.leaveArtist`, sqlc `DeleteOrphanArtist`:
+  `DELETE … WHERE id = @id AND NOT EXISTS (an album of it)`). A trashed
+  album keeps its artist: it can be restored or edited (§4.3), and the FK
+  `albums_artist_id_fkey` (RESTRICT) would refuse the delete anyway, a
+  second guard (N-304).
+- **Where.** `albums.artist_id` has exactly one writer,
+  `UpdateAlbumMetadata`, reached only from `UpdateAlbum` (§10.2 PUT, the
+  reassignment of §4.3): `leaveArtist` runs right after it whenever the
+  artist changed, so every path that moves an album (the editor, API
+  clients, the explicit reassignments of §5.3 «si riassegnano gli album
+  esplicitamente» after a rename refused as a merge) goes through it.
+  Albums are never deleted (§4.3), imports only add, `RenameArtist` changes
+  no `artist_id`: nothing else can orphan an artist. Not a trigger: §4.2
+  wants domain rules in the write services.
+- **Concurrency.** Every catalog mutation holds the one advisory lock
+  (§5.3) in READ COMMITTED, so the statements after the lock see every
+  earlier commit. Two albums leaving the same artist at once: the second
+  transaction finds the artist with no album left and deletes it, once. An
+  album arriving while the last one leaves either commits first (the artist
+  stays) or finds the artist gone (422 `artist_not_found`, nothing saved);
+  an import naming the artist recreates it by name in its own transaction
+  (§7.6). Tested in `catalog.TestOrphanArtistConcurrency` (8 rounds of both
+  races plus a concurrent import: never an orphan, never a database error).
+- **The folder on disk** is unchanged: the moved albums' renders publish
+  them under the new artist, and the publisher removes the old artist
+  directory under `publishMu` only when it is empty (§9.3).
+- **For a client:** a rename-artist ETag or an `?artist=` link to a deleted
+  artist answers 404 or an empty list, as any unknown id. The album page's
+  datalist comes with the page after every save (N-260), so it never
+  offers the deleted artist.
+
+### N-298 · `PUT /api/albums/{id}` can name a new artist; «Create artist» only stages it — DECIDED (owner, 2026-09-28)
+**Owner rule:** the editor never creates an artist before the album is
+saved; a save that fails (412, validation) leaves no artist behind.
+- **The API (a deviation from §10.2's body, by owner decision).** The body
+  is `{artist_id, new_artist, title, year, genre, compilation, tracks}`,
+  every key present as N-148 wants. Exactly one of `artist_id` (an existing
+  artist's id) and `new_artist` (a name) is non-null: both or neither is
+  422 `invalid_field`, an omitted `new_artist` 422 `missing_field` like any
+  other key. `new_artist` is normalized as a required text (§5.2: 422
+  `text_empty` …) and created **inside the save's transaction**, after the
+  album's If-Match check (so a 412 or 428 creates nothing), with
+  `CreateArtist`'s rule (`insertArtist`, now shared): a name equal after
+  NFC, trim and casefold is 409 `artist_exists`, one that only shares a
+  folder 409 `artist_folder_conflict`, each with the existing artist's
+  `artist_id` and both `names` in `details`; a conflict never merges
+  (§10.3). Any later refusal in the transaction (a wrong track list, a
+  genre an MP3 cannot hold, a reserved path) rolls the artist back with
+  everything else. `If-Match`, 412, 428 and `X-Musiclib-Request` are
+  exactly as before (tested in `http.TestAlbumNewArtist`). Old bodies
+  without `new_artist` are refused (422 `missing_field`); the only client
+  is the UI, changed in the same round; `docs/docker.md` has the contract.
+- **Why one transaction, not `POST /api/artists` plus compensation:** a
+  compensating delete after a failed save is a second transaction that can
+  itself fail (the process dies, the database goes away) and leave the
+  orphan; it would also race a second window that chose the fresh artist
+  meanwhile. One transaction has no window at all and needs no new
+  endpoint.
+- **The 409's details** are the catalog's usual `artist_id` and `names`;
+  `POST /api/artists`'s full `details.artist` (with its ETag, read in the
+  same transaction) is not repeated: the editor only needs to know that its
+  list was out of date.
+- **The UI** (`web/app.js`, `album.html`): «Create artist» (shown, as in
+  N-266, only for a non-empty name matching no artist) writes the name into
+  a hidden `new_artist` field and clears `artist_id`; the field then says
+  «New artist» in the Note style, the Save bar counts one change (the
+  artist, whatever the two hidden fields do), «Rename artist» hides. The
+  staging lasts while the field names it: typing another name or choosing
+  an existing artist drops it (choosing the saved artist again leaves
+  nothing to save). Save sends `new_artist` or `artist_id`. After the save
+  the page adopts its server HTML (N-260), whose list has the new artist.
+  «Reload and reapply my changes» keeps the staged name. A 409
+  (`artist_exists`, `artist_folder_conflict`) or a 422 `artist_not_found`
+  means the list was out of date: its sentence shows (a new one for
+  `artist_not_found`: «This artist isn't in your library any more: choose
+  another, or create it.») and the page takes the server's current list
+  (`artists()`), so the name typed now chooses the existing artist, or
+  «Create artist» comes back; the user saves again. The page no longer
+  calls `POST /api/artists`.
+
+### N-299 · `POST /api/artists` stays; the orphans already there are removed by hand — DECIDED (the SQL: TO CONFIRM by the owner before it is run)
+- **An artist created through `POST /api/artists` that never receives an
+  album stays**, as N-146 decided: it is an API client's explicit request
+  to have that artist, and the client is responsible for it; the UI no
+  longer makes one. It follows N-297 like any other: the first album that
+  arrives and then leaves it deletes it. No expiry, no background sweep:
+  either would be a second rule to explain, and a sweep would be exactly
+  the data-migration machinery the owner does not want.
+- **The owner's existing orphans** (made before N-297/N-298, or brought
+  back by an old backup, docs/operations.md) are removed by hand, not by
+  code. Read-only, to list them:
+
+  ```sql
+  SELECT ar.id, ar.name, ar.revision
+  FROM artists ar
+  WHERE NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)
+  ORDER BY ar.folder_key COLLATE "C", ar.id;
+  ```
+
+  To delete exactly those, in one transaction under the catalog lock (the
+  key of `LockCatalog` in `sql/catalog.sql`), so that no save can race it;
+  the FK RESTRICT on `albums.artist_id` would refuse the delete of any
+  artist that still has an album, trashed or not:
+
+  ```sql
+  BEGIN;
+  SELECT pg_advisory_xact_lock(7884786317834415207);
+  DELETE FROM artists ar
+  WHERE NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)
+  RETURNING ar.id, ar.name;
+  COMMIT;
+  ```
+
+  With Compose: `docker compose exec -T postgres psql -U musiclib -d
+  musiclib -v ON_ERROR_STOP=1`, the statements on stdin. An artist without
+  albums has no folder in `library/` (the publisher removed it with its
+  last album's output), so nothing on disk changes, and nothing else
+  references `artists` (jobs, claims and the journal hold album ids and
+  paths). Run the list first and show it to the owner.
+
+### N-300 · The duration lives on the blob: `blobs.duration_ms` (migration 00003) — DECIDED
+**Owner request:** a read-only Duration column in the album's track table.
+- **Where:** `blobs.duration_ms bigint`, NULL = unknown,
+  `blobs_duration_check`: `duration_ms IS NULL OR (duration_ms >= 0 AND
+  format IS NOT NULL AND format IN (the four audio formats))`. A deviation
+  from the normative §4.2 by owner decision, schema only. The duration is a
+  fact of the original's bytes, like `size` and `format`: a blob is content
+  addressed and never changes (§3.1), two tracks sharing a blob share it,
+  and it is not the user's desired metadata (on `tracks` it would be one
+  copy per track and a column the editor must not write). The `format IS
+  NOT NULL` is needed: `NULL IN (…)` is unknown, which a CHECK accepts;
+  `catalog.TestBlobDurations` found it before the migration was final.
+- **Unit and precision:** integer milliseconds from the audio stream's
+  `duration_ts` × time base (`media.AudioInfo.Duration`, floored to the
+  millisecond by the new `media.DurationMS`); a container declaring no
+  duration (ffprobe's 0) stays NULL, not 0. For an MP3 without a Xing or
+  VBRI count the value is libavformat's bitrate estimate: good enough to
+  display (N-078 concerns the decode check, not this).
+- **Never overwritten:** `SetBlobDuration` writes only where the value is
+  NULL, and only on an audio blob; `InsertBlobs` takes the value for a new
+  row and its `ON CONFLICT DO NOTHING` keeps an existing one. The first
+  value recorded stays, whatever a later probe (another ffprobe build)
+  says; no probe result is ever compared with it.
+- **Informational only:** nothing that decides the output reads it: not the
+  plan's output, not `AudioDigest` (untouched), not the fingerprint of §7.6
+  (paths, sizes and hashes), not the receipt of §9.2. Recording it bumps no
+  revision and enqueues nothing (§4.3: it changes no output), like
+  `SetBlobFormat`. The album's representation can therefore gain a
+  `duration_ms` without a new revision or ETag; If-Match concerns the
+  desired data, which it does not touch.
+- **Import:** the importer already probes each track's verified copy
+  (`readFile`); the value goes with the blob into `catalog.Blob.DurationMS`
+  and is validated with the candidate (a negative value, or one on a blob
+  that is not audio, fails the import with `invalid_blob`).
+
+### N-301 · Existing tracks get their duration from the render, a permanent rule — DECIDED
+No backfill command and no boot-time migration (the owner's rule).
+- **The rule:** a render records the duration of a track whose blob's
+  duration is still unknown. The claim's snapshot says whether it is known
+  (`SnapshotTracks`: `(b.duration_ms IS NOT NULL)`,
+  `SnapshotTrack.DurationKnown`), the pure plan turns that into
+  `Track.ProbeDuration`, and the builder, for those tracks only, runs one
+  more `ffprobe` on the verified copy of the original (after its hash check
+  and the first digest, before the tag write, so the bytes are the
+  original's). The values come back in `render.Result.Durations`;
+  `publish.ExecuteRender` records them in a short catalog transaction of
+  its own (`catalog.RecordDurations`) before the publication.
+- **Checked in the code:** the build does read every original (§9.1 steps 5
+  and 6: a streaming copy checked against the blob's SHA-256, then
+  `AudioDigest`, which probes and decodes it). The duration could not come
+  out of `AudioDigest` without changing its API or its `Digest`, whose
+  equality is the §9.1 check, so it is a separate probe: `-read_intervals
+  %+#16` reads a few packets, negligible next to a full decode and two tag
+  reads, and it runs only while the value is unknown. Once recorded the
+  plan never asks again (tested: one probe for one unknown track out of
+  three, none once known).
+- **A failure never fails a render:** a probe error (the builder's new
+  failpoint `duration` stands for one), or a container that declares no
+  duration, leaves the value unknown for a later render; `build.track`
+  drops the error explicitly and says why (`_ = bd.duration(…)`). A failed
+  recording transaction is logged («the track durations were not
+  recorded») and the render goes on: a database that is really gone stops
+  it at PREPARE, as before.
+- **For the owner:** «Rebuild the library folder» (Activity → Advanced,
+  `POST /api/render-all`) once fills every active album. A trashed album
+  gets its durations when it is restored (its render is a removal, which
+  reads no original). A restore of an old backup regenerates every output,
+  so it fills them too (docs/operations.md). A one-off SQL was not possible:
+  durations need `ffprobe`.
+
+### N-302 · The Duration column, the total, the Library's panel — DECIDED
+- **API:** every track of the album JSON gains `duration_ms` (a number or
+  `null`), between `blob` and `lyrics_hash`; read-only, not a key of the
+  PUT body. `TestGetAlbumAndStatus` pins the ten keys and the order.
+- **The column** (`album.html`, server-rendered, so the page without
+  JavaScript shows it too): a `<span class="t-time">` after «Lyrics» and
+  before the ⋯, at the table's right edge where players put the time.
+  Known: a visually hidden «Duration » and `<time datetime="PT562S">9:22</time>`;
+  unknown: `<span aria-hidden="true">–</span>` and a hidden «Duration
+  unknown». m:ss, h:mm:ss from one hour (`clock`), to the nearest second
+  (`seconds`: 585.6 s is 9:46). Note style in graphite, tabular numerals,
+  right-aligned, on one line. It is not a control (no name, no input), so it
+  never counts as an edit (N-258), and the in-place refresh just replaces
+  it.
+- **The phone** (below 40rem): the time takes the right cell of the title's
+  line (`"no title title time dots"`), «Lyrics» moves under it on the
+  second line (`". artist genre lyr dots"`); no width is added.
+- **The total** (my call, the brief left it open): one quiet line under the
+  table, `<p id="length" class="length">`: «6 tracks» and, only when every
+  duration is known, the album's length in words, as iTunes 11 did: «12
+  tracks, 45 minutes», «1 track, 1 hour 3 minutes», «… 45 seconds» under
+  a minute. A total with an unknown part would be wrong, so it is left out
+  rather than shown partial. A hairline above it closes the table.
+- **The Library's open album** (`library.js`): the same time at the right
+  of each track, the same rounding, the en dash and words when unknown, in
+  the panel's `--cover-ink` at the Note size with tabular numerals (the
+  colour stays the cover ink for the 4.5:1 rule, as N-254). Cheap: the
+  panel already fetches the album JSON. No total there: the panel stays
+  short.
+
+### N-303 · Test contracts changed deliberately — DECIDED
+- Every PUT body in the tests (`putBody`, the acceptance test, the
+  screenshot and conflict scripts) sends `new_artist: null`.
+- `TestBrowserAlbumArtistPickerAndRename`: «Create artist» no longer adds
+  the artist to the list before the save; the test checks the staging
+  («New artist», one change, no artist in the database), then the save.
+- `TestBrowserLibraryGridPanelAndKeys`: the panel's track text includes the
+  times («Duration 9:05», «–Duration unknown»).
+- `maintenance.TestBackup` expects schema 3.
+- `http.seed` gives its first track a duration and leaves the second
+  unknown; `kindOfBlue()` carries the record's durations, with the
+  alternate take unknown.
+- `cmd/musiclibd.TestReleaseCollectionInterruptedAndRestored` also checks
+  that every really imported track has a duration.
+
+### N-304 · Round-22 mutation checks — DECIDED
+Each mutant applied alone by a script that restores the file on exit, the
+named tests run in Docker against real PostgreSQL, ext4, the pinned tools
+and Chromium; no leftover file afterwards. All killed:
+- **the orphan delete** (`DeleteOrphanArtist` replaced by a read):
+  `catalog.TestLastAlbumLeavesArtist`, `TestUpdateAlbumNewArtist`,
+  `TestOrphanArtistConcurrency`, `http.TestAlbumReassignment`,
+  `TestAlbumNewArtist`, and in Chromium `TestBrowserNoOrphanArtist`;
+- **a trashed album keeping its artist** (the delete counting active albums
+  only): `TestLastAlbumLeavesArtist`, through the FK RESTRICT, which refuses
+  the delete; the schema is the second guard;
+- **no artist on a failed save** (the new artist created by `CreateArtist`
+  in its own transaction before the save): `TestUpdateAlbumNewArtist`,
+  `http.TestAlbumNewArtist`, `TestBrowserNoOrphanArtist`;
+- «Create artist» posting at once in the page:
+  `TestBrowserAlbumArtistPickerAndRename`, `TestBrowserNoOrphanArtist`;
+  the staged name counted as a second change: the same two; no fresh list
+  after a 409: `TestBrowserNoOrphanArtist`;
+- **the duration never overwritten** (`AND duration_ms IS NULL` removed):
+  `catalog.TestBlobDurations`. The render test alone does not kill it: the
+  plan does not probe a known duration, a second guard;
+- **a render failing on a failed probe** (the error returned instead of
+  dropped): `publish.TestRenderRecordsUnknownDurations` (the render did
+  not complete); a probe for every track (`ProbeDuration: true`): the same
+  test (3 probes for 1); the durations not recorded by the executor: the
+  same test;
+- the import not keeping the probe's duration:
+  `importer.TestImportRecordsDurations`;
+- rounding down instead of to the nearest second, and a total with unknown
+  parts: `TestDurationWords`, `TestAlbumPageMarkup`;
+- the duration as a (hidden) input: `TestAlbumPageMarkup`,
+  `TestBrowserTrackDurations`; left-aligned proportional figures, the time
+  on the phone's second line, no time in the Library's panel:
+  `TestBrowserTrackDurations`.
+The first version of the «failed probe» mutant (a second failpoint call
+that returned the error) was also killed, but by the probe count, before
+the failing phase: not the guard meant. `build.duration` now returns its
+error and `track` drops it explicitly, so the mutant is the one-line
+«return it instead», killed by the render not completing. A first run of
+the orphan mutant (`if false {`) did not compile, which is not a kill; it
+was replaced by the read above.
+
+### N-305 · Budget, screenshots, and what looking at them said — DECIDED
+- **Budget (N-267):** CSS + JS 78,606 bytes, from 76,612: `app.css` 34,234
+  (+510), `app.js` 14,881 (+792), `library.js` 14,763 (+692); `queue.js`
+  and `sidebar.js` unchanged.
+- **Screenshots:** `TestBrowserAlbumScreenshots` gains `tracks` (the table
+  scrolled into view) and `staged` (a new artist staged);
+  `TestBrowserLibraryScreenshots` shows the panel; light and dark, 1280 and
+  390 px, reduced motion. Looked at against the principles: the column is
+  the quietest thing in its row (graphite Note, like «Lyrics»), the figures
+  share one right edge and the unknown take's dash sits on it, «6 tracks»
+  under a hairline, «New artist» beside the name in graphite with the Save
+  bar at «1 change»; the phone keeps each row on two lines with the time at
+  the title's right; the panel's times sit on the track's baseline in the
+  cover's ink. Nothing needed changing. Left as it is: on the phone the
+  13 px time is centred on the 15 px title's line, so their baselines
+  differ by about a pixel, as the «Lyrics» caption's already do.
+
+### N-306 · A retry's answer may already show the job running — DECIDED (a test fix)
+The round's first full gate failed once in
+`cmd/musiclibd.TestEndToEndImportThroughAPI`, untouched by round 22: the
+retry's 202 carried `state: running`, not `pending`. `catalog.RetryJob`
+commits, wakes the pool, then reads the job for the answer, so a worker can
+claim it in between; §6.4 makes a retry idempotent while the job is pending
+or running, so both are correct answers. The test now accepts either (still
+requiring the new ticket); 15 runs alone had passed, the race is rare. The
+product is unchanged.
+
+### N-307 · Review of round 22 — DECIDED (review)
+Independent review of the uncommitted round 22 (no orphan artists, the
+track duration). The gate, the browser tests with `-race -count=3`, the new
+catalog, publish and importer tests with `-race`, and the review
+screenshots all pass; no blocking defect was found.
+- **Checked, and right:**
+  - `albums.artist_id` has one writer (`UpdateAlbumMetadata`, from
+    `applyUpdate` only); `InsertAlbum` (the import) resolves its artist by
+    name under the lock; `RenameArtist` never merges; trash, restore and the
+    track and cover endpoints do not touch the artist. `leaveArtist` runs in
+    the save's transaction, under the one advisory lock, in READ COMMITTED:
+    the deletion and any later lock holder are serialized. The FK RESTRICT
+    refuses to delete an artist that still has an album, trashed included.
+  - `new_artist` is created after the If-Match check, inside the save's
+    transaction; a 412, a 428, a 403 (the header) and every refusal inside
+    the transaction leave nothing; the 409s carry the existing id and both
+    names. The page never calls `POST /api/artists`; the staged name
+    survives «Reload and reapply my changes».
+  - The duration: never read by the plan's output, `AudioDigest`, the
+    fingerprint or the receipt; `SetBlobDuration` writes only NULLs of
+    audio blobs; the album JSON is `no-store`, so a duration recorded
+    without a new revision can never be hidden by a 304. Recording before
+    the publication is harmless when the render is then superseded or fails:
+    it is a fact of the blob's bytes, not of the render. The render-all
+    always builds (no short cut on an unchanged album), so «Rebuild the
+    library folder» does reach every active album. The extra probe is one
+    `ffprobe` of a few packets per unknown track, next to two full decodes
+    (`AudioDigest` before and after the tag write): about 180 short probes
+    on the owner's library, once.
+  - The N-299 SQL: the lock key is `LockCatalog`'s (7884786317834415207),
+    the `DELETE … WHERE NOT EXISTS` is exactly the listing's predicate, the
+    FK is a second guard, and nothing references `artists` but
+    `albums.artist_id`. `-U musiclib -d musiclib` match `compose.yaml`.
+  - N-306 is a test fix, not a hidden product bug: the retry commits, wakes
+    the pool, then reads the job; `running` is a true answer (§10.2: a retry
+    is idempotent while pending or running).
+- **Fixed: four guards no test held** (each mutant applied alone, the named
+  tests run in Docker, the file restored; all four survived before and are
+  killed now):
+  - `registerBlobs` recording the durations before the formats: a blob
+    already recorded with an unknown format (an extra file, N-118) and then
+    imported as a track lost its duration silently. New
+    `catalog.TestBlobDurationAfterUnknownFormat`.
+  - `media.DurationMS` taking 0 (a container that declares no duration) as
+    a known 0 ms: the page would show 0:00 instead of the dash. New
+    `media.TestDurationMS`.
+  - The album's length rounded down instead of to the nearest minute:
+    `TestDurationWords` now has 44:30 → «45 minutes» and 44:29 → «44».
+  - The editor not putting the album's own artist back in `artist_id` when
+    a staged name is dropped by typing another one (the Save bar then said
+    «1 change» with nothing to save): `TestBrowserNoOrphanArtist` now
+    requires the saved artist's id and a disabled Save there.
+- **Left, not blocking:**
+  - On the phone the 13 px time sits on the 15 px title's line centred
+    rather than on its baseline (N-305); the same as «Lyrics».
+  - `docs/operations.md` says to run N-299's SQL with the app stopped,
+    N-299 runs it under the catalog lock with the app up: both are safe;
+    stopping the app is the more conservative instruction.
+  - A retried render whose worker finishes and deletes the job before the
+    retry reads it back would answer 404 for a retry that happened (the
+    same read-after-commit as N-306). It needs a full build between two
+    statements, so it is theoretical; reading the job inside the retry's
+    transaction would close it. Not a round-22 change.
+- **Budget (N-267):** unchanged by the review, CSS + JS 78,606 bytes.

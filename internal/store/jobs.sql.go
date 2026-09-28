@@ -1034,6 +1034,7 @@ func (q *Queries) SnapshotAttachments(ctx context.Context, albumID uuid.UUID) ([
 const snapshotTracks = `-- name: SnapshotTracks :many
 SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
        t.blob_hash, b.size AS blob_size, b.format AS blob_format,
+       (b.duration_ms IS NOT NULL)::boolean AS blob_duration_known,
        t.lyrics_hash, lb.size AS lyrics_size
 FROM tracks t
 JOIN blobs b ON b.hash = t.blob_hash
@@ -1043,20 +1044,23 @@ ORDER BY t.disc, t.no
 `
 
 type SnapshotTracksRow struct {
-	ID         uuid.UUID
-	Disc       int32
-	No         int32
-	Title      string
-	Artist     *string
-	Genre      *string
-	SourcePath string
-	BlobHash   string
-	BlobSize   int64
-	BlobFormat *string
-	LyricsHash *string
-	LyricsSize *int64
+	ID                uuid.UUID
+	Disc              int32
+	No                int32
+	Title             string
+	Artist            *string
+	Genre             *string
+	SourcePath        string
+	BlobHash          string
+	BlobSize          int64
+	BlobFormat        *string
+	BlobDurationKnown bool
+	LyricsHash        *string
+	LyricsSize        *int64
 }
 
+// The render reads whether each audio blob's duration is known only to
+// record it when it is not (NOTES.md N-301); the plan never uses it.
 func (q *Queries) SnapshotTracks(ctx context.Context, albumID uuid.UUID) ([]SnapshotTracksRow, error) {
 	rows, err := q.db.Query(ctx, snapshotTracks, albumID)
 	if err != nil {
@@ -1077,6 +1081,7 @@ func (q *Queries) SnapshotTracks(ctx context.Context, albumID uuid.UUID) ([]Snap
 			&i.BlobHash,
 			&i.BlobSize,
 			&i.BlobFormat,
+			&i.BlobDurationKnown,
 			&i.LyricsHash,
 			&i.LyricsSize,
 		); err != nil {

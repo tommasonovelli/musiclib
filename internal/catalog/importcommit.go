@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -85,6 +86,11 @@ type Blob struct {
 	Hash   string
 	Size   int64
 	Format string
+	// DurationMS is an audio blob's duration in milliseconds, as its
+	// container declares it; nil is unknown (NOTES.md N-300). It is
+	// informational: recorded when the blob's duration is still unknown,
+	// never compared and never overwritten.
+	DurationMS *int64
 }
 
 // ImportTrack is one track of a candidate. Artist nil inherits the album
@@ -362,13 +368,19 @@ func writeImport(ctx context.Context, tx *store.CatalogTx, plan *importPlan) err
 }
 
 // registerBlobs records the candidate's blobs (§7.6 step 2). Existing rows
-// are kept; one whose format was unknown gets the content's format.
+// are kept; one whose format was unknown gets the content's format, and one
+// whose duration was unknown gets the probed duration (N-300), in this
+// order, since blobs_duration_check wants an audio format first.
 func registerBlobs(ctx context.Context, tx *store.CatalogTx, blobs []Blob) error {
 	p := store.InsertBlobsParams{
 		Hashes: make([]string, len(blobs)), Sizes: make([]int64, len(blobs)), Formats: make([]string, len(blobs)),
+		Durations: make([]int64, len(blobs)),
 	}
 	for i, b := range blobs {
-		p.Hashes[i], p.Sizes[i], p.Formats[i] = b.Hash, b.Size, b.Format
+		p.Hashes[i], p.Sizes[i], p.Formats[i], p.Durations[i] = b.Hash, b.Size, b.Format, -1
+		if b.DurationMS != nil {
+			p.Durations[i] = *b.DurationMS
+		}
 	}
 	if err := tx.InsertBlobs(ctx, p); err != nil {
 		return dbErr("registering blobs", err)
@@ -379,6 +391,35 @@ func registerBlobs(ctx context.Context, tx *store.CatalogTx, blobs []Blob) error
 		}
 		if _, err := tx.SetBlobFormat(ctx, store.SetBlobFormatParams{Hash: b.Hash, Format: &b.Format}); err != nil {
 			return dbErr("recording the format of blob "+b.Hash, err)
+		}
+	}
+	durations := map[string]int64{}
+	for _, b := range blobs {
+		if b.DurationMS != nil {
+			durations[b.Hash] = *b.DurationMS
+		}
+	}
+	return RecordDurations(ctx, tx, durations)
+}
+
+// RecordDurations records, in the caller's catalog transaction, the
+// duration of each blob of durations (hash → milliseconds) whose duration
+// is still unknown, in a fixed order; a known one is never overwritten
+// (SetBlobDuration, N-300). A blob that is not there, or not audio, is left
+// as it is. The import calls it through registerBlobs; the publisher calls
+// it with the durations a render read for blobs that were still unknown
+// (NOTES.md N-301), in a transaction of its own whose failure it only logs:
+// the durations are informational and no outcome depends on them.
+func RecordDurations(ctx context.Context, tx *store.CatalogTx, durations map[string]int64) error {
+	hashes := slices.Sorted(maps.Keys(durations))
+	for _, h := range hashes {
+		ms := durations[h]
+		if ms < 0 {
+			continue
+		}
+		_, err := tx.SetBlobDuration(ctx, store.SetBlobDurationParams{Hash: h, DurationMs: &ms})
+		if err != nil {
+			return dbErr("recording the duration of blob "+h, err)
 		}
 	}
 	return nil
@@ -494,6 +535,9 @@ func indexBlobs(list []Blob) (map[string]Blob, error) {
 			return nil, errorf(CodeInvalidBlob, "blob %s has a negative size", b.Hash)
 		case !knownFormats[b.Format]:
 			return nil, errorf(CodeInvalidBlobFormat, "blob %s has the unknown format %q", b.Hash, b.Format)
+		case b.DurationMS != nil && (*b.DurationMS < 0 || !audioFormats[b.Format]):
+			// blobs_duration_check (N-300): a duration is an audio blob's.
+			return nil, errorf(CodeInvalidBlob, "blob %s has a duration of %d ms as %q content", b.Hash, *b.DurationMS, b.Format)
 		}
 		if _, dup := blobs[b.Hash]; dup {
 			return nil, errorf(CodeInvalidBlob, "blob %s is listed twice", b.Hash)

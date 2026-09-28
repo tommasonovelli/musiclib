@@ -97,6 +97,10 @@ type SnapshotTrack struct {
 	Genre      Text
 	SourcePath string
 	Blob       SnapshotBlob
+	// DurationKnown: the audio blob's duration is recorded. When it is not,
+	// the build probes it for the catalog (NOTES.md N-301); nothing of the
+	// output depends on it.
+	DurationKnown bool
 	// Lyrics is the LRC; a zero Hash is none.
 	Lyrics SnapshotBlob
 }
@@ -263,7 +267,8 @@ func loadSnapshot(ctx context.Context, q *store.Queries, albumID uuid.UUID, a At
 		s.Tracks[i] = SnapshotTrack{
 			ID: t.ID, Disc: int(t.Disc), No: int(t.No), Title: t.Title,
 			Artist: text(t.Artist), Genre: text(t.Genre), SourcePath: t.SourcePath,
-			Blob: SnapshotBlob{Hash: t.BlobHash, Size: t.BlobSize, Format: deref(t.BlobFormat)},
+			Blob:          SnapshotBlob{Hash: t.BlobHash, Size: t.BlobSize, Format: deref(t.BlobFormat)},
+			DurationKnown: t.BlobDurationKnown,
 		}
 		if t.LyricsHash != nil {
 			s.Tracks[i].Lyrics = SnapshotBlob{Hash: *t.LyricsHash, Size: deref(t.LyricsSize)}

@@ -309,6 +309,8 @@ type trackRow struct {
 	Blob       string
 	Lyrics     *string
 	BlobFormat *string
+	// Duration is the blob's duration_ms (N-300), nil while unknown.
+	Duration *int64
 }
 
 func (e *env) album(id uuid.UUID) album {
@@ -325,14 +327,14 @@ func (e *env) album(id uuid.UUID) album {
 	if fp != nil {
 		a.Fingerprint = *fp
 	}
-	rows, err := e.db.Query(ctx, `SELECT t.disc, t.no, t.title, t.artist, t.genre, t.source_path, t.blob_hash, t.lyrics_hash, b.format
+	rows, err := e.db.Query(ctx, `SELECT t.disc, t.no, t.title, t.artist, t.genre, t.source_path, t.blob_hash, t.lyrics_hash, b.format, b.duration_ms
 		FROM tracks t JOIN blobs b ON b.hash = t.blob_hash WHERE t.album_id = $1 ORDER BY t.disc, t.no`, id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	for rows.Next() {
 		var r trackRow
-		if err := rows.Scan(&r.Disc, &r.No, &r.Title, &r.Artist, &r.Genre, &r.Source, &r.Blob, &r.Lyrics, &r.BlobFormat); err != nil {
+		if err := rows.Scan(&r.Disc, &r.No, &r.Title, &r.Artist, &r.Genre, &r.Source, &r.Blob, &r.Lyrics, &r.BlobFormat, &r.Duration); err != nil {
 			e.t.Fatal(err)
 		}
 		a.Tracks = append(a.Tracks, r)

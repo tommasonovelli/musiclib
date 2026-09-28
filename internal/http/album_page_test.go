@@ -111,9 +111,30 @@ func TestAlbumPageMarkup(t *testing.T) {
 		// that the unsaved-edits prompt would stop (N-280).
 		`/original" download>Download original</a>`,
 		`<a href="/api/albums/` + id.String() + `/tracks/`,
+		// The duration (N-302): read-only text, m:ss to the nearest second,
+		// a machine-readable length; an en dash with words while unknown.
+		`<span class="t-time"><span class="sr-only">Duration </span><time datetime="PT562S">9:22</time></span>`,
+		`<time datetime="PT586S">9:46</time>`, `<time datetime="PT337S">5:37</time>`,
+		`<span class="t-time"><span aria-hidden="true">–</span><span class="sr-only">Duration unknown</span></span>`,
+		// One duration unknown: the tracks are counted, no total.
+		`<p id="length" class="length">6 tracks</p>`,
+		// «Create artist» stages a name in the form; nothing is created by
+		// the page (N-298).
+		`<input type="hidden" name="new_artist"><datalist id="artists">`, `<span id="new-artist" hidden>New artist</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("album page lacks %s", want)
+		}
+	}
+	// The duration is never a control, so never an edit (N-258).
+	cells := strings.Split(body, `<span class="t-time">`)[1:]
+	if len(cells) != 6 {
+		t.Errorf("%d duration cells, want one per track", len(cells))
+	}
+	for _, cell := range cells {
+		cell, _, _ = strings.Cut(cell, `<button class="dots"`)
+		if strings.Contains(cell, "<input") || strings.Contains(cell, "name=") || strings.Contains(cell, "data-js") {
+			t.Errorf("a duration cell is a control: %s", cell)
 		}
 	}
 	// The artists to choose from carry their ETags, for the rename.
@@ -133,5 +154,51 @@ func TestAlbumPageMarkup(t *testing.T) {
 	_, _, body = pageRequest(t, e, "/albums/"+single.String(), testHost)
 	if strings.Contains(body, `class="disc"`) || !strings.Contains(body, `<p class="band">This album is in the trash.<button`) || !strings.Contains(body, `<a class="backlink" href="/?trash=true">Trash</a>`) || strings.Contains(body, "Move to trash") || !strings.Contains(body, `aria-current="page"><svg class="icon" width="20" height="20" aria-hidden="true"><use href="#i-trash"/></svg><span class="nav-label">Trash</span>`) {
 		t.Errorf("trashed single-disc page: %s", body)
+	}
+	// Every duration known: the total, in words (562 + 585.6 s).
+	if !strings.Contains(body, `<p id="length" class="length">2 tracks, 19 minutes</p>`) {
+		t.Errorf("the total: %s", regexp.MustCompile(`<p id="length".*?</p>`).FindString(body))
+	}
+}
+
+// N-302: a track's time as players show it, to the nearest second; the
+// album's in words, only when every track's is known.
+func TestDurationWords(t *testing.T) {
+	for ms, want := range map[int64]string{
+		0: "0:00", 499: "0:00", 500: "0:01", 59_499: "0:59", 59_500: "1:00", 562_000: "9:22",
+		3_599_499: "59:59", 3_599_500: "1:00:00", 3_723_000: "1:02:03", 36_000_000: "10:00:00",
+	} {
+		if got := clock(seconds(ms)); got != want {
+			t.Errorf("%d ms = %q, want %q", ms, got, want)
+		}
+	}
+	tracks := func(ms ...int64) []trackJSON {
+		out := make([]trackJSON, len(ms))
+		for i, m := range ms {
+			if m >= 0 {
+				out[i].DurationMS = ptr(m)
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		tracks []trackJSON
+		want   string
+	}{
+		{tracks(45_000), "1 track, 45 seconds"},
+		{tracks(1_000), "1 track, 1 second"},
+		{tracks(59_499), "1 track, 59 seconds"},
+		{tracks(59_500), "1 track, 1 minute"},
+		// To the nearest minute (N-307): 44:30 is 45 minutes, 44:29 is 44.
+		{tracks(2_670_000), "1 track, 45 minutes"},
+		{tracks(2_669_000), "1 track, 44 minutes"},
+		{tracks(1_800_000, 1_800_000), "2 tracks, 1 hour"},
+		{tracks(3_660_000), "1 track, 1 hour 1 minute"},
+		{tracks(3_600_000, 3_600_000, 3_600_000, 329_000), "4 tracks, 3 hours 5 minutes"},
+		{tracks(562_000, -1, 300_000), "3 tracks"},
+	} {
+		if got := albumLength(tc.tracks); got != tc.want {
+			t.Errorf("%v = %q, want %q", tc.tracks, got, tc.want)
+		}
 	}
 }

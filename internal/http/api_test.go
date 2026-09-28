@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	nethttp "net/http"
 	"reflect"
@@ -211,6 +212,21 @@ func TestGetAlbumAndStatus(t *testing.T) {
 		ts[1]["artist"] != "Miles & Cannonball" || ts[1]["genre"] != "" || ts[1]["lyrics_hash"] != nil {
 		t.Fatalf("tracks %v", ts)
 	}
+	// The duration (N-302): milliseconds, null while unknown, after the
+	// blob and before the lyrics.
+	if ts[0]["duration_ms"] != 545_499.0 || ts[1]["duration_ms"] != nil {
+		t.Fatalf("durations %v, %v", ts[0]["duration_ms"], ts[1]["duration_ms"])
+	}
+	for _, tr := range a["tracks"].([]any) {
+		if got, want := keysOf(tr.(map[string]any)), []string{"artist", "blob", "disc", "duration_ms", "genre", "id", "lyrics_hash",
+			"no", "source_path", "title"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("track fields %v", got)
+		}
+	}
+	if !bytes.Contains(r.raw, []byte(`"blob":{`)) || !bytes.Contains(r.raw, []byte(`},"duration_ms":545499,"lyrics_hash":"`)) ||
+		!bytes.Contains(r.raw, []byte(`},"duration_ms":null,"lyrics_hash":null`)) {
+		t.Fatalf("duration_ms is not between blob and lyrics_hash: %s", r.raw)
+	}
 	atts := a["attachments"].([]any)
 	// By path key: "cover.jpg" before "scans/booklet.pdf".
 	if len(atts) != 2 || atts[0].(map[string]any)["rel_path"] != "cover.jpg" ||
@@ -354,6 +370,11 @@ func TestUpdateAlbum(t *testing.T) {
 		{"empty title", func(b map[string]any) { b["title"] = "  " }, unprocess, names.CodeTextEmpty},
 		{"empty track artist", func(b map[string]any) { b["tracks"].([]any)[0].(map[string]any)["artist"] = "" }, unprocess, names.CodeTextEmpty},
 		{"unknown artist", func(b map[string]any) { b["artist_id"] = store.NewID().String() }, unprocess, catalog.CodeArtistNotFound},
+		{"new_artist omitted", func(b map[string]any) { delete(b, "new_artist") }, unprocess, CodeMissingField},
+		{"no artist", func(b map[string]any) { b["artist_id"] = nil }, unprocess, CodeInvalidField},
+		{"both artists", func(b map[string]any) { b["new_artist"] = "Cannonball Adderley" }, unprocess, CodeInvalidField},
+		{"new_artist a number", func(b map[string]any) { b["artist_id"], b["new_artist"] = nil, 5 }, unprocess, CodeInvalidField},
+		{"new_artist empty", func(b map[string]any) { b["artist_id"], b["new_artist"] = nil, " " }, unprocess, names.CodeTextEmpty},
 		{"a blob is not a field", func(b map[string]any) {
 			b["tracks"].([]any)[0].(map[string]any)["blob_hash"] = newHash()
 		}, unprocess, CodeUnknownField},
@@ -393,9 +414,144 @@ func TestAlbumReassignment(t *testing.T) {
 		t.Fatalf("409 %s", r.raw)
 	}
 	body["title"] = "Kind of Blue (Bill's)"
+	miles := e.artistOf(id)
 	r = e.must(req{method: "PUT", path: "/api/albums/" + id.String(), body: body, ifMatch: tag}, ok)
 	if r.body["artist_id"] != bill.String() || r.body["artist_name"] != "Bill Evans" || r.body["revision"] != 2.0 {
 		t.Fatalf("reassigned: %s", r.raw)
+	}
+	// Miles Davis had no other album: he is gone with it (N-297).
+	e.wantError(req{method: "GET", path: "/api/artists/" + miles.String()}, notFound404, catalog.CodeArtistNotFound)
+	e.wantNoOrphan()
+}
+
+// wantNoOrphan: GET /api/artists lists no artist without an album (N-297),
+// and neither does the catalog.
+func (e *env) wantNoOrphan() {
+	e.t.Helper()
+	listed := map[string]bool{}
+	for _, a := range e.must(req{method: "GET", path: "/api/artists"}, ok).body["artists"].([]any) {
+		listed[a.(map[string]any)["id"].(string)] = true
+	}
+	if n := e.count(`SELECT count(*) FROM artists`); n != len(listed) {
+		e.t.Fatalf("%d artists, %d listed", n, len(listed))
+	}
+	if n := e.count(`SELECT count(*) FROM artists ar WHERE NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)`); n != 0 {
+		e.t.Fatalf("%d artists without albums", n)
+	}
+}
+
+// N-298: PUT /api/albums/{id} with new_artist creates the artist in the
+// save's own transaction: If-Match, 412 and X-Musiclib-Request as for any
+// save; a save that fails leaves no artist behind; a name that exists is
+// 409 with the existing artist; two saves naming the same new artist at
+// once create it once.
+func TestAlbumNewArtist(t *testing.T) {
+	e := newEnv(t)
+	id := e.seed("Miles Davis", "Kind of Blue")
+	other := e.seed("Miles Davis", "Sketches of Spain")
+	e.seed("Bill Evans", "Portrait in Jazz")
+	path := "/api/albums/" + id.String()
+	a, tag := e.album(id)
+	withNew := func(name string) map[string]any {
+		b := putBody(a)
+		b["artist_id"], b["new_artist"] = nil, name
+		return b
+	}
+	artists := e.count(`SELECT count(*) FROM artists`)
+	unchanged := func(what string) {
+		t.Helper()
+		if e.count(`SELECT count(*) FROM artists`) != artists || e.count(`SELECT count(*) FROM artists WHERE name = 'Cannonball Adderley'`) != 0 {
+			t.Fatalf("%s left an artist behind", what)
+		}
+		if now, _ := e.album(id); !reflect.DeepEqual(now, a) {
+			t.Fatalf("%s changed the album", what)
+		}
+	}
+
+	// The save's contract, unchanged: the header, If-Match, 412.
+	e.wantError(req{method: "PUT", path: path, body: withNew("Cannonball Adderley"), ifMatch: tag,
+		headers: map[string][]string{RequestHeader: {""}}}, nethttp.StatusForbidden, CodeRequestHeaderRequired)
+	unchanged("a request without X-Musiclib-Request")
+	e.wantError(req{method: "PUT", path: path, body: withNew("Cannonball Adderley")}, required428, catalog.CodePreconditionRequired)
+	unchanged("a save without If-Match")
+	e.wantError(req{method: "PUT", path: path, body: withNew("Cannonball Adderley"), ifMatch: ETag(KindAlbum, id, 9)},
+		failed412, catalog.CodePreconditionFailed)
+	unchanged("a stale save")
+	// Refused inside the transaction, after the artist was inserted.
+	b := withNew("Cannonball Adderley")
+	b["tracks"] = b["tracks"].([]any)[:1]
+	e.wantError(req{method: "PUT", path: path, body: b, ifMatch: tag}, unprocess, catalog.CodeTrackListMismatch)
+	unchanged("a save with a wrong track list")
+	b = withNew("Cannonball Adderley")
+	b["tracks"].([]any)[1].(map[string]any)["no"] = 1
+	e.wantError(req{method: "PUT", path: path, body: b, ifMatch: tag}, unprocess, catalog.CodeDuplicateTrackNumber)
+	unchanged("a save with two tracks numbered 1")
+
+	// A name that exists: 409 with the existing artist, nothing saved.
+	r := e.wantError(req{method: "PUT", path: path, body: withNew(" bill evans "), ifMatch: tag}, conflict, catalog.CodeArtistExists)
+	if r.details()["artist_id"] == nil || fmt.Sprint(r.details()["names"]) != "[bill evans Bill Evans]" {
+		t.Fatalf("409 %s", r.raw)
+	}
+	unchanged("a save naming an existing artist")
+
+	// The artist and the album, one transaction.
+	r = e.must(req{method: "PUT", path: path, body: withNew(" Cannonball Adderley "), ifMatch: tag}, ok)
+	if r.body["artist_name"] != "Cannonball Adderley" || r.body["revision"] != 2.0 {
+		t.Fatalf("saved: %s", r.raw)
+	}
+	cannonball := r.body["artist_id"].(string)
+	got := e.must(req{method: "GET", path: "/api/artists/" + cannonball}, ok)
+	if got.body["name"] != "Cannonball Adderley" || got.body["revision"] != 1.0 {
+		t.Fatalf("the new artist %s", got.raw)
+	}
+	e.wantNoOrphan()
+
+	// Back to Miles Davis (who kept Sketches of Spain): Cannonball goes.
+	a, tag = e.album(id)
+	b = putBody(a)
+	b["artist_id"] = e.artistOf(other).String()
+	e.must(req{method: "PUT", path: path, body: b, ifMatch: tag}, ok)
+	e.wantError(req{method: "GET", path: "/api/artists/" + cannonball}, notFound404, catalog.CodeArtistNotFound)
+	e.wantNoOrphan()
+
+	// Two saves naming the same new artist at once: one creates it, the
+	// other is told it exists; never two artists of one name.
+	for round := range 10 {
+		name := fmt.Sprintf("Wynton Kelly %d", round)
+		bodies := make([]map[string]any, 2)
+		tags := make([]string, 2)
+		for i, album := range []uuid.UUID{id, other} {
+			al, tg := e.album(album)
+			bodies[i], tags[i] = putBody(al), tg
+			bodies[i]["artist_id"], bodies[i]["new_artist"] = nil, name
+		}
+		var wg sync.WaitGroup
+		results := make([]resp, 2)
+		for i, album := range []uuid.UUID{id, other} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results[i] = e.do(req{method: "PUT", path: "/api/albums/" + album.String(), body: bodies[i], ifMatch: tags[i]})
+			}()
+		}
+		wg.Wait()
+		statuses := fmt.Sprint(results[0].status, results[1].status)
+		if statuses != "200 409" && statuses != "409 200" {
+			t.Fatalf("round %d: %s (%s | %s)", round, statuses, results[0].raw, results[1].raw)
+		}
+		if e.count(`SELECT count(*) FROM artists WHERE name = $1`, name) != 1 {
+			t.Fatalf("round %d: not exactly one %s", round, name)
+		}
+		// The album told 409 joins it by id; everything else is gone.
+		for i, album := range []uuid.UUID{id, other} {
+			if results[i].status == conflict {
+				al, tg := e.album(album)
+				b := putBody(al)
+				b["artist_id"] = results[i].details()["artist_id"]
+				e.must(req{method: "PUT", path: "/api/albums/" + album.String(), body: b, ifMatch: tg}, ok)
+			}
+		}
+		e.wantNoOrphan()
 	}
 }
 

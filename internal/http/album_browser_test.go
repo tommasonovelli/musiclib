@@ -23,12 +23,14 @@ import (
 // The album editor in a real Chromium against the real server and
 // PostgreSQL (round 20, NOTES.md N-256 to N-267).
 
-// fixtureTrack is one track of seedAlbum. lyrics imports an LRC with it.
+// fixtureTrack is one track of seedAlbum. lyrics imports an LRC with it;
+// ms is its duration (N-300), nil for unknown.
 type fixtureTrack struct {
 	disc, no      int
 	title         string
 	artist, genre *string
 	lyrics        bool
+	ms            *int64
 }
 
 // seedAlbum imports an album of real (random, non-audio) FLAC blobs through
@@ -44,7 +46,7 @@ func (e *env) seedAlbum(artist, title string, tracks []fixtureTrack, extras map[
 	var its []catalog.ImportTrack
 	for _, t := range tracks {
 		b := e.put(randomBytes(2000 + t.no))
-		b.Format = catalog.FormatFLAC
+		b.Format, b.DurationMS = catalog.FormatFLAC, t.ms
 		blobs = append(blobs, b)
 		it := catalog.ImportTrack{SourcePath: fmt.Sprintf("CD%d/%02d %s.flac", t.disc, t.no, t.title), Disc: t.disc, No: t.no,
 			Title: t.title, Artist: t.artist, Genre: t.genre, BlobHash: b.Hash}
@@ -88,14 +90,15 @@ func (e *env) seedAlbum(artist, title string, tracks []fixtureTrack, extras map[
 }
 
 // kindOfBlue is the screenshot and behaviour fixture: two discs, a
-// track artist, an explicit «no genre», lyrics on the first track.
+// track artist, an explicit «no genre», lyrics on the first track, the
+// record's durations and one still unknown (the alternate take).
 func kindOfBlue() []fixtureTrack {
 	return []fixtureTrack{
-		{disc: 1, no: 1, title: "So What", lyrics: true},
-		{disc: 1, no: 2, title: "Freddie Freeloader", artist: ptr("Miles Davis & Wynton Kelly")},
-		{disc: 1, no: 3, title: "Blue in Green"},
-		{disc: 1, no: 4, title: "All Blues", genre: ptr("Modal jazz")},
-		{disc: 1, no: 5, title: "Flamenco Sketches"},
+		{disc: 1, no: 1, title: "So What", lyrics: true, ms: ptr(int64(562_000))},
+		{disc: 1, no: 2, title: "Freddie Freeloader", artist: ptr("Miles Davis & Wynton Kelly"), ms: ptr(int64(585_600))},
+		{disc: 1, no: 3, title: "Blue in Green", ms: ptr(int64(337_499))},
+		{disc: 1, no: 4, title: "All Blues", genre: ptr("Modal jazz"), ms: ptr(int64(693_000))},
+		{disc: 1, no: 5, title: "Flamenco Sketches", ms: ptr(int64(566_000))},
 		{disc: 2, no: 1, title: "Flamenco Sketches (Alternate Take)", genre: ptr("")},
 	}
 }
@@ -186,8 +189,12 @@ func TestBrowserAlbumScreenshots(t *testing.T) {
 			shoot(url, "default", w, h, dark, "")
 			shoot(url, "dirty", w, h, dark, edit)
 			// Another window saves first: this one meets the 412.
-			shoot(url, "conflict", w, h, dark, edit+`;fetch('/api/albums/`+id.String()+`').then(r=>r.json()).then(a=>fetch('/api/albums/`+id.String()+`',{method:'PUT',headers:{'X-Musiclib-Request':'1','If-Match':a.etag,'Content-Type':'application/json'},body:JSON.stringify({artist_id:a.artist_id,title:a.title,year:a.year===1959?1960:1959,genre:a.genre,compilation:a.compilation,tracks:a.tracks.map(t=>({id:t.id,disc:t.disc,no:t.no,title:t.title,artist:t.artist,genre:t.genre}))})})).then(()=>document.querySelector('#save').click())`)
+			shoot(url, "conflict", w, h, dark, edit+`;fetch('/api/albums/`+id.String()+`').then(r=>r.json()).then(a=>fetch('/api/albums/`+id.String()+`',{method:'PUT',headers:{'X-Musiclib-Request':'1','If-Match':a.etag,'Content-Type':'application/json'},body:JSON.stringify({artist_id:a.artist_id,new_artist:null,title:a.title,year:a.year===1959?1960:1959,genre:a.genre,compilation:a.compilation,tracks:a.tracks.map(t=>({id:t.id,disc:t.disc,no:t.no,title:t.title,artist:t.artist,genre:t.genre}))})})).then(()=>document.querySelector('#save').click())`)
 			shoot(url, "menu", w, h, dark, `document.querySelectorAll('.track .dots')[1].click()`)
+			// Round 22: the track table with its durations and the total
+			// line (N-302), and a new artist staged (N-298).
+			shoot(url, "tracks", w, h, dark, `document.querySelector('#tracks-title').scrollIntoView()`)
+			shoot(url, "staged", w, h, dark, `(()=>{const a=document.querySelector('#artist-name');a.value='Cannonball Adderley';a.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#create-artist').click()})()`)
 			shoot(e.srv.URL+"/albums/"+gone.String(), "trash", w, h, dark, "")
 			if w > 600 {
 				// The Save bar starts at the collapsed sidebar's edge.

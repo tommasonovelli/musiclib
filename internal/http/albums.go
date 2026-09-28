@@ -41,7 +41,9 @@ type blobJSON struct {
 }
 
 // trackJSON is one track. artist null inherits the album artist; genre
-// null inherits the album genre, "" is explicitly none (§4.1).
+// null inherits the album genre, "" is explicitly none (§4.1). duration_ms
+// is the audio's duration in milliseconds, null while unknown (NOTES.md
+// N-302): read-only, not a field of the PUT body.
 type trackJSON struct {
 	ID         string   `json:"id"`
 	Disc       int32    `json:"disc"`
@@ -51,6 +53,7 @@ type trackJSON struct {
 	Genre      *string  `json:"genre"`
 	SourcePath string   `json:"source_path"`
 	Blob       blobJSON `json:"blob"`
+	DurationMS *int64   `json:"duration_ms"`
 	LyricsHash *string  `json:"lyrics_hash"`
 }
 
@@ -83,7 +86,7 @@ func albumRep(v catalog.AlbumView) albumJSON {
 	for i, t := range v.Tracks {
 		out.Tracks[i] = trackJSON{
 			ID: t.ID.String(), Disc: t.Disc, No: t.No, Title: t.Title, Artist: t.Artist, Genre: t.Genre,
-			SourcePath: t.SourcePath, Blob: blobRep(t.Blob), LyricsHash: t.LyricsHash,
+			SourcePath: t.SourcePath, Blob: blobRep(t.Blob), DurationMS: t.DurationMS, LyricsHash: t.LyricsHash,
 		}
 	}
 	for i, a := range v.Attachments {
@@ -177,23 +180,37 @@ func (h *handlers) albumStatus(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.api.writeJSON(w, nethttp.StatusOK, h.statusRep(s))
 }
 
-// The keys of the PUT body (§10.2).
+// The keys of the PUT body (§10.2, and new_artist: NOTES.md N-298).
 var (
-	albumKeys = []string{"artist_id", "title", "year", "genre", "compilation", "tracks"}
+	albumKeys = []string{"artist_id", "new_artist", "title", "year", "genre", "compilation", "tracks"}
 	trackKeys = []string{"id", "disc", "no", "title", "artist", "genre"}
 )
 
 // decodeAlbumUpdate reads the body of PUT /api/albums/{id}: exactly
-// {artist_id, title, year, genre, compilation, tracks: [{id, disc, no,
-// title, artist, genre}]}, every key present (null where allowed). Blobs
-// and ids are not editable: they are not fields of the body. A track id
-// listed twice is 422 duplicate_id (§10.1); whether the list is exactly the
-// album's tracks, and every value, the catalog decides in its transaction.
+// {artist_id, new_artist, title, year, genre, compilation, tracks: [{id,
+// disc, no, title, artist, genre}]}, every key present (null where
+// allowed). The album's artist is exactly one of artist_id (an existing
+// artist) and new_artist (the name of an artist created by this save, in
+// its transaction, N-298): the other is null. Blobs and ids are not
+// editable: they are not fields of the body. A track id listed twice is
+// 422 duplicate_id (§10.1); whether the list is exactly the album's
+// tracks, and every value, the catalog decides in its transaction.
 func decodeAlbumUpdate(body object) (catalog.AlbumUpdate, *Error) {
 	var u catalog.AlbumUpdate
 	var e *Error
-	if u.ArtistID, e = body.ID("artist_id"); e != nil {
+	if !isNull(body.fields["artist_id"]) {
+		if u.ArtistID, e = body.ID("artist_id"); e != nil {
+			return u, e
+		}
+	}
+	if u.NewArtist, e = body.NullableString("new_artist"); e != nil {
 		return u, e
+	}
+	switch {
+	case u.ArtistID == uuid.Nil && u.NewArtist == nil:
+		return u, invalidField("artist_id", "must be an id, or null with new_artist a name")
+	case u.ArtistID != uuid.Nil && u.NewArtist != nil:
+		return u, invalidField("new_artist", "must be null when artist_id is an id")
 	}
 	if u.Title, e = body.String("title"); e != nil {
 		return u, e
@@ -243,8 +260,12 @@ func decodeAlbumUpdate(body object) (catalog.AlbumUpdate, *Error) {
 }
 
 // updateAlbum is PUT /api/albums/{id} with If-Match: the album's metadata
-// and tracks in one transaction (§10.2); another artist_id is the album's
-// reassignment (§4.3). 200 with the album as it is after the change.
+// and tracks in one transaction (§10.2); another artist_id, or a
+// new_artist, is the album's reassignment (§4.3), and an artist it leaves
+// without albums is deleted (N-297). 200 with the album as it is after the
+// change. A new_artist that exists already is 409 artist_exists (or
+// artist_folder_conflict) with the existing artist's id and both names in
+// details, and nothing is saved.
 func (h *handlers) updateAlbum(w nethttp.ResponseWriter, r *nethttp.Request) {
 	id, rev, ok := h.albumPrecondition(w, r)
 	if !ok {

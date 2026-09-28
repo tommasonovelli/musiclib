@@ -332,6 +332,21 @@ From the first moment of the boot it answers 503 `not_ready` until
 `/health/live` and `/health/ready` are outside the Host check, so the
 Compose healthcheck and probes by IP keep working.
 
+Saving an album (`PUT /api/albums/<id>`, NOTES.md N-298) takes every key
+of `{artist_id, new_artist, title, year, genre, compilation, tracks}`. The
+album's artist is exactly one of `artist_id` (an existing artist) and
+`new_artist` (the name of an artist to create with this save, in the same
+transaction); the other is `null`. A save that fails (428, 412, 422, 409)
+creates nothing; a `new_artist` that already exists is 409
+`artist_exists` (or `artist_folder_conflict`) with the existing artist's
+`artist_id` and both names in `details`. An artist left without any album,
+trashed ones included, by a save that moves its last album elsewhere is
+deleted by that save (N-297). `POST /api/artists` still creates an artist
+without an album; it stays until an album arrives and leaves it (N-299).
+Each track of `GET /api/albums/<id>` carries `duration_ms`, its duration
+in milliseconds, or `null` while unknown (N-302): read-only, not a field of
+the PUT body.
+
 ```sh
 curl -s http://127.0.0.1:8080/api/artists
 curl -si http://127.0.0.1:8080/api/albums/<id> | grep -i '^etag'     # "album:<id>:<revision>"

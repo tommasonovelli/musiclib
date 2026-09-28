@@ -103,9 +103,12 @@ JOIN artists ar ON ar.id = al.artist_id
 LEFT JOIN blobs cb ON cb.hash = al.cover_hash
 WHERE al.id = $1;
 
+-- The render reads whether each audio blob's duration is known only to
+-- record it when it is not (NOTES.md N-301); the plan never uses it.
 -- name: SnapshotTracks :many
 SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
        t.blob_hash, b.size AS blob_size, b.format AS blob_format,
+       (b.duration_ms IS NOT NULL)::boolean AS blob_duration_known,
        t.lyrics_hash, lb.size AS lyrics_size
 FROM tracks t
 JOIN blobs b ON b.hash = t.blob_hash

@@ -349,13 +349,14 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 }
 /* A long album reads in two columns; a short one stays one list. */
 .panel-tracks:has(li:nth-child(9)) { columns: 2 16rem; column-gap: var(--s6); }
-.panel-tracks li { display: flex; gap: var(--s3); padding: 5px 0; break-inside: avoid; border-top: 1px solid color-mix(in srgb, var(--cover-ink, var(--ink)) 16%, transparent); }
+.panel-tracks li { display: flex; align-items: baseline; gap: var(--s3); padding: 5px 0; break-inside: avoid; border-top: 1px solid color-mix(in srgb, var(--cover-ink, var(--ink)) 16%, transparent); }
 .panel-tracks .disc { padding-top: var(--s3); border: 0; color: inherit; font: var(--type-caption); }
 .track-no { flex: none; min-width: 1.5rem; text-align: right; }
 .track-title { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 /* Panel text stays --cover-ink (4.5:1): a track's artist gets its own
    line and the Note size instead of a lighter colour (N-254). */
 .track-artist { display: block; font: var(--type-note); }
+.track-time { flex: none; margin-left: auto; font: var(--type-note); font-variant-numeric: tabular-nums; }
 .panel-edit {
   align-self: start; margin-top: auto;
   background: var(--cover-ink, var(--accent)); color: var(--cover-bg, var(--on-accent));
@@ -402,12 +403,15 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 .menu > :is(:hover, :focus-visible), :is(.picks, .thumbs) button:hover { background: var(--fill); text-decoration: none; }
 .menu input[type="number"] { width: 3.5rem; margin-left: auto; background: var(--fill); }
 .menu > hr { min-height: 0; margin: var(--s1) 0; padding: 0; border-top: 1px solid var(--hairline); }
-.status, .menu-note, .t-lyrics, .disc, #changes, .extra-row label, .notice summary { color: var(--graphite); font: var(--type-note); }
+.status, .menu-note, .t-lyrics, .t-time, .length, #new-artist, .disc, #changes, .extra-row label, .notice summary { color: var(--graphite); font: var(--type-note); }
 
 .track-list, .files, .picks, .thumbs { margin: 0; padding: 0; list-style: none; }
 .section-head { padding: var(--s5) 0 var(--s3); }
-.track { display: grid; grid-template: "no title artist genre lyr dots" / 2rem minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1.4fr) 2.5rem 2rem; align-items: center; gap: var(--s3); }
-.t-no { grid-area: no; } .t-title { grid-area: title; } .t-artist { grid-area: artist; } .t-genre { grid-area: genre; } .t-lyrics { grid-area: lyr; } .track .dots { grid-area: dots; }
+.track { display: grid; grid-template: "no title artist genre lyr time dots" / 2rem minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1.4fr) 2.5rem 3.25rem 2rem; align-items: center; gap: var(--s3); }
+.t-no { grid-area: no; } .t-title { grid-area: title; } .t-artist { grid-area: artist; } .t-genre { grid-area: genre; } .t-lyrics { grid-area: lyr; } .t-time { grid-area: time; } .track .dots { grid-area: dots; }
+/* The duration (N-302): read, never edited; right-aligned figures. */
+.t-time { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.length { padding-top: var(--s3); border-top: 1px solid var(--hairline); font-variant-numeric: tabular-nums; }
 .track, .files li { min-height: 2.75rem; }
 .track, .files li, .picks li + li { border-top: 1px solid var(--hairline); }
 .track > input { width: 100%; text-overflow: ellipsis; }
@@ -441,7 +445,8 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
   .cover-box { grid-column: 1 / -1; }
   .cover { width: min(100%, 240px); height: auto; aspect-ratio: 1; }
   .album-title textarea { font: 700 1.625rem/2rem var(--family); }
-  .track { grid-template: "no title title lyr dots" ". artist genre genre dots" / 1.5rem minmax(0, 1fr) minmax(0, 1fr) 3rem 2rem; gap: 0 var(--s2); padding-block: var(--s2); }
+  .track { grid-template: "no title title time dots" ". artist genre lyr dots" / 1.5rem minmax(0, 1fr) minmax(0, 1fr) 3.25rem 2rem; gap: 0 var(--s2); padding-block: var(--s2); }
+  .t-lyrics { text-align: right; }
   .t-artist, .t-genre { font: var(--type-note); }
 }
 
