@@ -1,3 +1,5 @@
+![Vibrance MusicLib](docs/assets/banner.png)
+
 # Vibrance MusicLib
 
 Vibrance MusicLib turns a local music collection into an organized library of folders and tagged files. Import albums, correct their metadata in the browser, and let MusicLib regenerate the library while keeping the imported originals unchanged.
