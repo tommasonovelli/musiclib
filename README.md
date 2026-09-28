@@ -1,6 +1,6 @@
-# Musiclib
+# Vibrance MusicLib
 
-Musiclib turns a local music collection into an organized library of folders and tagged files. Import albums, correct their metadata in the browser, and let Musiclib regenerate the library while keeping the imported originals unchanged.
+Vibrance MusicLib turns a local music collection into an organized library of folders and tagged files. Import albums, correct their metadata in the browser, and let MusicLib regenerate the library while keeping the imported originals unchanged.
 
 It is a personal library manager: the result is an ordinary directory tree that you can use with your own player.
 
@@ -27,7 +27,7 @@ library/
         booklet.pdf
 ```
 
-`.musiclib.json` is a generated receipt. Edit metadata through Musiclib: files in `library/` are generated output, and manual changes can be replaced by a later render.
+`.musiclib.json` is a generated receipt. Edit metadata through MusicLib: files in `library/` are generated output, and manual changes can be replaced by a later render.
 
 ## Current status and boundaries
 
@@ -35,7 +35,7 @@ The supported production target is **Ubuntu 24.04 or later, Docker Engine with C
 
 The implementation and existing test evidence are recorded in [PROGRESS.md](PROGRESS.md). The native Ubuntu/ext4 release acceptance gate remains open (N-017); this README does not declare a completed public release. There is currently a source build workflow, rather than a documented published application image. See the [public release checklist](opensource.md) for the remaining work, including the audit of bundled third-party software.
 
-Musiclib runs as one application instance paired with one database and data volume. It has no player, streaming, transcoding of published audio, online music recognition, automatic filesystem watcher, or user accounts and roles. The interface is currently in Italian; some pages still contain English text. UI work is ongoing.
+MusicLib runs as one application instance paired with one database and data volume. It has no player, streaming, transcoding of published audio, online music recognition, automatic filesystem watcher, or user accounts and roles. The interface is in English.
 
 ## Start from source
 
@@ -65,7 +65,7 @@ docker compose logs --tail=100 app
 
 Open **http://127.0.0.1:8080/**. Plain `docker compose up -d` starts only PostgreSQL; the `app` profile builds and starts `musiclib-app:local`. Readiness becomes positive after boot, migrations and recovery complete.
 
-Place albums in `import/`, then choose **Importa** in the browser and start an import from a directory. The import directory must exist before startup, is mounted read-only, and must remain available and unchanged until its jobs finish. Musiclib copies accepted files into its own store; it does not move your source collection.
+Place albums in `import/`, then choose **Import** in the browser and start an import from a directory. The import directory must exist before startup, is mounted read-only, and must remain available and unchanged until its jobs finish. MusicLib copies accepted files into its own store; it does not move your source collection.
 
 For existing source directories or host bind mounts, configure `MUSICLIB_IMPORT`, `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as described in the [operations guide](docs/operations.md#first-start). The app defaults to UID/GID `1000:1000`; source files must be readable and source directories traversable by that identity. Bind-mounted data and backup directories must be writable by it. `MUSICLIB_UID` and `MUSICLIB_GID` also set image build arguments: changing them requires a rebuild and correct ownership of existing storage. A fresh named volume inherits ownership from the image; an existing volume is not automatically re-owned.
 
@@ -81,7 +81,7 @@ For existing source directories or host bind mounts, configure `MUSICLIB_IMPORT`
 
 PostgreSQL holds the catalog, queue and publication journal. A render prepares a complete album in staging, writes its managed tags, verifies the audio and publishes it through a recoverable directory replacement protocol. Originals remain available for future renders. The storage contract and recovery rules are detailed in [DESIGN.md](DESIGN.md).
 
-Budget roughly **twice the imported media bytes** for originals plus library, with additional room for staging, covers, attachments and retired output. The external source collection and separate backups add to this total. Musiclib reserves space conservatively, but external writes and a full disk can still interrupt a job.
+Budget roughly **twice the imported media bytes** for originals plus library, with additional room for staging, covers, attachments and retired output. The external source collection and separate backups add to this total. MusicLib reserves space conservatively, but external writes and a full disk can still interrupt a job.
 
 The default backup volume is separate from the data volume, but it is not an off-device backup. Prefer a backup directory on another physical disk, retain several complete generations, and periodically restore into fresh destinations. Backup includes the catalog and originals; generated output is rebuilt after restore, and external import sources are not included.
 
@@ -98,7 +98,7 @@ Read [operations](docs/operations.md) before running rebuild or restore. Restore
 
 The default published address is `127.0.0.1:8080`. `PUBLIC_ORIGIN` must match the exact host and port used by the browser: `localhost` and `127.0.0.1` are different hosts. LAN access needs an explicit binding and matching origin.
 
-**There is no authentication.** Host/Origin validation and the `X-Musiclib-Request: 1` mutation header protect the browser boundary; that header is not a credential. Do not expose Musiclib directly to the Internet. Remote access requires an authenticated reverse proxy; consult the [security and troubleshooting guidance](docs/operations.md#security-and-troubleshooting).
+**There is no authentication.** Host/Origin validation and the `X-Musiclib-Request: 1` mutation header protect the browser boundary; that header is not a credential. Do not expose MusicLib directly to the Internet. Remote access requires an authenticated reverse proxy; consult the [security and troubleshooting guidance](docs/operations.md#security-and-troubleshooting).
 
 The HTTP API supports catalog editing, import reports, queue management and downloads by entity ID. Changes to existing albums and artists use `ETag`/`If-Match` to detect conflicting edits. File uploads use raw request bodies. See the [API examples and request rules](docs/docker.md#the-api) and [import/queue examples](docs/docker.md#importing-the-queue-and-the-library-list-round-16). A complete OpenAPI document is future work tracked in [opensource.md](opensource.md).
 
@@ -118,4 +118,4 @@ The HTTP API supports catalog editing, import reports, queue management and down
 
 ## License
 
-Musiclib's original code and documentation are licensed under the [MIT License](LICENSE), copyright 2026 tommasonovelli. Third-party dependencies and assets retain their own licenses, including the [SIL Open Font License](web/OFL.txt) for Hanken Grotesk. The audit and distribution requirements for bundled third-party software remain tracked in [opensource.md](opensource.md#p0--licenza-provenienza-e-distribuzione).
+MusicLib's original code and documentation are licensed under the [MIT License](LICENSE), copyright 2026 tommasonovelli. Third-party dependencies and assets retain their own licenses, including the [SIL Open Font License](web/OFL.txt) for Hanken Grotesk. The audit and distribution requirements for bundled third-party software remain tracked in [opensource.md](opensource.md#p0--licenza-provenienza-e-distribuzione). The logo, the sun symbol, is the author's artwork and is not covered by the MIT License: see [LOGO.md](LOGO.md).

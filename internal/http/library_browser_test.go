@@ -463,7 +463,7 @@ func TestBrowserLibraryScreenshots(t *testing.T) {
 		if then != "" {
 			browserEval(t, tab, then+`;''`)
 			if name == "sidebar-tooltip" {
-				// From the focused toggle, past Library, to Import: a keyboard focus.
+				// From the focused brand, past Library, to Import: a keyboard focus.
 				browserKey(t, tab, kb.Tab)
 				browserKey(t, tab, kb.Tab)
 			}
@@ -497,7 +497,7 @@ func TestBrowserLibraryScreenshots(t *testing.T) {
 				toggle := `document.querySelector('#sidebar-toggle').click()`
 				shoot(root, e.srv.URL+"/activity", "sidebar-expanded", w, h, dark, "")
 				shoot(root, e.srv.URL+"/", "sidebar-collapsed", w, h, dark, toggle)
-				shoot(root, e.srv.URL+"/", "sidebar-tooltip", w, h, dark, toggle+`;document.querySelector('#sidebar-toggle').focus()`)
+				shoot(root, e.srv.URL+"/", "sidebar-tooltip", w, h, dark, toggle+`;document.querySelector('.brand').focus()`)
 			}
 		}
 	}

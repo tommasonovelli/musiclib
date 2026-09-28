@@ -608,7 +608,7 @@ func TestBrowserAlbumEscapingAndNoScript(t *testing.T) {
 	id := e.seedAlbum(`Art <b>&"`, hostile, []fixtureTrack{{disc: 1, no: 1, title: hostile, artist: ptr(`<i>"&`)}, {disc: 1, no: 2, title: "Plain"}}, map[string][]byte{"x.txt": []byte("x")})
 	e.exec(`UPDATE attachments SET rel_path = $1 WHERE album_id = $2 AND rel_path = 'x.txt'`, `Scans/<script>" &.txt`, id)
 	tab, problems := albumTab(t, root, e.srv.URL+"/albums/"+id.String())
-	if got := js(t, tab, `return JSON.stringify([$('#album-title').value, $('#artist-name').value, row(0).querySelector('[name=title]').value, row(0).querySelector('[name=artist]').value, $$('.files .file-name').map(a=>a.textContent).sort(), document.title, $$('main script, main b, main i').length])`); got != `["<script>\" & '","Art <b>&\"","<script>\" & '","<i>\"&",["Scans/<script>\" &.txt","cover.jpg"],"<script>\" & ' — musiclib",0]` {
+	if got := js(t, tab, `return JSON.stringify([$('#album-title').value, $('#artist-name').value, row(0).querySelector('[name=title]').value, row(0).querySelector('[name=artist]').value, $$('.files .file-name').map(a=>a.textContent).sort(), document.title, $$('main script, main b, main i').length])`); got != `["<script>\" & '","Art <b>&\"","<script>\" & '","<i>\"&",["Scans/<script>\" &.txt","cover.jpg"],"<script>\" & ' — MusicLib",0]` {
 		t.Fatalf("escaping: %s", got)
 	}
 	js(t, tab, `row(0).querySelector('.dots').click();[...row(0).querySelectorAll('.menu button')].find(b=>b.textContent==='Delete track').click();return ''`)

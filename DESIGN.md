@@ -1,4 +1,4 @@
-# Music Library Manager
+# Vibrance MusicLib
 
 **Specifica implementativa — versione 1.0 — 2026-09-20**
 

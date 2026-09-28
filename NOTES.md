@@ -7424,3 +7424,432 @@ screenshots all pass; no blocking defect was found.
     statements, so it is theoretical; reading the job inside the retry's
     transaction would close it. Not a round-22 change.
 - **Budget (N-267):** unchanged by the review, CSS + JS 78,606 bytes.
+
+### N-308 · The name: Vibrance MusicLib, MusicLib, `musiclib` — DECIDED (owner, 2026-09-28)
+The owner's brand document of 2026-09-28 (kept outside the repository)
+names the product. **Vibrance MusicLib** is the full name, for titles and
+the first mention; **MusicLib** (capital L) the short name afterwards and
+in the page titles («Library — MusicLib»); `musiclib` stays only as an
+identifier, in code formatting. No identifier changes: the Go module,
+`musiclibd`, `musiclib-tags`, `MUSICLIB_*`, the Compose project, volume and
+image names, the database user and name, `.musiclib.json`,
+`.musiclib-store`, `.musiclib-backup-*`, `X-Musiclib-Request`, the
+`musiclib.sidebar` storage key, file and directory names. Owner correction
+of the same day: «Vibrance» appears only as part of the product's name; the
+README keeps its framing (the output is an ordinary folder usable with any
+player) and no other product or integration is mentioned anywhere.
+Changed: README (title and prose; the false «The interface is currently in
+Italian; some pages still contain English text. UI work is ongoing.» is now
+«The interface is in English.» (N-256), and «Importa» is «Import»),
+the titles of CONTRIBUTING, `opensource.md` and `docs/operations.md`,
+`docs/ui.md` («outside MusicLib», the lockup, the accent, the favicon),
+DESIGN.md's title only («Music Library Manager» → «Vibrance MusicLib»; the
+body is the owner's normative spec and is untouched), the comment heading
+`app.css`, and the visible sentence of Activity's Advanced («outside
+MusicLib»). Historical NOTES and PROGRESS entries keep their old spelling.
+Not changed, being process or tool names rather than the product's name:
+Go log and error texts such as «another musiclib process holds …» (outside
+`web/`). `opensource.md` gains a P0 item for the name's availability (N-313,
+N-318).
+
+### N-309 · Brand assets: the symbol, the outlined word — DECIDED
+- **The symbol** is the owner's `logo.svg` (334 × 334, nine paths, black):
+  the owner's file is 9,572 bytes with CRLF line endings, SHA-256
+  `5ebf0c9aa2d95138bd0cead3535f6cecac501ec98f09bffb04f5601278c0f0f4`. The
+  source copy is `web/brand/logo.svg`, identical except for LF line endings
+  (the repository normalizes text, `.gitattributes`): 9,561 bytes, SHA-256
+  `9324c723c28ea045a0dd6ccbd775d90ff0300bb677dbf835a9d2f4b268be414d`. It is
+  not embedded. Its path data is copied byte for byte, only `fill="black"`
+  dropped, into `web/favicon.svg` (N-312) and into the layout's sprite as
+  `<symbol id="brand-sun" viewBox="0 0 334 334" fill="currentColor">`, so
+  the page gives it the accent. Never redrawn, rotated or restyled.
+- **The word** «MusicLib» is Bricolage Grotesque converted to outlines, in
+  the sprite as `<symbol id="brand-word" viewBox="71 -741 4090 822"
+  fill="currentColor">`: one path, 2,748 bytes, SHA-256
+  `7697fe7a4368dcc24b2e8b42c2c64fa63e00c829dce1e46adbc16fbe24f1b5c4`. No
+  font file is in the repository or served; the UI stays Hanken Grotesk.
+- **Provenance:** `google/fonts` at commit
+  `6ce172f74aa355ea43eb964fa4a91570a4d3064d` (the last to touch the
+  family), `ofl/bricolagegrotesque/BricolageGrotesque[opsz,wdth,wght].ttf`,
+  408,496 bytes, SHA-256
+  `413e7357809ddd12fd80a96a8a396de0e401638d4acd3cb3e37532f0472ac682`, `name`
+  version 1.001, axes opsz 12–96 (default 96), wght 200–800, wdth 75–100;
+  its `OFL.txt` has SHA-256
+  `4b5a7d8f37f5602621c8a8d7358a6a2e71317e6c231c661e15aef0275d3e07ba`;
+  upstream `ateliertriay/bricolage` at
+  `84745e5b96261ae5f8c6c856e262fe78d1d6efdd` (METADATA.pb). Designer
+  Mathieu Triay; copyright 2022 The Bricolage Grotesque Project Authors.
+- **Conversion,** in a throwaway `python:3.13-slim` container
+  (`python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b`)
+  with fontTools 4.60.1 and uharfbuzz 0.56.2: `varLib.instancer` at
+  **wght 700, wdth 100, opsz 20**; the text shaped by HarfBuzz (`kern`,
+  `liga`; glyphs M u s i c L i b); **−0.02 em** (−20 of 1000 units) added
+  between glyphs; each glyph drawn through a `RoundingPen` (integer font
+  units) into an `SVGPathPen`, y flipped. Advance 4,197 units; ink x 71 to
+  4,160, y −741 to 14. The viewBox starts at the ink's left edge, so the
+  word's ink begins exactly on the sidebar's label edge, and is symmetric
+  about the capitals' centre (y −330, cap height 660), so centring the box
+  centres the capitals. Shown at 20 px per em: 81.8 × 16.44 px, capitals
+  13.2 px.
+- **Why this instance.** Weight 700 and −0.02 em are the owner's reference.
+  The optical size follows the size the word is shown at, 20 px:
+  Bricolage's opsz axis draws each size differently, and its default (96,
+  the display cut) set at 20 px closes the counters and makes letters
+  touch. Compared in Chromium at 17, 20, 24 and 48 px (opsz 12, 18, 24, 36,
+  48, 96): 12 to 24 read cleanly at 20 px, 36 to 96 get progressively
+  tighter; 20 is the shown size itself, and with −0.02 em it is as compact
+  as the reference without touching. Tracking 0 looked loose beside the
+  symbol. Width 100: the narrow widths are for long display lines, not a
+  short word with room.
+- **Licence.** Bricolage Grotesque is under the SIL Open Font License 1.1.
+  Glyph outlines placed in artwork are not «Font Software» under the OFL
+  (the licence covers the font, not what is made with it, and outlines in
+  a logo cannot be used as a font), so no OFL text needs to ship; the
+  provenance is recorded here all the same. This is separate from the
+  logo's own licence (N-318: only the symbol is outside the MIT License,
+  `LOGO.md`; the outlined word is MIT like the rest).
+- **Weight on the page:** the sprite is inline, so no request, nothing for
+  the CSP and nothing counted in the CSS + JS budget, but every page now
+  carries 12,505 more bytes of HTML (the symbol's nine paths, 9.3 KB, and
+  the word, 2.8 KB): `layout.html` 5,558 → 18,063 bytes. Pages are local and
+  `no-store`, and the brief preferred inlining to a request. An external
+  sprite would have worked as well: a same-origin `<use href>` inherits
+  `currentColor` like an inline one, so no second copy of the symbol was
+  needed; inlining was chosen for the request it saves, not for colour
+  (corrected in N-317).
+
+### N-310 · The accent is MusicLib's Violet — DECIDED (owner, 2026-09-28)
+`--accent` is `#643fd1` (`oklch(0.50 0.21 288)`) light and `#a79bfe`
+(`oklch(0.74 0.14 288)`) dark, from `#0066cc` and `#2997ff` (both hex values
+checked against their OKLCH); `--on-accent` is unchanged, white light and
+`#1d1d1f` dark (white on `#a79bfe` would be 2.4:1). Nothing else in the
+palette changes. Its uses, all checked in both themes: links (`a`, `.link`,
+the back link), `.btn-primary` (Save, «Import everything in …», «Retry
+all»), the focus ring, the skip link, checkbox `accent-color`, the cover
+drop outline, the folder icons of Import, the `--cover-ink` fallback of the
+panel's «Edit album» on a coverless album, and now the symbol.
+WCAG 2 contrast, computed from the tokens (the mixed ones mixed as the CSS
+does), the old accent's in brackets:
+
+| Accent on | light | dark |
+|---|---|---|
+| paper (`#fff` / `#1c1c1e`) | 6.62 (5.57) | 7.10 (5.64) |
+| canvas (`#f5f5f7` / `#000`), the sidebar | 6.08 (5.11) | 8.76 (6.96) |
+| `--fill` (quiet controls) | 5.88 (4.95) | 6.06 (4.81) |
+| `--fill-strong` (the current view's row) | 4.99 (4.20) | 7.37 (5.86) |
+| a notice (`--error` 9 % on paper) | 5.63 (4.73) | 6.29 (5.00) |
+| `--on-accent` on the accent | 6.62 (5.57) | 7.02 (5.58) |
+| `--on-accent` on the hovered primary (`brightness(1.08)`) | 5.90 | 7.97 |
+
+Every text pairing is above 4.5:1 and every non-text one (focus ring,
+outline, folder icons, symbol) above 3:1; the new values are higher than
+the old everywhere. Measured again in Chromium from computed styles with
+the tests' independent `contrastJS`: 6.62, 6.08 and 6.62 light; 7.10, 8.76
+and 7.02 dark. Violet (hue 288) is far from the status colours (green,
+orange, red), so a violet mark never reads as a state. Not seen in a
+screenshot: a checked checkbox (none of the review states has one);
+Chromium chooses the check mark's colour against `accent-color` itself.
+
+### N-311 · The lockup heads the sidebar; the toggle moves to its foot — DECIDED (owner confirmed 2026-09-28, N-317; supersedes N-272's toggle position)
+The constraint (N-272, N-273): collapsing moves no icon and leaves the
+toggle under the pointer; collapsed, the symbol stays. So the symbol and
+the toggle must both live in the 3 rem icon column, in rows that do not
+move. The candidates:
+- the toggle stays at the top, the lockup on the row below: the symbol then
+  sits between the toggle and Library in the column of icons and reads as
+  one more view (it even links to the Library, like the first view), and
+  the brand is not first;
+- the symbol turns into the toggle on hover (a common pattern): the control
+  is hidden, found only by chance, and ambiguous from the keyboard;
+- symbol and toggle in one row: the rail has one icon column, and a toggle
+  at the row's end moves when the sidebar narrows;
+- **chosen:** the lockup heads the sidebar, where the name was, and the
+  toggle goes to its foot (`margin-top: auto` in the sidebar's flex column;
+  the sidebar is sticky and 100vh tall in both states, so its foot never
+  moves).
+Geometry, measured at 1280 × 900 in both themes: the symbol 28 × 28 at
+(22, 20), expanded and collapsed; the word at x = 60, the labels' edge,
+81.8 × 16.44, the capitals' centre on the symbol's centre (0 px apart); the
+toggle 48 × 36 at (12, 848) in both states. The lockup row is 36 px, like
+the toggle row it replaces, so the views sit exactly where they did. The
+symbol is 28 px: at 24 px it looked spindly beside the bold word; at 28 px
+its ring (about 15 px) matches the capitals (13.2 px). Clear space (a
+quarter of its width, 7 px): 10 px to the word, 20 px to the rail's edges
+collapsed, 24 px to the views below. The symbol takes `--accent`, the word
+`--ink`. The brand is one link to the Library whose accessible name is
+«MusicLib» (an `sr-only` text; both SVGs are `aria-hidden`). Collapsed, the
+word is `visibility: hidden` and the symbol stays, still a focusable link.
+Tab order: skip link, brand, the four views, Needs attention, toggle (the
+toggle was second). The toggle keeps its tooltip, label, `aria-expanded`
+and N-272's no-flash behaviour; without JavaScript it is still hidden. On
+phones the brand and the toggle are hidden, as the name and the toggle
+were. On a viewport too short for the sidebar's content the toggle simply
+follows Needs attention.
+
+### N-312 · The favicon, and `/favicon.ico` — DECIDED
+- `web/favicon.svg` (9,617 bytes; 9,666 with the licence line of N-317 and N-318): the symbol's nine paths, `fill="#643FD1"`
+  on the root as the fallback and `<style>svg{fill:#643FD1}@media
+  (prefers-color-scheme:dark){svg{fill:#A79BFE}}</style>`: the dark twin
+  inside the file, following the browser's colour scheme. Rasterised by
+  Chromium at 16 and 32 px under the emulated schemes, every opaque pixel
+  is exactly `#643FD1` light and `#A79BFE` dark: the inner style applies
+  although the response carries the pages' CSP. At 16 px the rays stay
+  distinct and the ring open.
+- Served from `/static/favicon.svg` through the explicit allowlist as
+  `image/svg+xml`, with `Cache-Control: public, max-age=86400`: its name
+  carries no version, so it is not `immutable` like the fonts; a day bounds
+  how long a changed symbol can stay stale (browsers also keep favicons in
+  their own store). Embedded by name in `web/embed.go`. Every page has
+  `<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">`.
+  Neither CSS nor JS, so outside N-267's budget.
+- **`/favicon.ico` is not served (404),** by the existing rule that any
+  other path is 404 (503 while booting, like any page). Browsers ask for it
+  only when a page names no icon, and every page here names one. An ICO
+  would be a second, raster artwork of the symbol, the kind of redraw the
+  owner excluded; a redirect, or the SVG under that name, would answer
+  clients that asked for `.ico` precisely because they read no `<link>`,
+  with a format they may not decode. A browser without SVG favicons shows
+  its default icon.
+
+### N-313 · Is the brand under the MIT licence? — DECIDED (owner, 2026-09-28); scope SUPERSEDED by N-318 (only the logo is outside the MIT License)
+`LICENSE` grants MIT on «this software and associated documentation
+files». The repository now contains the symbol (`web/brand/logo.svg`,
+`web/favicon.svg`, the sprite in `web/layout.html`) and the outlined word,
+so without a notice they would be read as MIT-licensed with everything
+else, and a fork could ship under the same name and mark. The round
+itself edited nothing legal and recommended keeping MIT for code and
+documentation and stating separately that the name and the marks are not
+licensed. **Owner decision (2026-09-28): the name and the logo are
+outside the MIT License.** `LICENSE` stays byte-identical; the separate
+notice is `TRADEMARKS.md` (text and scope in N-317). What remains open is
+only the name-availability check (marks, GitHub name, domain; the word is
+already in use elsewhere), tracked as a P0 item in `opensource.md`.
+
+### N-314 · Tests: none added, by owner decision; contracts changed deliberately — DECIDED (owner, 2026-09-28)
+The owner asked for no new tests for this round (accent, lockup, favicon,
+titles, docs) and no new cases in existing ones; the ones written first (a
+brand browser test, a unit test of the symbol's paths, favicon rows in
+`TestStaticAssets`) were removed. Existing tests were changed only where
+they asserted the old text or layout:
+- `TestBrowserAlbumEscapingAndNoScript`: the title ends in «— MusicLib»;
+- `TestBrowserSidebarCollapse`: the accessible names of `#sidebar-toggle,
+  .nav a, .fix-filter` come in document order, so the toggle is now last;
+  the toggle is the eighth tab stop, not the second; the check that Tab
+  reaches the first view with its tooltip now starts from the brand (the
+  symbol stays visible and focusable, so «the hidden brand is skipped» no
+  longer holds);
+- `TestBrowserSidebarPhone`: `.brand`, instead of the removed
+  `.sidebar-top`, is `display: none`;
+- `TestBrowserLibraryScreenshots` (a review aid): the tooltip shot focuses
+  the brand before its two Tabs, since Tab from the toggle now leaves the
+  sidebar.
+No committed test now holds, and only the review screenshots and a
+throwaway measurement verified (N-315): the accent values and their
+contrast, the lockup's geometry, the toggle staying in place when
+collapsing, the favicon's type, cache and colours, `/favicon.ico` being
+404, and the symbol's paths being the owner's. A later change could break
+these silently; worth reconsidering once the brand settles.
+
+### N-315 · Budget, screenshots, and what looking at them said — DECIDED
+- **Budget (N-267):** CSS + JS 79,209 bytes, from 78,606: `app.css` 34,837
+  (+603); the scripts unchanged. The page HTML grows by 12,505 bytes
+  (N-309); the favicon is 9,617 bytes, fetched at most once a day.
+- **Screenshots** in `tmp/ui-shots-r23/` (gitignored), from
+  `TestBrowser(Library|Album|Queue)Screenshots` with
+  `MUSICLIB_UI_SHOTS=/src/tmp/ui-shots-r23`, plus a throwaway test (deleted,
+  never committed) for `favicon-light.png` and `favicon-dark.png` (16 and
+  32 px rasterised at 1x and shown four times larger pixel for pixel, and
+  at size on a 2x screen, on a light and a dark tab strip),
+  `album-collapsed-1280-*` and `album-save-1280-*` (the Save bar's primary
+  button). Every page in light and dark at 1280 and 390 px; the sidebar
+  expanded, collapsed and with a tooltip.
+- **Looked at:** the lockup reads as one unit, the symbol's ring level with
+  the capitals, the word aligned with the labels; collapsed, the symbol
+  alone centred on the rail above the icons and the toggle alone at the
+  foot; the Violet stays on small things (links, Save, the Import button,
+  the folder icons, focus) and never on a surface, so the covers still
+  carry the colour; the dark twin is light enough on black without going
+  pastel. Changed after looking: the symbol from 24 to 28 px (N-311). Left
+  as it is: phones show no brand, as they showed no name before.
+
+### N-316 · Review of round 23 (Irene Fabbri, brand and UI) — CHANGES REQUIRED
+Reviewed the uncommitted tree against the owner's brand document (its
+player section excluded), the round's brief and the owner's decisions of
+2026-09-28.
+- **Held:** MusicLib stands alone: «Vibrance» appears only inside «Vibrance
+  MusicLib»; no player, family or integration is mentioned; no identifier,
+  API, data contract or migration changed. The symbol's nine paths are
+  byte-identical to the owner's file in `web/brand/logo.svg`,
+  `web/favicon.svg` and the `brand-sun` sprite (checked by hash). The
+  accent values are the document's; contrast recomputed independently:
+  6.62 and 6.08:1 light, 7.10, 8.76 and 7.02:1 dark, as N-310 says. The
+  favicon answers `image/svg+xml`, `public, max-age=86400`, `nosniff`;
+  `/favicon.ico` is 404; titles end in «— MusicLib»; CSS + JS 79,209 bytes.
+  No font file is in the tree. No test function, case or row was added:
+  the four test edits only follow the new text and tab order (N-314).
+  DESIGN.md changes only in its title.
+- **Blocking: the brand licence (owner decision of 2026-09-28, N-313).** The
+  name and the logo are now decided to be outside the MIT licence, and
+  nothing in the tree says so. Required: `LICENSE` byte-identical (so the
+  MIT text stays standard and machine-detectable); a sibling notice
+  (`TRADEMARKS.md`) stating that the names «Vibrance» and «Vibrance
+  MusicLib», the sun symbol (`web/brand/logo.svg`, `web/favicon.svg`,
+  `brand-sun` in `web/layout.html`) and the MusicLib wordmark (`brand-word`)
+  are not licensed under the MIT License and are all rights reserved; that
+  they may be used to refer to this project and kept in unmodified copies;
+  and that modified versions distributed to others use their own name and
+  mark. It must not over-reach: no claim on «MusicLib» alone as a
+  standalone mark, none on the technical identifiers (`musiclib`,
+  `musiclibd`, `MUSICLIB_*` and the rest may be kept by forks), none on
+  Bricolage Grotesque's letterforms (OFL; the reservation is on the mark,
+  not the type), and no ® or «registered». Also: the README's «License»
+  section, a short note beside the assets (`web/brand/README.md`, and the
+  comment in `web/favicon.svg`), N-313 moved to DECIDED, and the
+  `opensource.md` P0 item reduced to the name-availability check with a
+  link to the notice.
+- **Sidebar toggle at the foot (N-311): keep it.** It meets N-272 exactly
+  (the toggle is 48 × 36 at the same point expanded and collapsed; no icon
+  moves), the identity keeps the top-left corner, and the alternative
+  nearest the old layout, the toggle above the lockup, puts the symbol in
+  the icon column over Library where it reads as one more view. The costs
+  are small and accepted: on a tall screen the toggle is farther from the
+  top, and it is the last tab stop of the sidebar, after the views, which
+  is the better order for keyboard users anyway. For the owner to confirm.
+- **Gate:** `scripts/check.sh` failed once in `TestBrowserAlbumSaveInPlace`
+  («Transition was aborted because of invalid state. ViewTransition opt-in
+  disabled», an unhandled rejection of Chromium's own automatic
+  cross-document view transition while the test navigates from the album
+  to the Library under the gate's load; no page code creates a
+  transition). It passed 15 of 15 alone and the whole gate passed on the
+  rerun. Not caused by this round as far as can be seen, but intermittent;
+  to watch.
+- **Nits:** `docs/ui.md` gives the budget as 79,203 bytes, N-315 and the
+  files say 79,209; the favicon's inner `<style>` under the response's
+  `default-src 'self'` is verified in Chromium only (the root `fill` keeps
+  it Violet where a browser blocks it); N-309's reason against an external
+  sprite is inaccurate (a same-origin `<use href>` inherits `currentColor`),
+  though inlining stays a sound choice; collapsed, the symbol has no
+  tooltip like the views (its accessible name is there). The
+  `.claude/agents/*.md` edits (effort medium → high) are not part of this
+  round.
+
+### N-317 · Round 23 fix pass: the brand outside the MIT License — DECIDED (owner, 2026-09-28); the `TRADEMARKS.md` scope SUPERSEDED by N-318 (`LOGO.md`, the logo only)
+The fix pass after the review N-316, with the owner's confirmations of
+2026-09-28: (1) the sidebar toggle at the sidebar's foot (N-311) is
+confirmed and supersedes N-272's toggle position; (2) the scope of
+`TRADEMARKS.md` below is confirmed, forks keeping the `musiclib`
+technical identifiers included.
+- **`LICENSE` is byte-identical** to the committed file (blob
+  `2bc00ee523d414eb39139c0a025e8997cb9441c0`), so the MIT text stays
+  standard and machine-detectable.
+- **`TRADEMARKS.md`** (new, at the root): the names «Vibrance» and
+  «Vibrance MusicLib», the sun symbol (`web/brand/logo.svg`,
+  `web/favicon.svg`, `brand-sun` in `web/layout.html`) and the MusicLib
+  wordmark (`brand-word`) are not licensed under the MIT License, all
+  rights reserved by tommasonovelli. Allowed: using the names to refer to
+  this project, and keeping names, symbol and wordmark in unmodified
+  copies. Modified versions distributed to others take their own name and
+  mark (they may still say they are based on Vibrance MusicLib); changing
+  the project for one's own use is not restricted. Explicitly not claimed:
+  «MusicLib» alone as a standalone name; the technical identifiers
+  (`musiclib`, `musiclibd`, `musiclib-tags`, `MUSICLIB_*` and the rest);
+  Bricolage Grotesque's letterforms, which stay under the OFL (the
+  reservation is on the wordmark as a mark, not on the type). No ® and no
+  «registered»: nothing is registered.
+- **Pointers:** one sentence at the end of the README's «License»; one in
+  CONTRIBUTING (contributions do not cover the name and logo);
+  `web/brand/README.md` (new, not embedded: `web/embed.go` embeds by
+  pattern at `web/` only); the comment in `web/favicon.svg` gains «Not
+  licensed under the MIT License: see TRADEMARKS.md.», so the file is
+  9,672 bytes (from 9,617) with its nine paths unchanged (the path data
+  of `logo.svg`, `favicon.svg` and the `brand-sun` sprite rechecked
+  identical). `web/brand/logo.svg` untouched (SHA-256 still
+  `9324c723…414d`). The `opensource.md` P0 item is reduced to the
+  name-availability check (marks, GitHub name, domain) with a link to
+  `TRADEMARKS.md`; it stays open. N-313 moved to DECIDED.
+- **Nits of N-316:** `docs/ui.md`'s budget figure is now 79,209 bytes
+  (rechecked: `app.css` + the four scripts = 79,209; this pass changed no
+  CSS or JS). N-309's reason against an external sprite corrected: a
+  same-origin `<use href>` inherits `currentColor`, so no second copy
+  would have been needed; inlining stays, for the request it saves. The
+  favicon's CSP note and the collapsed symbol's missing tooltip are left
+  as they are, as the review allowed.
+- **Not changed:** no code, no test (owner, N-314), no identifier, no
+  `.claude/` file. MusicLib is still presented alone: no player, family or
+  integration is mentioned in the new text.
+- **Gate:** `scripts/check.sh` (whole module) passed on the first run
+  (sqlc diff, build, vet, gofmt, `go test -race -count=1`, `internal/http` 178 s);
+  the intermittent `TestBrowserAlbumSaveInPlace` view-transition failure
+  of N-316 did not occur.
+
+### N-318 · Only the logo is outside the MIT License; the names are not reserved — DECIDED (owner, 2026-09-28)
+Owner decision of 2026-09-28, superseding the scope of N-313 and N-317: he
+does not want to restrict the name and cannot claim a name as his own; the
+logo is his own work, so that alone stays reserved.
+- **Reserved:** only the sun symbol, the owner's artwork:
+  `web/brand/logo.svg`, `web/favicon.svg`, the `brand-sun` symbol in
+  `web/layout.html`. All rights reserved by tommasonovelli. Allowed:
+  keeping it in unmodified copies of this project, redistributed or not; a
+  modified version distributed to others replaces it with its own;
+  changes for one's own use are not restricted.
+- **Not reserved:** the names, whose use is unrestricted (the notice does
+  not mention them at all); the outlined «MusicLib» (`brand-word`), which
+  is the name set in a typeface rather than the owner's artwork, so it is
+  MIT like the rest of the project's original work, its Bricolage
+  Grotesque letterforms under the OFL (N-309).
+- **The notice:** being about a piece of artwork (copyright), not a policy
+  on names, `TRADEMARKS.md` (never committed) is replaced by a short root
+  `LOGO.md` in plain English, with no ® and no trademark language.
+  `LICENSE` stays byte-identical to HEAD (blob
+  `2bc00ee523d414eb39139c0a025e8997cb9441c0`, rechecked).
+- **Pointers updated:** the README's «License» (one sentence: the logo is
+  the author's artwork, not under the MIT License, see `LOGO.md`);
+  CONTRIBUTING (the logo stays outside the MIT License); `web/brand/README.md`;
+  the comment in `web/favicon.svg` («see LOGO.md», 9,666 bytes, path data
+  unchanged); `opensource.md`: the MIT item notes that, of the project's
+  original material, only the logo is outside the licence, with a link to
+  `LOGO.md`, and the P0 name item is only the check that «Vibrance» does
+  not collide with someone else's name (third-party marks, GitHub name,
+  domain), with no link to a notice. N-309's licence paragraph, N-312's
+  byte count and PROGRESS round 23 follow; N-313 and N-317 are marked
+  superseded in scope. `web/brand/logo.svg` untouched (SHA-256 still
+  `9324c723…414d`).
+- **Not changed:** no code, no test (N-314), no identifier, no `.claude/`
+  file. No player, family or integration is mentioned.
+
+### N-319 · Re-review of round 23 (Irene Fabbri, brand and UI) — APPROVED
+Re-review of the fix passes N-317 and N-318 against N-316 and the owner's
+decisions of 2026-09-28 (only the sun symbol outside the MIT License; the
+names not reserved; the toggle at the sidebar's foot kept; forks may keep
+the `musiclib` identifiers).
+- **N-318 applied consistently.** `LICENSE` has no diff against HEAD.
+  `TRADEMARKS.md` is gone, and no live pointer to it remains outside the
+  historical text of N-313, N-316 and N-317 (both marked superseded in
+  their headings). `LOGO.md` is short and plain: the symbol, its three
+  locations, all rights reserved; kept in unmodified copies, replaced in a
+  modified version distributed to others, own-use changes unrestricted; the
+  outlined name (`brand-word`) MIT with Bricolage Grotesque's letterforms
+  under the OFL. It names no name as reserved and uses no trademark
+  language, ® or «registered». The README's «License», CONTRIBUTING,
+  `web/brand/README.md`, the favicon's comment and `opensource.md` (the MIT
+  item links `LOGO.md`; the P0 «Vibrance» item is only a collision check,
+  with no link to a notice) say the same thing, as do PROGRESS round 23 and
+  N-308, N-309, N-312 and N-318.
+- **N-316 nits:** `docs/ui.md` gives 79,209 bytes; N-309's sentence on the
+  external sprite is corrected.
+- **Assets:** the nine path strings are identical in `web/brand/logo.svg`,
+  `web/favicon.svg` and the `brand-sun` sprite; `web/brand/logo.svg` equals
+  the owner's `logo.svg` once CRLF becomes LF (9,572 → 9,561 bytes, SHA-256
+  `5ebf0c9a…` and `9324c723…` as N-309 records); `web/favicon.svg` is 9,666
+  bytes, as N-312 says.
+- **No regression:** the diff of `internal/` and `web/` adds no test
+  function or case and mentions no player, family or integration;
+  «Vibrance» appears in no code or page.
+- **Gate:** not rerun. The last full `scripts/check.sh` (after N-317)
+  ended «gate passed», exit 0, no FAIL line; since then only `LOGO.md`, the
+  docs, NOTES/PROGRESS and the favicon's XML comment changed, and nothing
+  asserts that comment.
+- **Nits (not blocking):** `.claude/worktrees/` is untracked and not
+  ignored, so leave it out of the commit; the `.claude/agents/*.md` effort
+  edits are not part of this round (as N-316 said), so commit them
+  separately or leave them out.

@@ -25,9 +25,19 @@ var staticAssets = map[string]string{
 	"library.js": "text/javascript; charset=utf-8",
 	"sidebar.js": "text/javascript; charset=utf-8",
 	"OFL.txt":    "text/plain; charset=utf-8",
+	favicon:      "image/svg+xml",
 	fontLatin:    "font/woff2",
 	fontLatinExt: "font/woff2",
 }
+
+// favicon is the MusicLib symbol in Violet (NOTES.md N-309, N-312). Its
+// name carries no version, so it is cached for a day, not for good: a new
+// symbol reaches every browser within a day. /favicon.ico is not served
+// (404): every page names this file, so browsers have no reason to ask.
+const (
+	favicon      = "favicon.svg"
+	faviconCache = "public, max-age=86400"
+)
 
 // The self-hosted Hanken Grotesk subsets (NOTES.md N-244). Their names carry
 // the Google Fonts version, so a new version is a new URL and the files can
@@ -89,8 +99,8 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 }
 
 // staticAsset serves one embedded UI file. The fonts are versioned by name
-// and cached for a year; the stylesheet and modules keep no-store, so an
-// upgraded server never runs with a stale module.
+// and cached for a year, the favicon for a day; the stylesheet and modules
+// keep no-store, so an upgraded server never runs with a stale module.
 func (a *API) staticAsset(w http.ResponseWriter, name string) {
 	ctype, ok := staticAssets[name]
 	if !ok {
@@ -103,8 +113,11 @@ func (a *API) staticAsset(w http.ResponseWriter, name string) {
 		return
 	}
 	w.Header().Set("Content-Type", ctype)
-	if ctype == "font/woff2" {
+	switch {
+	case ctype == "font/woff2":
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	case name == favicon:
+		w.Header().Set("Cache-Control", faviconCache)
 	}
 	if _, err := w.Write(b); err != nil {
 		a.log.Debug("writing UI asset", "error", err)

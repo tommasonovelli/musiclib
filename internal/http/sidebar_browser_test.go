@@ -91,15 +91,17 @@ func TestBrowserSidebarCollapse(t *testing.T) {
 	if got := browserEval(t, tab, `JSON.stringify([...document.querySelectorAll('.nav a, .fix-filter')].map(a=>{const i=a.querySelector('.icon').getBoundingClientRect(),l=a.querySelector('.nav-label');return [Math.round(i.left),i.width,i.height,Math.round(l.getBoundingClientRect().left),getComputedStyle(l).clipPath]}))`); got != `[[26,20,20,60,"none"],[26,20,20,60,"none"],[26,20,20,60,"none"],[26,20,20,60,"none"],[26,20,20,60,"none"]]` {
 		t.Fatalf("expanded rows: %s", got)
 	}
-	if got := strings.Join(accessibleNames(t, tab, `#sidebar-toggle, .nav a, .fix-filter`), "|"); got != "Collapse sidebar|Library|Import|Activity|Trash|Needs attention: 1" {
+	if got := strings.Join(accessibleNames(t, tab, `#sidebar-toggle, .nav a, .fix-filter`), "|"); got != "Library|Import|Activity|Trash|Needs attention: 1|Collapse sidebar" {
 		t.Fatalf("expanded accessible names: %s", got)
 	}
 
-	// Keyboard: the skip link, then the toggle; Enter collapses.
-	browserKey(t, tab, kb.Tab)
-	browserKey(t, tab, kb.Tab)
+	// Keyboard: the skip link, the brand, the five entries, then the toggle
+	// at the foot of the sidebar (N-311); Enter collapses.
+	for range 8 {
+		browserKey(t, tab, kb.Tab)
+	}
 	if got := browserEval(t, tab, `document.activeElement.id`); got != "sidebar-toggle" {
-		t.Fatalf("second tab stop: %q", got)
+		t.Fatalf("eighth tab stop: %q", got)
 	}
 	browserKey(t, tab, kb.Enter)
 	browserWait(t, tab, `getComputedStyle(document.querySelector('#sidebar')).width === '72px'`)
@@ -112,14 +114,15 @@ func TestBrowserSidebarCollapse(t *testing.T) {
 	if got := browserEval(t, tab, `JSON.stringify([...document.querySelectorAll('.nav a, .fix-filter')].map(a=>{const i=a.querySelector('.icon').getBoundingClientRect(),l=getComputedStyle(a.querySelector('.nav-label'));return [Math.round(i.left),Math.round(a.getBoundingClientRect().width),l.position,l.clipPath]}))`); got != `[[26,48,"absolute","inset(50%)"],[26,48,"absolute","inset(50%)"],[26,48,"absolute","inset(50%)"],[26,48,"absolute","inset(50%)"],[26,48,"absolute","inset(50%)"]]` {
 		t.Fatalf("collapsed rows: %s", got)
 	}
-	if got := strings.Join(accessibleNames(t, tab, `#sidebar-toggle, .nav a, .fix-filter`), "|"); got != "Expand sidebar|Library|Import|Activity|Trash|Needs attention: 1" {
+	if got := strings.Join(accessibleNames(t, tab, `#sidebar-toggle, .nav a, .fix-filter`), "|"); got != "Library|Import|Activity|Trash|Needs attention: 1|Expand sidebar" {
 		t.Fatalf("accessible names: %s", got)
 	}
 	if got := browserEval(t, tab, `(()=>{const c=document.querySelector('.fix-filter .count'),s=getComputedStyle(c),i=document.querySelector('.fix-filter .icon').getBoundingClientRect(),r=c.getBoundingClientRect(),a=getComputedStyle(document.querySelector('.nav a[aria-current=page]'));return [c.textContent,s.position,s.backgroundColor,r.left<i.right&&r.right>i.right&&r.top<i.top+8,a.backgroundColor!=='rgba(0, 0, 0, 0)',getComputedStyle(document.querySelector('.nav a[aria-current=page] .icon')).color].join('|')})()`); got != ": 1|absolute|rgb(215, 0, 21)|true|true|rgb(29, 29, 31)" {
 		t.Fatalf("badge and active entry: %s", got)
 	}
-	// Tab reaches the first view (the hidden brand is skipped) and shows
-	// its label as a tooltip beside the icon.
+	// From the brand (its symbol stays), Tab reaches the first view and
+	// shows its label as a tooltip beside the icon.
+	browserEval(t, tab, `document.querySelector('.brand').focus();''`)
 	browserKey(t, tab, kb.Tab)
 	if got := browserEval(t, tab, `(()=>{const a=document.activeElement,l=getComputedStyle(a.querySelector('.nav-label')),r=a.querySelector('.nav-label').getBoundingClientRect();return [a.getAttribute('href'),l.clipPath,r.left>=document.querySelector('#sidebar').getBoundingClientRect().right-8,r.width>40].join('|')})()`); got != "/|none|true|true" {
 		t.Fatalf("tooltip on focus: %s", got)
@@ -221,7 +224,7 @@ func TestBrowserSidebarPhone(t *testing.T) {
 	}
 	browserGo(t, tab, e.srv.URL+"/activity")
 	browserWait(t, tab, `document.readyState === 'complete'`)
-	got := browserEval(t, tab, `(()=>{const s=document.querySelector('#sidebar').getBoundingClientRect(),items=[...document.querySelectorAll('.nav a')].map(a=>{const i=a.querySelector('.icon').getBoundingClientRect(),l=a.querySelector('.nav-label').getBoundingClientRect();return [a.querySelector('.nav-label').textContent,i.width,Math.round(i.top-s.top)===Math.round(document.querySelector('.nav a .icon').getBoundingClientRect().top-s.top),l.top>=i.bottom,Math.abs((i.left+i.right)/2-(l.left+l.right)/2)<1]});return JSON.stringify([getComputedStyle(document.querySelector('.sidebar-top')).display,Math.round(s.width),document.documentElement.scrollWidth<=390,items,getComputedStyle(document.querySelector('.fix-filter .nav-label')).clipPath,document.querySelector('.fix-filter').getBoundingClientRect().top<s.bottom])})()`)
+	got := browserEval(t, tab, `(()=>{const s=document.querySelector('#sidebar').getBoundingClientRect(),items=[...document.querySelectorAll('.nav a')].map(a=>{const i=a.querySelector('.icon').getBoundingClientRect(),l=a.querySelector('.nav-label').getBoundingClientRect();return [a.querySelector('.nav-label').textContent,i.width,Math.round(i.top-s.top)===Math.round(document.querySelector('.nav a .icon').getBoundingClientRect().top-s.top),l.top>=i.bottom,Math.abs((i.left+i.right)/2-(l.left+l.right)/2)<1]});return JSON.stringify([getComputedStyle(document.querySelector('.brand')).display,Math.round(s.width),document.documentElement.scrollWidth<=390,items,getComputedStyle(document.querySelector('.fix-filter .nav-label')).clipPath,document.querySelector('.fix-filter').getBoundingClientRect().top<s.bottom])})()`)
 	if got != `["none",390,true,[["Library",20,true,true,true],["Import",20,true,true,true],["Activity",20,true,true,true],["Trash",20,true,true,true]],"inset(50%)",true]` {
 		t.Fatalf("phone row: %s", got)
 	}

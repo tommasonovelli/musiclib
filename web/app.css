@@ -1,4 +1,4 @@
-/* musiclib UI. Hand-written CSS, embedded in the server and served as-is:
+/* MusicLib UI. Hand-written CSS, embedded in the server and served as-is:
    no build, no remote asset (DESIGN.md §2.3). The design system is the
    owner's UI principles (NOTES.md N-243): a neutral interface that defers
    to the album covers. One family, one shadow (under covers), one easing
@@ -21,8 +21,10 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-/* 2. Tokens. Colours from the principles' table; the status colours have
-   brighter dark-theme twins so an 8px dot stays visible on black (N-248). */
+/* 2. Tokens. Colours from the principles' table. The accent is MusicLib's
+   Violet (N-310): links, the primary button, focus, checkboxes and the
+   symbol, never a surface. The status colours have brighter dark-theme
+   twins so an 8px dot stays visible on black (N-248). */
 
 :root {
   color-scheme: light dark;
@@ -32,7 +34,7 @@
   --ink: #1d1d1f;
   --graphite: #6e6e73;
   --hairline: #d2d2d7;
-  --accent: #0066cc;
+  --accent: #643fd1; /* oklch(0.50 0.21 288): 6.6:1 on paper, 6.1:1 on canvas */
   --on-accent: #fff;
   --fill: color-mix(in srgb, var(--ink) 6%, var(--paper)); /* quiet controls */
   --fill-strong: color-mix(in srgb, var(--ink) 10%, var(--canvas));
@@ -78,8 +80,8 @@
     --ink: #f5f5f7;
     --graphite: #98989d;
     --hairline: #38383a;
-    --accent: #2997ff;
-    --on-accent: #1d1d1f; /* white on #2997ff is 3:1 */
+    --accent: #a79bfe; /* oklch(0.74 0.14 288): 7.1:1 on paper, 8.8:1 on canvas */
+    --on-accent: #1d1d1f; /* 7.0:1; white on #a79bfe is 2.4:1 */
     --ok: #30d158;
     --busy: #ff9f0a;
     --error: #ff6961;
@@ -127,7 +129,9 @@ main:focus { outline: none; }
 
 /* 4. Shell: the sidebar and the page head. Every sidebar row is a 3rem
    icon cell and a label, so collapsing to the icons (sidebar.js, N-272)
-   moves no icon and leaves the toggle under the pointer. */
+   moves no icon. The lockup heads it, the symbol in the icon column and
+   the word on the labels' edge; the toggle sits at its foot, in the icon
+   column, so it stays under the pointer (N-311). */
 
 .app { display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 100vh; }
 
@@ -137,15 +141,16 @@ main:focus { outline: none; }
   width: var(--sidebar); height: 100vh; padding: var(--s4) var(--s3);
   background: var(--canvas); transition: width var(--slow) var(--ease);
 }
-.sidebar-top { display: flex; align-items: center; }
 .sidebar-toggle {
-  position: relative; display: grid; place-items: center; flex: none;
+  position: relative; display: grid; place-items: center; flex: none; margin-top: auto;
   width: 3rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--r-control);
   background: none; color: var(--graphite); cursor: pointer; visibility: hidden;
 }
 [data-sidebar] .sidebar-toggle { visibility: visible; }
-.brand { min-width: 0; overflow: hidden; font: var(--type-head); font-weight: 700; color: var(--ink); white-space: nowrap; }
-.brand:hover { text-decoration: none; }
+/* The symbol is 28px, its ring about as tall as the word's capitals; the
+   word, outlined Bricolage Grotesque, is in ink, its capitals centred on it. */
+.brand { display: grid; grid-template-columns: 3rem auto; align-items: center; flex: none; height: 2.25rem; overflow: hidden; border-radius: var(--r-control); color: var(--ink); }
+.brand-sun { justify-self: center; color: var(--accent); }
 .nav { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .nav a, .fix-filter {
   position: relative; display: grid; grid-template-columns: 3rem minmax(0, 1fr) auto; align-items: center;
@@ -163,7 +168,7 @@ main:focus { outline: none; }
    activity dot moves onto its icon too. */
 @media (width > 52rem) {
   [data-sidebar="collapsed"] { --sidebar: 4.5rem; }
-  [data-sidebar="collapsed"] .brand { visibility: hidden; }
+  [data-sidebar="collapsed"] .brand-word { visibility: hidden; }
   [data-sidebar="collapsed"] :is(.nav a, .fix-filter) { padding-right: 0; overflow: visible; }
   [data-sidebar="collapsed"] .fix-filter .count {
     position: absolute; left: 1.625rem; top: 2px; min-width: 1rem; padding: 0 4px; border-radius: var(--r-pill);
@@ -548,7 +553,7 @@ a.row-link:hover .row-title { text-decoration: underline; }
     position: static; width: auto; height: auto; flex-direction: row; align-items: stretch; gap: var(--s1);
     padding: var(--s2) var(--s3); overflow-x: auto;
   }
-  .sidebar-top { display: none; }
+  .brand, .sidebar-toggle { display: none; }
   .nav { flex: 1; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--s1); }
   .nav a { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 2px; padding: 6px var(--s1); font: var(--type-caption); }
   .nav a[aria-current="page"] { font-weight: 650; }

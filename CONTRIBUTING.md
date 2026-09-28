@@ -1,6 +1,6 @@
-# Contributing to Musiclib
+# Contributing to Vibrance MusicLib
 
-Read the [README](README.md), [design](DESIGN.md) and relevant [decisions](NOTES.md) before changing behavior. Contributions of original code and documentation must be available under the project's [MIT License](LICENSE). Include the origin and applicable license of any third-party material, preserve its notices, and clarify compatibility with the maintainer before submitting it.
+Read the [README](README.md), [design](DESIGN.md) and relevant [decisions](NOTES.md) before changing behavior. Contributions of original code and documentation must be available under the project's [MIT License](LICENSE). The logo, the sun symbol, stays outside the MIT License ([LOGO.md](LOGO.md)). Include the origin and applicable license of any third-party material, preserve its notices, and clarify compatibility with the maintainer before submitting it.
 
 ## Development setup
 

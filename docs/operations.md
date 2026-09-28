@@ -1,4 +1,4 @@
-# Operating musiclib (Ubuntu 24.04+, Docker Engine, local ext4)
+# Operating Vibrance MusicLib (Ubuntu 24.04+, Docker Engine, local ext4)
 
 DESIGN.md §3, §10.4, §11–§12. See [Docker and tests](docker.md) and [the UI](ui.md). Run all commands from the repository root. Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
 
