@@ -12,7 +12,7 @@ import (
 
 const (
 	// fullFSEnv names the mount point of the small fixed-size filesystem
-	// the Compose test services mount for the full-disk tests (compose.yaml,
+	// the Compose test services mount for the full-disk tests (compose.dev.yaml,
 	// docs/docker.md, NOTES.md N-045).
 	fullFSEnv = "MUSICLIB_FULLFS"
 	// requireFullFSEnv makes a missing filesystem a failure instead of a

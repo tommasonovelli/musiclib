@@ -1,0 +1,247 @@
+# Vibrance MusicLib: development Compose file. The app built from this
+# repository's sources, and the containerized toolchain. See docs/docker.md.
+#
+#   docker compose -f compose.dev.yaml up -d --build --wait
+#                                 postgres + app built from source
+#   scripts/check.sh              full gate in the `test` service
+#                                 (+ postgres-test on tmpfs)
+#   scripts/dev.sh                shell in the `dev` service
+#
+# Set COMPOSE_FILE=compose.dev.yaml in .env to make it the default of plain
+# `docker compose` commands and of the maintenance scripts (scripts/doctor.sh,
+# backup.sh, rebuild.sh, restore.sh).
+#
+# `postgres` and `app` are those of compose.yaml (keep the two in step),
+# except that the app is built from source and that POSTGRES_PASSWORD may be
+# unset, so that the tools need no .env: PostgreSQL then refuses to
+# initialize. The project name and the volumes are the same as compose.yaml,
+# so switching between the two files keeps the database and /data.
+#
+# Every image is pinned by version and digest (DESIGN.md §2.1).
+
+name: musiclib
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+
+x-postgres: &postgres
+  image: postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232
+  <<: *hardening
+  # The entrypoint starts as root, chowns PGDATA and drops to `postgres`
+  # with gosu: these are the only capabilities it needs.
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+  # DESIGN.md §11.1: these three stay on. They are the defaults; setting them
+  # explicitly makes the requirement visible and overrides any stray
+  # postgresql.conf / ALTER SYSTEM.
+  command:
+    - postgres
+    - -c
+    - fsync=on
+    - -c
+    - full_page_writes=on
+    - -c
+    - synchronous_commit=on
+  # No published port (DESIGN.md §10.4): clients use the Compose network; for
+  # a psql session use `docker compose exec postgres psql -U musiclib`.
+  healthcheck:
+    # TCP on 127.0.0.1, not the Unix socket: during first initialization the
+    # entrypoint runs a temporary server on the socket only, which must not
+    # be reported as healthy.
+    test: ["CMD", "pg_isready", "--host=127.0.0.1", "--port=5432", "--username=musiclib", "--dbname=musiclib"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 60s
+    start_interval: 1s
+  # The image stops with SIGINT (fast shutdown); leave time for the final
+  # checkpoint instead of SIGKILL after the default 10s.
+  stop_grace_period: 60s
+
+services:
+  # -------------------------------------------------------------------------
+  postgres:
+    <<: *postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: musiclib
+      POSTGRES_DB: musiclib
+      # Set it in .env (openssl rand -hex 32). Empty when unset, so that the
+      # tools below work without a .env; the image then refuses to initialize
+      # a new database. Read only at initialization.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # -------------------------------------------------------------------------
+  # Throwaway server of the PostgreSQL tests (DESIGN.md §12.1, NOTES.md
+  # N-024): same image and settings as `postgres`, data on tmpfs, reachable
+  # only on the internal `testdb` network. Each test creates and drops its
+  # own database (internal/store/pgtest). Started by scripts/check.sh and
+  # scripts/dev.sh; `docker compose -f compose.dev.yaml stop postgres-test`
+  # discards everything.
+  postgres-test:
+    <<: *postgres
+    profiles: [tools]
+    environment:
+      POSTGRES_USER: musiclib
+      POSTGRES_DB: musiclib
+      POSTGRES_PASSWORD: musiclib-test
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks: [testdb]
+
+  # -------------------------------------------------------------------------
+  # The application (DESIGN.md §11.1), built from source: the same settings
+  # as in compose.yaml, the local image instead of the published one.
+  app:
+    build:
+      context: .
+      target: runtime
+      args:
+        MUSICLIB_VERSION: devel
+    image: musiclib-app:local
+    init: true
+    restart: unless-stopped
+    # The image runs as 1000:1000; see compose.yaml.
+    user: "${MUSICLIB_UID:-1000}:${MUSICLIB_GID:-1000}"
+    <<: *hardening
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      DATABASE_URL: postgres://musiclib:${POSTGRES_PASSWORD:-}@postgres:5432/musiclib?sslmode=disable
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:${MUSICLIB_PORT:-8080}}
+      HTTP_ADDR: ":8080"
+      # Empty means the default of DESIGN.md §6.1: max(1, min(4, CPUs)).
+      WORKERS: ${WORKERS:-}
+    ports:
+      # DESIGN.md §10.4: loopback by default; LAN access needs an explicit
+      # MUSICLIB_BIND (and a matching PUBLIC_ORIGIN).
+      - "${MUSICLIB_BIND:-127.0.0.1}:${MUSICLIB_PORT:-8080}:8080"
+    volumes:
+      # /data must be ext4 (DESIGN.md §3.1). MUSICLIB_DATA may be a named
+      # volume (default) or an absolute host path on ext4 owned by MUSICLIB_UID.
+      - ${MUSICLIB_DATA:-musiclib-data}:/data
+      # Backups are not inside /data. Prefer an external ext4 disk mounted
+      # through MUSICLIB_BACKUP; the default is a separate named volume.
+      - ${MUSICLIB_BACKUP:-musiclib-backup}:/backup
+      - type: bind
+        source: ${MUSICLIB_IMPORT:-./import}
+        target: /import
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # DESIGN.md §11.1: a prepared publication gets up to 30 s to finish.
+    stop_grace_period: 45s
+    # The slim image has no curl: the subcommand queries /health/ready on
+    # HTTP_ADDR and exits 0 or 1 (N-027). It takes no lock and starts nothing.
+    # start_period covers the boot: waiting for PostgreSQL, migrations and
+    # the volume checks (DESIGN.md §11.1).
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/musiclibd", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 1s
+
+  # -------------------------------------------------------------------------
+  # Hermetic gate: tests a read-only snapshot of the sources baked into the
+  # image, without network, with TMPDIR on the ext4 test volume.
+  test:
+    profiles: [tools]
+    build:
+      context: .
+      target: test
+      args:
+        DEV_UID: ${MUSICLIB_DEV_UID:-10001}
+        DEV_GID: ${MUSICLIB_DEV_GID:-10001}
+    image: musiclib-test:local
+    init: true
+    # No internet: the only network is the internal one of postgres-test.
+    networks: [testdb]
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    read_only: true
+    <<: *hardening
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
+      # The small, really full filesystem of the full-disk tests (DESIGN.md
+      # §12.2 "Disco pieno durante build", NOTES.md N-045): mounted by the
+      # daemon with a fixed size, private to this container, gone when it
+      # exits. 1088 MiB: the 1 GiB space margin of §11.2 plus room for the
+      # test albums. It uses RAM only as far as a test fills it.
+      - /fullfs:size=1088m,mode=1777
+    environment:
+      # Ctrl-C reaches `go test`, not only the wrapper script.
+      TINI_KILL_PROCESS_GROUP: "1"
+      MUSICLIB_TEST_DATABASE_URL: &test-db-url postgres://musiclib:musiclib-test@postgres-test:5432/musiclib?sslmode=disable
+      # The gate fails instead of skipping the PostgreSQL tests.
+      MUSICLIB_REQUIRE_DB: "1"
+      # ... and the full-disk tests (internal/faulttest.FullFS).
+      MUSICLIB_FULLFS: /fullfs
+      MUSICLIB_REQUIRE_FULLFS: "1"
+    volumes:
+      - go-build-cache:/home/dev/.cache/go-build
+      - testdata:/testdata
+
+  # -------------------------------------------------------------------------
+  # Interactive toolchain on the live sources (bind mount), with network for
+  # `go get`. Used by scripts/dev.sh and scripts/fuzz.sh (fuzz crashers must be
+  # written back into the repository's testdata/fuzz).
+  dev:
+    profiles: [tools]
+    build:
+      context: .
+      target: deps
+      args:
+        DEV_UID: ${MUSICLIB_DEV_UID:-10001}
+        DEV_GID: ${MUSICLIB_DEV_GID:-10001}
+    image: musiclib-dev:local
+    init: true
+    <<: *hardening
+    cap_drop: [ALL]
+    tmpfs:
+      # As in `test`: the full-disk tests' filesystem.
+      - /fullfs:size=1088m,mode=1777
+    environment:
+      TINI_KILL_PROCESS_GROUP: "1"
+      MUSICLIB_TEST_DATABASE_URL: *test-db-url
+      MUSICLIB_FULLFS: /fullfs
+    entrypoint: ["/src/docker/with-testdata.sh"]
+    command: ["bash"]
+    # default: internet for `go get`; testdb: postgres-test (scripts/dev.sh starts it).
+    networks: [default, testdb]
+    working_dir: /src
+    volumes:
+      - type: bind
+        source: .
+        target: /src
+      - go-mod-cache:/home/dev/go/pkg/mod
+      - go-build-cache:/home/dev/.cache/go-build
+      - testdata:/testdata
+
+networks:
+  default:
+  # No route outside: the gate stays hermetic while reaching postgres-test.
+  testdb:
+    internal: true
+
+volumes:
+  pgdata:
+  musiclib-data:
+  musiclib-backup:
+  # Go build cache (also holds the fuzzing cache), shared by test and dev.
+  go-build-cache:
+  # Module cache for `dev`; seeded from the image on first use.
+  go-mod-cache:
+  # ext4 filesystem for TMPDIR of the tests (see docker/with-testdata.sh).
+  testdata:

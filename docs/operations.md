@@ -1,50 +1,106 @@
 # Operating Vibrance MusicLib (Ubuntu 24.04+, Docker Engine, local ext4)
 
-DESIGN.md §3, §10.4, §11–§12. See [Docker and tests](docker.md) and [the UI](ui.md). Run all commands from the repository root. Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
+DESIGN.md §3, §10.4, §11–§12. See [Docker and tests](docker.md) and [the UI](ui.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
 
 ## First start
 
+A production installation needs only two files of the release, `compose.yaml` and `.env.example`, and runs the published image `ghcr.io/tommasonovelli/musiclib:1.0.0` (Linux amd64); nothing is built. **The image exists only once the `v1.0.0` release is published**: until then `docker compose up` fails to pull it, and you run from source instead (below).
+
 ```sh
-mkdir -p import
-# Create an ext4-backed data and backup directory, owned by the app UID.
-sudo mkdir -p /srv/musiclib/data /mnt/backup/musiclib
-sudo chown 1000:1000 /srv/musiclib/data /mnt/backup/musiclib
-cat > .env <<'EOF'
-POSTGRES_PASSWORD=replace-with-a-strong-password
-MUSICLIB_UID=1000
-MUSICLIB_GID=1000
-MUSICLIB_DATA=/srv/musiclib/data
-MUSICLIB_BACKUP=/mnt/backup/musiclib
-MUSICLIB_IMPORT=./import
-PUBLIC_ORIGIN=http://127.0.0.1:8080
-EOF
-docker compose --profile app up -d --build --wait
+mkdir musiclib && cd musiclib
+curl -fLO https://raw.githubusercontent.com/tommasonovelli/musiclib/v1.0.0/compose.yaml
+curl -fLO https://raw.githubusercontent.com/tommasonovelli/musiclib/v1.0.0/.env.example
+cp .env.example .env && chmod 600 .env
+# A random, URL-safe database password, written into .env without printing it:
+sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+mkdir -p import                  # the read-only /import; or set MUSICLIB_IMPORT in .env
+docker compose up -d --wait      # PostgreSQL and the app; returns when the app is healthy
 curl -f http://127.0.0.1:8080/health/ready
 docker compose logs -f app
 ```
 
-A bind-mounted `MUSICLIB_BACKUP` directory must be writable by `MUSICLIB_UID` (and its group by `MUSICLIB_GID`); a new named backup volume inherits the runtime image's ownership. The `.env` file contains a password: restrict its permissions (`chmod 600 .env`) and keep it out of backups/shared checkouts. `DATABASE_URL` is assembled from the Compose database and `POSTGRES_PASSWORD`; outside Compose, supply a PostgreSQL URI or pgx keyword/value connection string via `DATABASE_URL`. Offline pg_dump/pg_restore use a password-free libpq URI built from host, port, user, database and approved TLS settings; pgx-only query options are not passed to libpq. For TLS settings use the PostgreSQL URI form (keyword/value DSNs are accepted for non-TLS connections only); encrypted client keys requiring `sslpassword` are not supported by the offline tools. Passwords go to the child via `PGPASSWORD`, not command arguments. `PUBLIC_ORIGIN` is mandatory for the binary and must match the browser's exact host and port; Compose defaults it to the loopback URL. `HTTP_ADDR` defaults to `:8080` (Compose sets it explicitly), `WORKERS` to min(4, available CPUs), allowed 1–16; the pgx pool limit is WORKERS + 8. The binary sets umask 022 and refuses root. PostgreSQL 17 uses `fsync=on`, `full_page_writes=on`, `synchronous_commit=on` and has no published port. The images and clients are pinned.
+`POSTGRES_PASSWORD` is required: without it Compose refuses every command with `required variable POSTGRES_PASSWORD is missing a value`. Use a URL-safe value (`openssl rand -hex 32`): Compose inserts it into `DATABASE_URL`. PostgreSQL reads it only when its volume is first initialized; changing `.env` later does not change the database's password (to change it, run `docker compose exec postgres psql -U musiclib -d musiclib -c '\password musiclib'`, put the same value in `.env`, then `docker compose up -d --wait`).
+
+The defaults keep the database, `/data` and `/backup` in the named volumes `musiclib_pgdata`, `musiclib_musiclib-data` and `musiclib_musiclib-backup`. For host directories on ext4 (a data disk, a backup disk), set them in `.env` before the first start:
+
+```sh
+# Create an ext4-backed data and backup directory, owned by the app UID.
+sudo mkdir -p /srv/musiclib/data /mnt/backup/musiclib
+sudo chown 1000:1000 /srv/musiclib/data /mnt/backup/musiclib
+cat >> .env <<'EOF'
+MUSICLIB_DATA=/srv/musiclib/data
+MUSICLIB_BACKUP=/mnt/backup/musiclib
+MUSICLIB_IMPORT=/srv/music
+EOF
+```
+
+The image runs as `1000:1000` and owns `/data` and `/backup`, so a new named volume belongs to `1000:1000`. `MUSICLIB_UID`/`MUSICLIB_GID` in `.env` run the process as another uid (Compose `user:`); the named volumes do not follow, so another uid needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host directories owned by it (and `/import` readable by it). A bind-mounted `MUSICLIB_BACKUP` directory must be writable by `MUSICLIB_UID` (and its group by `MUSICLIB_GID`). The `.env` file contains a password: restrict its permissions (`chmod 600 .env`) and keep it out of backups/shared checkouts.
+
+`DATABASE_URL` is assembled from the Compose database and `POSTGRES_PASSWORD`; outside Compose, supply a PostgreSQL URI or pgx keyword/value connection string via `DATABASE_URL`. Offline pg_dump/pg_restore use a password-free libpq URI built from host, port, user, database and approved TLS settings; pgx-only query options are not passed to libpq. For TLS settings use the PostgreSQL URI form (keyword/value DSNs are accepted for non-TLS connections only); encrypted client keys requiring `sslpassword` are not supported by the offline tools. Passwords go to the child via `PGPASSWORD`, not command arguments. `PUBLIC_ORIGIN` is mandatory for the binary and must match the browser's exact host and port; Compose defaults it to the loopback URL. `HTTP_ADDR` defaults to `:8080` (Compose sets it explicitly), `WORKERS` to min(4, available CPUs), allowed 1–16; the pgx pool limit is WORKERS + 8. The binary sets umask 022 and refuses root. PostgreSQL 17 uses `fsync=on`, `full_page_writes=on`, `synchronous_commit=on` and has no published port. The images and clients are pinned.
 
 The fixed paths in the container are `/data`, `/import` (read-only, must exist) and `/backup` (must not be inside `/data`). `MUSICLIB_BACKUP` must not be a host directory inside `MUSICLIB_DATA` either: backup and restore compare the filesystem device and root of both mounts from `/proc/self/mountinfo` and refuse a nested destination with `backup_destination` (exit 2). The check sees bind mounts of one host filesystem; it cannot see through a network share or a second filesystem layered over the data directory, so keep the two host paths plainly separate. `/data/.lock` is never deleted; `.musiclib-store` identifies the paired database; `originals/` is immutable content-addressed media; `library/` is disposable published output; `work/` is staging. Do not edit `library/` or change `.maintenance` manually. Only one app instance per volume and database. A missing store marker cannot be replaced by pointing an existing database at a new volume.
 
 `GET /health/live` checks the HTTP process; `GET /health/ready` checks boot, recovery and PostgreSQL. Read JSON logs with `docker compose logs --tail=100 app`. Import by placing albums under the configured `MUSICLIB_IMPORT`, then open the Import page at `PUBLIC_ORIGIN` or use `POST /api/imports` (see [Docker API examples](docker.md#importing-the-queue-and-the-library-list)). Do not change or unmount the source before jobs complete. Job failures remain visible in Activity and require an explicit retry.
 
+### Running from source
+
+`compose.dev.yaml` builds the app from a clone of the repository (`musiclib-app:local`, version `devel`) with the same PostgreSQL, settings and volumes. `COMPOSE_FILE` in `.env` makes it the default of plain `docker compose` commands and of the `scripts/` maintenance wrappers:
+
+```sh
+git clone https://github.com/tommasonovelli/musiclib.git && cd musiclib
+cp .env.example .env && chmod 600 .env
+sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
+mkdir -p import
+docker compose up -d --build --wait    # = docker compose -f compose.dev.yaml up -d --build --wait
+```
+
+The first build compiles pinned dependencies and takes several minutes.
+
 ## Capacity and upgrades
 
 Budget roughly **originals + library** (about twice the source bytes), plus concurrent staging and retired albums, tags and covers. Allow at least 1 GiB free beyond each job's conservative reservation; backups need additional space *outside* `/data`, at least the full originals plus the dump. A full disk can still cause a write error: fix capacity, then retry. Do not remove originals to make space.
 
-Back up before an update. Stop the app, fetch the reviewed pinned source/image changes, rebuild the image and start the app. Boot applies supported forward-only migrations before workers. Do not run older binaries against a newer schema. Changing `render_version` queues a new full render of active albums that have no existing job; failed render jobs are not silently retried. Check Activity and then run doctor. Never use a floating image tag.
+Back up before an update (`scripts/backup.sh NAME`, or the plain commands under "Offline commands"). Then, with the published image, change the version of the `app` image in `compose.yaml` (the only place that names it), or take the `compose.yaml` of the new release and keep your `.env`, and:
+
+```sh
+docker compose pull app
+docker compose up -d --wait        # recreates the app on the new image; the volumes stay
+docker compose run --rm --no-deps app version
+```
+
+From source, fetch the reviewed changes and run `docker compose up -d --build --wait` (with `COMPOSE_FILE=compose.dev.yaml`). Boot applies supported forward-only migrations before workers. Do not run older binaries against a newer schema: the server refuses with `store_schema_too_new`, and going back needs a backup made by the older version. Changing `render_version` queues a new full render of active albums that have no existing job; failed render jobs are not silently retried. Check Activity and then run doctor. Never use a floating image tag.
+
+### Upgrading from a source build
+
+An installation started from source before release 1.0.0 (`docker compose --profile app up -d --build`) keeps its data with either file: `compose.yaml` and `compose.dev.yaml` are the same Compose project, `musiclib`, with the same volumes (`musiclib_pgdata`, `musiclib_musiclib-data`, `musiclib_musiclib-backup`) or the same `MUSICLIB_DATA`/`MUSICLIB_BACKUP` paths. **Back up first.**
+
+- Your `.env` already has `POSTGRES_PASSWORD`; keep it. If it has none, the database was initialized with the old default `musiclib`: write `POSTGRES_PASSWORD=musiclib` into `.env` (both files need the real value), start, and then change it as described under "First start".
+- To keep building from source, add `COMPOSE_FILE=compose.dev.yaml` to `.env` and use `docker compose up -d --build --wait` from now on (no profile).
+- To move to the published image once it exists, leave `COMPOSE_FILE` unset and run `docker compose up -d --wait`: only the app container is recreated. Its version must be at least that of the source build: a newer schema is refused (`store_schema_too_new`).
+- `MUSICLIB_UID`/`MUSICLIB_GID` other than 1000 used to rebuild the image; now they only set the process's uid. Keep them as they are: existing volumes keep their owner, and the process keeps running as that uid.
+- Containers of the development tools (`postgres-test`) belong to the same project, so `compose.yaml` reports them as orphans. Remove them with `docker compose -f compose.dev.yaml rm -s -f postgres-test`, never with `down -v`, which deletes the volumes.
 
 ## Offline commands
 
-Leave PostgreSQL running. Scripts stop the app, take the nonblocking `/data/.lock` via the offline command, and restart the app after success; doctor also restarts after exit 1 (findings) if the app was running. They leave the app stopped after any destructive command failure or doctor refusal (exit 2). The raw equivalent is `docker compose stop app; docker compose --profile app run --rm --no-deps app doctor --deep; docker compose --profile app start app` (restart only after success). If the app holds the lock, all commands refuse at once.
+Leave PostgreSQL running. From a clone of the repository, the scripts stop the app, take the nonblocking `/data/.lock` via the offline command, and restart the app after success if it was running; doctor also restarts after exit 1 (findings). They leave the app stopped after any destructive command failure or doctor refusal (exit 2). They act on `compose.yaml` and its published image, or on the file named by `COMPOSE_FILE` (environment or `.env`): a source build sets `COMPOSE_FILE=compose.dev.yaml`, so that the offline command runs the same image as the server. If the app holds the lock, all commands refuse at once.
 
 ```sh
 scripts/doctor.sh --deep                 # or scripts/doctor.sh (no content hashes)
-docker compose --profile app run --rm --no-deps --entrypoint cat app /data/.musiclib-store
+docker compose run --rm --no-deps --entrypoint cat app /data/.musiclib-store
 scripts/rebuild.sh 'STORE_UUID_FROM_MARKER'
 scripts/backup.sh '2026-09-26 full'     # creates /backup/2026-09-26 full
 ```
+
+Without the repository (only `compose.yaml` and `.env`), run the same three steps by hand (DESIGN.md §11.3):
+
+```sh
+docker compose stop app
+docker compose run --rm --no-deps app doctor --deep                    # or: doctor
+docker compose start app
+```
+
+For the others, the middle line is `docker compose run --rm --no-deps app backup --to '/backup/2026-09-26 full'`, `... app rebuild --store-id 'STORE_UUID_FROM_MARKER'` or `... app restore --from '/backup/2026-09-26 full'` (restore: see below). Start the app again only after exit 0; after doctor's exit 1, read the findings first. After a failed rebuild, backup or restore leave it stopped, as the scripts do.
 
 Doctor is read-only apart from `.lock`: no migration, repair or journal recovery. Exit 0 means no **error** findings (warnings and pending work may remain), 1 means damage, 2 means refusal/usage. Each finding has severity, stable code, relative entity and advice. Normal mode checks existence/size, reservations, DB-anchored receipts and expected output; deep mode hashes all originals and receipt-listed files, including tags, covers and attachments. A changed file with unchanged size and mtime needs deep mode. An extra output is reported, not deleted. A journal is reported, never resolved: start the server for normal recovery or explicitly rebuild. Unreferenced originals are information; do **not** delete them. Damaged originals need a good backup copy: a render/rebuild only repairs output.
 
@@ -57,17 +113,17 @@ Backup creates a unique `.musiclib-backup-*.tmp` directory in `/backup`, verifie
 Restore **never overwrites**. Empty database means no user tables, sequences or views in its schema, including goose metadata; empty data volume means no entries except `.lock` and an empty ext4 `lost+found` directory. A failed restore leaves `.maintenance`; do not start the server or retry into that partially restored destination. Create a **new PostgreSQL volume/database and new data volume**, retaining the old ones for investigation, then repeat from the completed backup. To replace a lost Compose installation safely, provision a separate Compose project (or move the old volumes away), point `MUSICLIB_DATA` at a new empty ext4 directory, and ensure PostgreSQL's `pgdata` is a new empty volume. Confirm `docker compose ps` and the mounts before proceeding; never run `down -v` against the only surviving backup or against a database you need. Mount the completed backup as `/backup` with `MUSICLIB_BACKUP`. Then:
 
 ```sh
-docker compose up -d postgres
-# Wait for PostgreSQL to be healthy before the script (it uses run --no-deps):
-docker compose exec -T postgres pg_isready -U musiclib -d musiclib
+# PostgreSQL only, never the app: its first start would initialize the new destinations.
+docker compose up -d --wait postgres
 scripts/restore.sh '2026-09-26 full'
+# (by hand: docker compose run --rm --no-deps app restore --from '/backup/2026-09-26 full')
 # Only after exit 0 (the script does not auto-start a previously stopped app):
-docker compose --profile app start app
+docker compose up -d --wait
 curl -f http://127.0.0.1:8080/health/ready
 scripts/doctor.sh --deep
 ```
 
-If `start app` reports no existing container, use `docker compose --profile app up -d --build --wait` instead. The restored catalog and originals keep their identities; all published output is regenerated. Wait until Activity is idle before deep doctor. Corrupt dump, manifest or originals are refused. Keep the completed backup read-only and unchanged throughout restore; an external change between verification and pg_restore may leave a marker and require new destinations. Never use a temporary backup directory as restore input.
+`docker compose up -d --wait` creates the app's container if it does not exist yet (from source: with `COMPOSE_FILE=compose.dev.yaml` and `--build`). The restored catalog and originals keep their identities; all published output is regenerated. Wait until Activity is idle before deep doctor. Corrupt dump, manifest or originals are refused. Keep the completed backup read-only and unchanged throughout restore; an external change between verification and pg_restore may leave a marker and require new destinations. Never use a temporary backup directory as restore input.
 
 A backup made before schema 3 restores the same way: the boot adds the track durations' column, and the renders that regenerate the output record the duration of every active album's tracks (trashed albums get theirs when restored). On an installation that stays up, **Rebuild the library folder** (Activity → Advanced) does the same. Such a backup may also hold artists without albums, created before the rule that removes them (NOTES.md N-297); NOTES.md N-299 has the SQL to list them and to delete them, to run by hand with the app stopped.
 
@@ -108,9 +164,9 @@ DESIGN.md §2.1 and §12.1 require a **native** Ubuntu 24.04+ Docker Engine with
 findmnt -no FSTYPE /var/lib/docker      # must report ext4
 findmnt -no FSTYPE /srv/musiclib/data   # must report ext4
 scripts/lint-shell.sh
-docker compose --profile app build app
-docker compose --profile app run --rm --no-deps --entrypoint /usr/lib/postgresql/17/bin/pg_dump app --version
-docker compose --profile app run --rm --no-deps --entrypoint /usr/lib/postgresql/17/bin/pg_restore app --version
+docker compose -f compose.dev.yaml build app
+docker compose -f compose.dev.yaml run --rm --no-deps --entrypoint /usr/lib/postgresql/17/bin/pg_dump app --version
+docker compose -f compose.dev.yaml run --rm --no-deps --entrypoint /usr/lib/postgresql/17/bin/pg_restore app --version
 # Both clients must report PostgreSQL 17.11.
 scripts/check.sh
 scripts/dev.sh go test -race -count=2 ./internal/maintenance ./internal/volume ./internal/catalog ./cmd/musiclibd

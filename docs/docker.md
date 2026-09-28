@@ -9,7 +9,9 @@ gcc, CMake, TagLib, PostgreSQL or ffmpeg on the host.
 | File | Role |
 |---|---|
 | `Dockerfile` | multi-stage: `build-ffmpeg`, `build-lame`, `build-tags` (pinned source builds) → `toolchain` → `deps` → `test` / `build-app` → `runtime` |
-| `compose.yaml` | `postgres` (always), `app` (profile `app`), `test`, `dev` and `postgres-test` (profile `tools`) |
+| `compose.yaml` | production: `postgres` and `app` from the published image `ghcr.io/tommasonovelli/musiclib` ([operations](operations.md)) |
+| `compose.dev.yaml` | development: `postgres` and `app` built from source, plus `test`, `dev` and `postgres-test` (profile `tools`) |
+| `.env.example` | the settings of both files, to copy to `.env` |
 | `docker/with-testdata.sh` | in-container: puts `TMPDIR` on the ext4 test volume, refuses other filesystems |
 | `docker/gate.sh` | in-container: build, vet, gofmt, `go test -race` |
 | `scripts/check.sh` | the full gate: `sqlc diff`, then `docker/gate.sh` with `postgres-test` |
@@ -31,6 +33,9 @@ scripts/dev.sh go test -run TestLock -v ./internal/fsops/
 scripts/lint-shell.sh
 scripts/sqlc.sh                           # regenerate internal/store after editing sql/ or migrations/
 ```
+
+The scripts always use `compose.dev.yaml` (`scripts/lib/common.sh`),
+whatever the current directory or `COMPOSE_FILE`, and need no `.env`.
 
 On a Windows host with Docker Desktop, run the scripts from Git Bash. They
 set `MSYS_NO_PATHCONV=1` and pass Docker the native repository path, because
@@ -141,26 +146,70 @@ docker volume rm musiclib_testdata musiclib_go-build-cache musiclib_go-mod-cache
 
 ## Services and profiles
 
+Two Compose files, both the project `musiclib` with the same volumes and
+network (NOTES.md N-329):
+
+- **`compose.yaml`**, production: `postgres` and `app`, the app from the
+  published image `ghcr.io/tommasonovelli/musiclib:<version>`. Nothing is
+  built. `docker compose up -d` starts both. `POSTGRES_PASSWORD` is
+  required. Installation, upgrades and maintenance: [operations](operations.md).
+- **`compose.dev.yaml`**, development: the same `postgres` and `app`, the app
+  built from this repository's sources as `musiclib-app:local`
+  (`MUSICLIB_VERSION=devel`), plus `test`, `dev` and `postgres-test` behind
+  the profile `tools`. `POSTGRES_PASSWORD` may be unset here, so that the
+  tools need no `.env`; PostgreSQL then refuses to initialize a new database.
+
+Keep the `postgres` and `app` services of the two files in step: they differ
+only in the app's `image`/`build` and in the password's default.
+
+To run the app from source, use `compose.dev.yaml`, either with `-f` on every
+command or once for all in `.env`:
+
 ```sh
-docker compose up -d                # postgres only
-docker compose ps                   # waits for "(healthy)"
-docker compose exec postgres psql -U musiclib
-docker compose down                 # keeps the volumes; add -v to delete them
+cp .env.example .env                       # then set POSTGRES_PASSWORD (openssl rand -hex 32)
+echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
+docker compose up -d --build --wait        # = docker compose -f compose.dev.yaml up -d --build --wait
 ```
+
+With `COMPOSE_FILE` in `.env`, plain `docker compose` commands and the
+maintenance scripts (`scripts/doctor.sh`, `backup.sh`, `rebuild.sh`,
+`restore.sh`) act on the source build. Without it they act on
+`compose.yaml` and its published image. The development scripts
+(`check.sh`, `dev.sh`, `fuzz.sh`) always use `compose.dev.yaml`.
+
+The database alone, during development:
+
+```sh
+docker compose -f compose.dev.yaml up -d --wait postgres
+docker compose -f compose.dev.yaml exec postgres psql -U musiclib
+docker compose -f compose.dev.yaml stop postgres
+```
+
+**These are the installation's volumes, not throwaway development ones.**
+`compose.yaml` and `compose.dev.yaml` are the same Compose project
+`musiclib`, with the same `postgres` and the same volumes `musiclib_pgdata`,
+`musiclib_musiclib-data` (the originals) and `musiclib_musiclib-backup`. A
+running app uses this same `postgres`, so stopping it takes the app's
+database away too. Stop services with `stop`: `down` also removes the installation's `app` and
+`postgres` containers, and `down -v` deletes the library's database,
+originals and backups. The tests never use these volumes: they run on
+`postgres-test`, below.
 
 **postgres**: PostgreSQL 17, volume `musiclib_pgdata`, healthcheck with
 `pg_isready` over TCP. TCP on purpose: the temporary init-time server listens
 only on the socket and must not count as healthy. `fsync`, `full_page_writes`
 and `synchronous_commit` are set to `on` explicitly (§11.1). initdb runs with
 the image defaults. **No port is published** (§10.4). The app reaches it on the Compose network.
-`POSTGRES_PASSWORD` defaults to `musiclib`: set your own in `.env` before the
-first `up`. It is read only when the volume is initialized.
+`POSTGRES_PASSWORD` has no default: set it in `.env` before the first `up`
+(`openssl rand -hex 32` gives a URL-safe one, as `DATABASE_URL` needs). It
+is read only when the volume is initialized.
 
-**postgres-test** (profile `tools`): the PostgreSQL of the tests (§12.1,
-NOTES.md N-024). Same image, digest and settings as `postgres`, data on tmpfs,
-no published port, only on the internal `testdb` network. `check.sh` and
-`dev.sh` start it and wait for it to be healthy; it then keeps running.
-`docker compose --profile tools stop postgres-test` discards all its data.
+**postgres-test** (`compose.dev.yaml`, profile `tools`): the PostgreSQL of
+the tests (§12.1, NOTES.md N-024). Same image, digest and settings as
+`postgres`, data on tmpfs, no published port, only on the internal `testdb`
+network. `check.sh` and `dev.sh` start it and wait for it to be healthy; it
+then keeps running. `docker compose -f compose.dev.yaml stop postgres-test`
+discards all its data.
 
 The tests get a database from `internal/store/pgtest`, the single helper that
 knows where PostgreSQL comes from:
@@ -177,21 +226,21 @@ knows where PostgreSQL comes from:
   connection (§6.4, §12.2; NOTES.md N-108). It speaks the protocol without
   TLS, so the URL must keep `sslmode=disable`, as both services set it.
 
-**app** (profile `app`): the server, `musiclibd`. The profile keeps plain
-`docker compose up` / `build` (the database during development) and the
-`tools` services from building or starting it by accident. Deploy:
+**app**: the server, `musiclibd`. From source, with `COMPOSE_FILE=compose.dev.yaml`
+in `.env` as above (with the published image, the same commands without
+`--build`):
 
 ```sh
 mkdir -p import                                   # or set MUSICLIB_IMPORT; Compose does not create it
-docker compose --profile app up -d --build --wait # returns when app is healthy
+docker compose up -d --build --wait               # returns when app is healthy
 curl -s http://127.0.0.1:8080/health/ready        # {"status":"ready"}
 # Open http://127.0.0.1:8080/ in your browser (Library; Album editor,
 # Import and Activity navigation). Use the exact PUBLIC_ORIGIN host.
 docker compose logs -f app                        # JSON lines
 docker compose stop app
 # The app must already be stopped; never run maintenance alongside it.
-docker compose --profile app run --rm --no-deps app doctor --deep
-docker compose --profile app start app
+docker compose run --rm --no-deps app doctor --deep
+docker compose start app
 ```
 
 It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
@@ -202,8 +251,11 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
   must exist; Compose does not create it.
 - `/backup` is `MUSICLIB_BACKUP` (default separate named volume); use an external disk for durable off-device backups.
 - `init: true`, `restart: unless-stopped`, 45 s stop grace.
-- Runs as `MUSICLIB_UID:MUSICLIB_GID` (default 1000:1000), with no
-  capabilities, a read-only root filesystem and tmpfs `/tmp`. `musiclibd`
+- The image runs as 1000:1000, the owner of `/data` and `/backup` in it, so
+  a new named volume belongs to 1000:1000 (NOTES.md N-330). Compose runs it
+  as `MUSICLIB_UID:MUSICLIB_GID` (default 1000:1000): another uid needs
+  `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host directories owned by it.
+  No capabilities, a read-only root filesystem and tmpfs `/tmp`. `musiclibd`
   refuses to run as root and sets umask 022 itself.
 - Published on `127.0.0.1:8080`. For LAN access, set `MUSICLIB_BIND` and a
   matching `PUBLIC_ORIGIN`: the API answers only requests whose `Host`
@@ -234,6 +286,13 @@ docker run --rm musiclib-app:1.0.0 version
 docker image inspect musiclib-app:1.0.0 --format '{{json .Config.Labels}}'
 ```
 
+The source build of `compose.dev.yaml` is `devel`; the published image carries
+its release version. The installation's own:
+
+```sh
+docker compose run --rm --no-deps app version
+```
+
 ### Offline inspection and rebuild (Phase 6)
 
 Stop the app first, but leave PostgreSQL running. `doctor` is read-only
@@ -244,16 +303,17 @@ and receipt-listed output. Exit 0 means no errors (warnings and pending work
 may be present), 1 means damage, 2 means refusal or invalid arguments.
 Both maintenance commands refuse immediately when the server holds the lock.
 `scripts/doctor.sh` and `scripts/rebuild.sh` perform the same stop, run and
-restart steps (see [operations.md](operations.md)); the raw commands are:
+restart steps (see [operations.md](operations.md)); the raw commands, on the
+installation's Compose file (`compose.yaml`, or `COMPOSE_FILE`), are:
 
 ```sh
 docker compose stop app
-docker compose --profile app run --rm --no-deps app doctor --deep
+docker compose run --rm --no-deps app doctor --deep
 # Inspect the findings before choosing whether to rebuild.
-docker compose --profile app run --rm --no-deps --entrypoint cat app /data/.musiclib-store
+docker compose run --rm --no-deps --entrypoint cat app /data/.musiclib-store
 # Copy the UUID printed after store_id=, without the prefix.
-docker compose --profile app run --rm --no-deps app rebuild --store-id 'THE-UUID-PRINTED-ABOVE'
-docker compose --profile app start app
+docker compose run --rm --no-deps app rebuild --store-id 'THE-UUID-PRINTED-ABOVE'
+docker compose start app
 ```
 
 Rebuild **deletes only `library/` and `work/`** and resets publication state,
@@ -482,7 +542,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `volume_rename_exchange_unsupported` | the filesystem lacks `renameat2(RENAME_EXCHANGE)` | use ext4 (§3.1) |
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
 | `import_is_data` | `/import` is the data volume or one of its directories (§7.1) | point `MUSICLIB_IMPORT` at the collection to import, never at the data volume |
-| `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | rebuild the image from this repository (`docker compose --profile app build app`); never replace the binaries by hand |
+| `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | pull the published image again (`docker compose pull app`), or rebuild it from source (`docker compose -f compose.dev.yaml build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
 | `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or stop the app and use the explicit rebuild command below |
 | `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the process exits 1, since it may be transient, and the next start retries |
@@ -498,12 +558,12 @@ The files at the top of `/data`:
 
 ### Variables
 
-Set them in `.env` next to `compose.yaml`.
+Set them in `.env` next to `compose.yaml`; `.env.example` lists them.
 
 | Variable (`.env`) | Default | Meaning |
 |---|---|---|
-| `POSTGRES_PASSWORD` | `musiclib` | DB password (initdb time only) |
-| `MUSICLIB_UID` / `MUSICLIB_GID` | `1000` | ids of the app process and owner of `/data` |
+| `POSTGRES_PASSWORD` | none: required by `compose.yaml`; empty in `compose.dev.yaml` | DB password, URL-safe (`openssl rand -hex 32`), read at initdb time only |
+| `MUSICLIB_UID` / `MUSICLIB_GID` | `1000` | ids of the app process (`user:`); the image and new named volumes are 1000:1000, another uid needs host directories it owns |
 | `MUSICLIB_DATA` | `musiclib-data` | named volume or absolute ext4 path for `/data` |
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |
 | `MUSICLIB_BACKUP` | `musiclib-backup` | external directory (prefer another ext4 disk) or named volume for `/backup` |
@@ -511,18 +571,23 @@ Set them in `.env` next to `compose.yaml`.
 | `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | §10.4: the only `Host` (and `Origin`) the API accepts |
 | `WORKERS` | empty: `max(1, min(4, CPUs))` (§6.1) | worker pool size, 1..16 |
 | `MUSICLIB_DEV_UID` / `MUSICLIB_DEV_GID` | your `id -u` / `id -g` | uid of `test`/`dev` (set by the scripts) |
+| `COMPOSE_FILE` | `compose.yaml` | Compose's own: `compose.dev.yaml` for a source build (plain commands and maintenance scripts) |
 
 ## Pinned images
 
 Every image is pinned by exact version **and** by the digest of its multi-arch
 index (DESIGN.md §2.1). The digest is what is actually used; the tag documents it.
+The one exception is the application's own image in `compose.yaml`, pinned by
+its exact release version: its digest exists only once the release is
+published (NOTES.md N-332).
 
 | Image | Where | Pin |
 |---|---|---|
 | Dockerfile frontend | `Dockerfile` line 1 | `docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32` |
 | Go 1.25.14, Debian 13 | `Dockerfile` `GO_IMAGE` | `golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73` |
 | runtime base, Debian 13 | `Dockerfile` `RUNTIME_IMAGE` | `debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a` |
-| PostgreSQL 17.11 | `compose.yaml` (`postgres`, `postgres-test`) | `postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232` |
+| PostgreSQL 17.11 | `compose.yaml` (`postgres`), `compose.dev.yaml` (`postgres`, `postgres-test`) | `postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232` |
+| Vibrance MusicLib (the app) | `compose.yaml` (`app`) | `ghcr.io/tommasonovelli/musiclib:1.0.0`: the release version, without a digest (NOTES.md N-332) |
 | shellcheck 0.11.0 | `scripts/lint-shell.sh` | `koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d` |
 | sqlc 1.31.1 | `scripts/lib/common.sh` | `sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537` |
 
@@ -638,8 +703,8 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
    `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' golang:1.25-trixie | grep GOLANG_VERSION`.
 3. Update the tag and the digest together in the file from the table above, and
    in the table itself.
-4. Run `scripts/check.sh`. For postgres, run `docker compose up -d postgres`
-   and wait for healthy.
+4. Run `scripts/check.sh`. For postgres, change both Compose files, then run
+   `docker compose -f compose.dev.yaml up -d --wait postgres`.
 5. Commit the bump on its own, with the old and new version in the message.
 
 Rules:

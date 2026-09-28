@@ -19,9 +19,9 @@ info "sqlc diff: generated code in internal/store is up to date"
 run_sqlc ro diff || die "internal/store is out of date with sql/ or migrations/: run scripts/sqlc.sh"
 
 info "building the test image (uid ${MUSICLIB_DEV_UID}:${MUSICLIB_DEV_GID})"
-compose build test || die "building the test image failed"
+compose_dev build test || die "building the test image failed"
 
 start_test_db
 
 info "running the gate"
-compose --profile tools run --rm test /src/docker/gate.sh "$@"
+compose_dev --profile tools run --rm test /src/docker/gate.sh "$@"

@@ -2,7 +2,7 @@
 # Runs a command with TMPDIR on the test-data volume (DESIGN.md §3.1, §12.1).
 #
 # Runs INSIDE the container. /testdata must be a mount of a real ext4
-# filesystem (a named volume: see compose.yaml and docs/docker.md), so that
+# filesystem (a named volume: see compose.dev.yaml and docs/docker.md), so that
 # t.TempDir() -- and therefore the internal/fsops tests -- exercise the real
 # ext4 behaviour of openat2, renameat2, fsync and flock instead of overlayfs.
 #
@@ -21,7 +21,7 @@ die() {
 [[ $# -gt 0 ]] || die "usage: with-testdata.sh <command> [args...]"
 
 mountpoint -q "${TESTDATA_ROOT}" \
-  || die "${TESTDATA_ROOT} is not a mount point: the tests would run on the container's overlay filesystem. Mount the test-data volume (use scripts/check.sh or 'docker compose run')."
+  || die "${TESTDATA_ROOT} is not a mount point: the tests would run on the container's overlay filesystem. Mount the test-data volume (use scripts/check.sh or 'docker compose -f compose.dev.yaml run')."
 
 [[ -w "${TESTDATA_ROOT}" ]] \
   || die "${TESTDATA_ROOT} is not writable by uid $(id -u). The volume was probably created for another uid; remove it with 'docker volume rm musiclib_testdata' and retry."

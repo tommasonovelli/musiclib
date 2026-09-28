@@ -29,8 +29,8 @@ pkg="${3:-./internal/names}"
 [[ -d "${REPO_ROOT}/${pkg#./}" ]] || die "no such package directory: ${pkg}"
 
 info "building the dev image (uid ${MUSICLIB_DEV_UID}:${MUSICLIB_DEV_GID})"
-compose build dev || die "building the dev image failed"
+compose_dev build dev || die "building the dev image failed"
 
 info "fuzzing ${target} in ${pkg} for ${duration}"
-compose run --rm dev \
+compose_dev run --rm dev \
   go test "${pkg}" -run='^$' -fuzz="^${target}\$" -fuzztime="${duration}"

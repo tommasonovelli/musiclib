@@ -50,26 +50,25 @@ git clone https://github.com/tommasonovelli/musiclib.git
 cd musiclib
 mkdir -p import
 umask 077
-cat > .env <<'EOF'
-POSTGRES_PASSWORD=REPLACE_WITH_YOUR_OWN_LONG_RANDOM_PASSWORD
-PUBLIC_ORIGIN=http://127.0.0.1:8080
-EOF
-chmod 600 .env
+cp .env.example .env && chmod 600 .env
+# A random, URL-safe database password, written into .env without printing it:
+sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
 ```
 
-**Before starting, replace the password placeholder** with your own strong random password. For this Compose example, use at least 32 random characters from `A-Z`, `a-z`, `0-9`, `_` and `-`. Compose currently inserts the same value directly into a PostgreSQL URI; reserved URI characters and Compose interpolation characters need additional handling. The built-in `musiclib` password fallback is unsuitable for deployment. Changing `.env` later does not change the password of an already initialized database.
+The `sed` line writes a strong random, URL-safe password (`openssl rand -hex 32`) into `.env`: Compose inserts the same value directly into a PostgreSQL URI. There is no default: Compose refuses to start the production file without it, and PostgreSQL refuses to initialize without it. Changing `.env` later does not change the password of an already initialized database. `COMPOSE_FILE=compose.dev.yaml` selects the development Compose file, which builds the app from source; the production `compose.yaml` runs the published image instead (see the [operations guide](docs/operations.md#first-start)).
 
 ```sh
-docker compose --profile app up -d --build --wait
+docker compose up -d --build --wait
 curl -f http://127.0.0.1:8080/health/ready
 docker compose logs --tail=100 app
 ```
 
-Open **http://127.0.0.1:8080/**. Plain `docker compose up -d` starts only PostgreSQL; the `app` profile builds and starts `musiclib-app:local`. Readiness becomes positive after boot, migrations and recovery complete.
+Open **http://127.0.0.1:8080/**. With `compose.dev.yaml`, `docker compose up -d --build` starts PostgreSQL and the app, built from source as `musiclib-app:local`. Readiness becomes positive after boot, migrations and recovery complete.
 
 Place albums in `import/`, then choose **Import** in the browser and start an import from a directory. The import directory must exist before startup, is mounted read-only, and must remain available and unchanged until its jobs finish. MusicLib copies accepted files into its own store; it does not move your source collection.
 
-For existing source directories or host bind mounts, configure `MUSICLIB_IMPORT`, `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as described in the [operations guide](docs/operations.md#first-start). The app defaults to UID/GID `1000:1000`; source files must be readable and source directories traversable by that identity. Bind-mounted data and backup directories must be writable by it. `MUSICLIB_UID` and `MUSICLIB_GID` also set image build arguments: changing them requires a rebuild and correct ownership of existing storage. A fresh named volume inherits ownership from the image; an existing volume is not automatically re-owned.
+For existing source directories or host bind mounts, configure `MUSICLIB_IMPORT`, `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as described in the [operations guide](docs/operations.md#first-start). The app defaults to UID/GID `1000:1000`; source files must be readable and source directories traversable by that identity. Bind-mounted data and backup directories must be writable by it. A fresh named volume inherits the image's ownership, `1000:1000`; an existing volume is not automatically re-owned. `MUSICLIB_UID` and `MUSICLIB_GID` run the process as another identity, which then needs host directories it owns for data and backups.
 
 ## Storage, safety and maintenance
 

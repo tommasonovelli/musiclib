@@ -4,7 +4,7 @@ Read the [README](README.md), [design](DESIGN.md) and relevant [decisions](NOTES
 
 ## Development setup
 
-Use Docker with the Compose v2 plugin; the pinned toolchain is in the repository. See [docs/docker.md](docs/docker.md) for setup, profiles and test storage. Docker Desktop is a development option, while production acceptance requires native Ubuntu 24.04+ and local ext4. On Windows, run the shell scripts from Git Bash and keep the checkout's LF line endings.
+Use Docker with the Compose v2 plugin; the pinned toolchain is in the repository. See [docs/docker.md](docs/docker.md) for setup, profiles and test storage. `compose.yaml` is the production file (the published image); development uses `compose.dev.yaml`, which the scripts below select themselves and which needs no `.env`. To run the app built from your checkout, set `POSTGRES_PASSWORD` in `.env` (see `.env.example`) and run `docker compose -f compose.dev.yaml up -d --build --wait`. Keep the `postgres` and `app` services of the two files in step. Docker Desktop is a development option, while production acceptance requires native Ubuntu 24.04+ and local ext4. On Windows, run the shell scripts from Git Bash and keep the checkout's LF line endings.
 
 ```sh
 scripts/dev.sh                  # shell in the toolchain container

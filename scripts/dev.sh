@@ -10,11 +10,11 @@ set -euo pipefail
 # shellcheck source=scripts/lib/common.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
-compose build dev || die "building the dev image failed"
+compose_dev build dev || die "building the dev image failed"
 start_test_db
 
 if [[ $# -eq 0 ]]; then
-  compose --profile tools run --rm dev
+  compose_dev --profile tools run --rm dev
 else
-  compose --profile tools run --rm dev "$@"
+  compose_dev --profile tools run --rm dev "$@"
 fi

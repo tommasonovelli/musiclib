@@ -8146,9 +8146,11 @@ nothing else is read from a file.
 - **Dockerfile.** Global `ARG MUSICLIB_VERSION=devel`, `MUSICLIB_REVISION=`,
   `MUSICLIB_SOURCE=`, redeclared only in `build-app` (the version, after
   `COPY`, right before the go build) and at the very end of `runtime` (the
-  three, for the labels, after every `RUN` and `COPY`). A new version or
-  revision therefore invalidates only the go build and the label metadata:
-  `toolchain`, `deps`, `test`, `dev` and the `runtime` layers are reused.
+  three, for the labels, after every `RUN` and `COPY`). A new
+  version therefore rebuilds only the go build, the final binary layer (the
+  `COPY` of `musiclibd`) and the labels, and a new revision only the labels:
+  `toolchain`, `deps`, `test`, `dev` and the other `runtime` layers are
+  reused (wording corrected in T3 after N-328's nit).
   `build-app` refuses an empty version or one outside `[0-9A-Za-z.+-]`
   (semver's characters; an empty `app_version` would make every backup
   unrestorable). It also checks that the built binary's `version` prints
@@ -8338,3 +8340,377 @@ after N-327 (version stamping only).
 - `.claude/worktrees/` is untracked and holds a stale copy of the pre-T2
   tree (e.g. `musiclib-devel` in its `backup.go`). Do not stage it with the
   commit.
+
+### N-329 · Release 1.0.0, T3: a production `compose.yaml` and a development `compose.dev.yaml` — DECIDED (owner, 2026-09-28, and structure choice)
+Owner decisions for T3, recorded as given:
+- **Keep it simple** («non voglio esagerare con la complessità del progetto
+  vorrei tenerlo semplice»): production is only `postgres` and `app`; no
+  extra service (no password generator, N-322 is superseded by N-327), no
+  clever machinery.
+- **The database password stays in `.env`** (N-327) as `POSTGRES_PASSWORD`,
+  inserted into `DATABASE_URL` as before, but it is **required** by the
+  production file: `${POSTGRES_PASSWORD:?…}`, so every Compose command fails
+  at load with `required variable POSTGRES_PASSWORD is missing a value: set
+  POSTGRES_PASSWORD in .env next to compose.yaml, e.g. the output of openssl
+  rand -hex 32 (see .env.example)`. An empty value fails the same way. The
+  weak `musiclib` fallback is gone. Docs and `.env.example` recommend
+  `openssl rand -hex 32` (URL-safe, no Compose `$`) and say it is read only
+  at initialization.
+- **UID fixed at 1000:1000** in the image (N-330); the production file never
+  builds.
+
+Structure:
+- **`compose.yaml` (production).** `name: musiclib`; `postgres` and `app`,
+  no profile, so `docker compose up -d` starts both. `app` is
+  `image: ghcr.io/tommasonovelli/musiclib:1.0.0`, the one line to change on
+  an upgrade (N-332). Every setting of the previous `postgres` and `app` is
+  kept: hardening, capabilities, `fsync`/`full_page_writes`/
+  `synchronous_commit`, healthchecks, stop grace periods, loopback binding,
+  `PUBLIC_ORIGIN`, `/import` read-only with `create_host_path: false`, the
+  `pgdata`, `musiclib-data`, `musiclib-backup` volumes. No `MUSICLIB_IMAGE`
+  variable: a pin in `.env` would silently survive the download of a newer
+  `compose.yaml`, and the image line is already the single place.
+- **`compose.dev.yaml` (development), a standalone file**, not `include:` or
+  `extends:` of `compose.yaml`. Both were tried with Compose v5.2.0:
+  interpolation covers the whole model, including services outside the
+  active profiles and files reached through `extends`, and an override
+  cannot relax `${POSTGRES_PASSWORD:?}`. Reusing `compose.yaml` would
+  therefore make `scripts/check.sh` fail without a `.env` (for contributors
+  and CI). The dev file holds `postgres` and `app` (built: target `runtime`,
+  `image: musiclib-app:local`, build arg `MUSICLIB_VERSION: devel`; the
+  `APP_UID`/`APP_GID` build args are dropped, N-330) plus `postgres-test`,
+  `test`, `dev` under the profile `tools`, the `testdb` network and the tool
+  volumes. Same `name: musiclib` and volume names.
+- **The dev file's password default is empty** (`${POSTGRES_PASSWORD:-}`),
+  neither required nor `musiclib`: the tools work without a `.env`, and a
+  source build without a password cannot come up with a weak one. Verified:
+  on a new volume the pinned PostgreSQL refuses with «Database is
+  uninitialized and superuser password is not specified», and `up --wait`
+  reports the container unhealthy. On an already initialized database an
+  empty password makes the app fail to connect.
+- **Duplication** of `postgres`/`app` between the two files (about 90 lines)
+  is the price of the standalone file. Both headers, `docs/docker.md` and
+  CONTRIBUTING say to keep them in step. `docker compose config` of the two,
+  with the same `.env`, differs only in the app's `image`/`build`.
+- **Same project, same containers.** `docker compose config --hash` of the
+  dev file equals the `com.docker.compose.config-hash` labels of the
+  owner's running `musiclib-postgres-1` and `musiclib-app-1` (created with
+  the old `--profile app` file): switching to `compose.dev.yaml` recreates
+  nothing. Switching to `compose.yaml` keeps `postgres`'s hash and recreates
+  only `app` (other image).
+- A side effect of one project: with `compose.yaml`, the dev tools' running
+  `postgres-test` is reported as an orphan container. Harmless;
+  `docs/operations.md` says how to remove it without `down -v`.
+
+DESIGN.md is unchanged. §11.1 («UID/GID del processo scelti nel Compose»)
+stays true through `user:`; §11.3's `docker compose stop app / run --rm app
+doctor --deep / start app` is now literally the production command (no
+profile needed any more).
+
+### N-330 · The app's uid is fixed at 1000:1000 in the image — DECIDED (owner, 2026-09-28)
+The published image is built with the Dockerfile's defaults `APP_UID=1000`,
+`APP_GID=1000`: it runs as 1000:1000 and creates `/data` and `/backup`
+owned by it, so a new named volume belongs to 1000:1000. Neither Compose
+file passes `APP_UID`/`APP_GID` any more. The ARGs stay in the Dockerfile
+(defaults 1000) for whoever builds a custom image; its comment now says so.
+`MUSICLIB_UID`/`MUSICLIB_GID` remain only as the `user:` override. A
+different uid works only with `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host
+directories owned by that uid (documented in `.env.example`,
+`docs/operations.md`, `docs/docker.md`, README). An existing source install
+that built its image with another `MUSICLIB_UID` keeps working if it keeps
+the same `MUSICLIB_UID`: the volumes keep their owner and the process runs
+as that uid; only a *new* named volume would be 1000-owned.
+
+### N-331 · Maintenance wrappers follow `COMPOSE_FILE`; the plain-Compose equivalents — DECIDED
+- `scripts/lib/common.sh` now has two helpers. `compose_dev` is `docker
+  compose --project-directory REPO_ROOT -f REPO_ROOT/compose.dev.yaml`, used
+  by `check.sh`, `dev.sh`, `fuzz.sh` and `start_test_db`, whatever
+  `COMPOSE_FILE` says. `compose_app` is `(cd REPO_ROOT && docker compose
+  …)`, without `-f`, used by `scripts/lib/maintenance.sh` (doctor, backup,
+  rebuild, restore): Compose then takes `COMPOSE_FILE` from the environment
+  or from `.env`, else `compose.yaml`. `sqlc.sh` and `lint-shell.sh` use no
+  Compose. The `cd` is needed: tested, a relative `COMPOSE_FILE` read from
+  `.env` resolves against the current directory, not against
+  `--project-directory`.
+- `--profile app` is gone from every command: `app` has no profile in
+  either file.
+- A source build sets `COMPOSE_FILE=compose.dev.yaml` in `.env`
+  (`.env.example` has it commented). Then plain `docker compose` commands
+  and the wrappers act on the source build, and the offline command runs
+  the same image as the server. Without it the wrappers use
+  `compose.yaml`. Running them against a source-built server would run the
+  published image's binary: a different schema is refused
+  (`maintenance_schema`, `store_schema_too_new`), nothing is written, but it
+  is confusing. So the docs tell source builds to set `COMPOSE_FILE` once.
+  No automatic detection (owner: keep it simple).
+- Plain-Compose equivalents for installs without the repository, checked
+  against `maintenance_run` and DESIGN.md §11.3: `docker compose stop app`,
+  `docker compose run --rm --no-deps app <doctor --deep | backup --to
+  /backup/NAME | rebuild --store-id UUID | restore --from /backup/NAME>`,
+  `docker compose start app`. The wrappers additionally (a) restart only if
+  the app was running before, (b) restart after doctor's exit 1, (c) leave
+  the app stopped after any other failure. The docs state these rules for
+  the manual steps. `--no-deps` matches the wrappers; §11.3's line without
+  it only differs by checking that PostgreSQL is up.
+
+### N-332 · The app image is pinned by its release version, not by digest — DECIDED (owner, 2026-09-28; N-336)
+DESIGN.md §2.1 pins «Go, TagLib, ffmpeg e immagini base» by version and
+digest, never `latest`. `compose.yaml` names the application's own image as
+`ghcr.io/tommasonovelli/musiclib:1.0.0`, an exact version but no digest: the
+digest exists only after T4's workflow publishes the tag, and the
+`compose.yaml` inside the tagged commit cannot contain it. Conservative
+reading: the exact version is enough, as long as T4 never re-pushes a
+released tag (immutable tags) and publishes the digest in the release notes,
+so that a user who wants it can append `@sha256:…`. A later commit could add
+the digest to `compose.yaml` on `main`. **To confirm** by the owner with T4.
+Also for T4: the tag does not exist yet, so `docker compose up` on
+`compose.yaml` fails to pull until the release is published. The docs
+(`docs/operations.md` «First start») say so and point to the source build.
+`opensource.md` P0 (in Italian, the owner's list) still says `compose.yaml`
+builds `musiclib-app:local`, and its acceptance «nessun riferimento a
+un'immagine inesistente» holds only once T4 publishes. Not edited here,
+left to T4/T6.
+
+### N-333 · Upgrading from a source build; T3 smoke evidence — DECIDED
+**Upgrade path** (`docs/operations.md` «Upgrading from a source build»):
+back up first. Both files are the project `musiclib` with the same volumes,
+so data stays. The existing `.env` keeps its `POSTGRES_PASSWORD`. An install
+that never set one was initialized with the old default `musiclib` and must
+now write `POSTGRES_PASSWORD=musiclib` into `.env`, then may change it with
+`psql … -c '\password musiclib'` plus `.env`. The owner's instance, today
+`docker compose --profile app up -d --build --wait`, becomes
+`COMPOSE_FILE=compose.dev.yaml` in `.env` and then `docker compose up -d
+--build --wait`, or `docker compose -f compose.dev.yaml up -d --build
+--wait`; same project and volumes, nothing recreated (N-329 hashes). Moving
+to the published image later: leave `COMPOSE_FILE` unset and `docker compose
+up -d --wait`; the image's version must not be older than the source
+build's schema. No temporary migration code.
+
+**Evidence** (Docker Desktop, Compose v5.2.0, Engine 29.6.1). The owner's
+`musiclib` project, containers and volumes were never touched; verified
+after every step (`musiclib-app-1`, `musiclib-postgres-1` still up, same
+containers):
+- `docker compose -f compose.yaml config`: with the password OK; without
+  it, or with it empty, exit 1 with the message of N-329.
+  `-f compose.dev.yaml config` OK with and without it. Services: prod
+  `postgres app`; dev `postgres app`, plus `dev postgres-test test` with
+  `--profile tools`.
+- `docker compose config` of old `compose.yaml` (`--profile app`) vs new
+  prod and dev files, same scratch `.env`: only the app's
+  `profiles`/`build`/`image` differ.
+- `docker build --target runtime --build-arg MUSICLIB_VERSION=1.0.0-smoke
+  -t ghcr.io/tommasonovelli/musiclib:1.0.0 .`: `version: 1.0.0-smoke`,
+  `User` `1000:1000`, labels as N-325.
+- Scratch directory with only `compose.yaml` and `.env.example` copied,
+  `.env` made by the documented `cp` and `sed … openssl rand -hex 32` (64
+  hex characters), `MUSICLIB_PORT=18081` and `PUBLIC_ORIGIN` on 18081,
+  `mkdir import`. `docker compose -p musiclib-smoke config` named the
+  volumes `musiclib-smoke_pgdata`, `_musiclib-data`, `_musiclib-backup`.
+  `docker compose -p musiclib-smoke up -d --wait`: both healthy.
+  `/health/ready` `{"status":"ready"}`, `GET /api/artists` 200. `starting`
+  logged `version 1.0.0-smoke`, and the password did not appear in the
+  logs.
+- Plain equivalents on it: `run --rm --no-deps app version`;
+  `stop app` + `run --rm --no-deps app doctor --deep` («no damage found»,
+  exit 0) + `start app`; `stop app` + `run … backup --to '/backup/smoke
+  plain'` («Backup completed», exit 0, manifest `app_version` `1.0.0-smoke`,
+  schema 3) + `start app`.
+- Wrappers on it, from the repository, with `COMPOSE_PROJECT_NAME`,
+  `COMPOSE_FILE` (the scratch `compose.yaml`) and the smoke's variables
+  exported, after `docker compose ps` showed only the smoke containers:
+  `scripts/doctor.sh --deep` exit 0 and the app restarted;
+  `scripts/backup.sh smoke-wrapper` exit 0 and the app restarted; the same
+  name again was refused with `backup_exists`, exit 2, and the app stayed
+  stopped.
+- `COMPOSE_FILE` read from `.env` by the wrappers: a scratch copy of
+  `scripts/` with two throwaway `compose.yaml`/`compose.dev.yaml` whose
+  `app` echoes its file name. With `COMPOSE_FILE=compose.dev.yaml` in `.env`,
+  `doctor.sh`, run from another directory, printed «ran with
+  compose.dev.yaml»; without it, «ran with compose.yaml».
+- The dev file without a password, project `musiclib-smoke-dev`
+  (`musiclib-smoke-dev_pgdata`): PostgreSQL refused to initialize, as N-329.
+- Teardown: volume labels checked to be `musiclib-smoke*` only, then
+  `down -v` of both smoke projects. The smoke tag and the throwaway
+  busybox image were removed.
+- `scripts/lint-shell.sh`: clean (13 files). `scripts/check.sh` (whole
+  module, through `compose.dev.yaml`): «gate passed», every package ok.
+
+### N-334 · Review of release T3 — CHANGES REQUIRED
+Reviewer: senior DevOps/SRE engineer (Docker Compose deployments,
+operational scripts, upgrade safety), independent of the implementer.
+Scope: the uncommitted T3 tree (`git diff`, the new `compose.dev.yaml` and
+`.env.example`; `.claude/` ignored), N-329 to N-333.
+
+**Blocking**
+1. `docs/docker.md:185`, section «Services and profiles», under «The
+   database alone, during development»: `docker compose -f compose.dev.yaml
+   down    # keeps the volumes; add -v to delete them`. Since T3 both files
+   are the project `musiclib` with the same volumes (N-329), so this hint,
+   now presented as a development step, deletes the installation's
+   `musiclib_pgdata`, `musiclib_musiclib-data` (the originals) and
+   `musiclib_musiclib-backup`. A developer who is also the operator, like
+   the owner, who follows it to «reset the dev database» loses the library.
+   Even without `-v`, `down` removes the installation's running `app` and
+   `postgres` containers. The same hint was in HEAD, but T3 rewrote the line
+   and gave it this framing. Fix: no `-v` hint. Use `stop` (or keep `down`)
+   with an explicit warning that these are the installation's volumes,
+   shared by both files, and that `down -v` deletes the library, as
+   operations.md already warns.
+
+**Verified (no finding)**
+- The resolved `config` of HEAD's `compose.yaml` (`--profile app --profile
+  tools`) and of `compose.dev.yaml` (`--profile tools`), with the same
+  scratch `.env`, differ only in the app's `profiles` and build args
+  (`APP_UID`/`APP_GID` → `MUSICLIB_VERSION: devel`). Dev and prod differ only
+  in the app's `build`/`image` and the tool services, networks and volumes.
+  Every hardening item, the capabilities, `read_only`, tmpfs, `init`,
+  `user`, the healthchecks with `start_interval`, the stop grace periods,
+  the three `-c` flags, the loopback ports, `/import` with
+  `create_host_path: false` and `depends_on: service_healthy` are all
+  preserved. Project name and volume names are identical.
+- `docker compose config --hash '*'` of `compose.dev.yaml` with the owner's
+  `.env`: `app` 76dc4def…, `postgres` 332280f3…, `postgres-test` 4a310868…,
+  the same as the `com.docker.compose.config-hash` labels of the running
+  `musiclib-*-1` containers. Switching recreates nothing. Prod `postgres`
+  has the same hash too.
+- `${POSTGRES_PASSWORD:?…}`: with no `.env`, with the `.env.example` copy
+  (empty value), and with `POSTGRES_PASSWORD=` exported, `config` exits 1
+  with the documented message. The documented `sed … openssl rand -hex 32`
+  yields 64 hex characters. The dev file resolves without `.env`.
+- Isolated project `musiclib-rev` (scratch directory): dev `postgres` and
+  `postgres-test` up healthy, then `-f compose.yaml up -d --wait postgres`
+  kept the same container (no recreate, no network conflict: only the
+  orphan warning). The documented `-f compose.dev.yaml rm -s -f
+  postgres-test` removed only that container. The volume list showed only
+  `musiclib-rev_pgdata` before `down -v`. The owner's containers and volumes
+  were unaffected.
+- The scripts: `compose_dev` always passes `-f compose.dev.yaml`.
+  `compose_app` runs from the repository root without `-f` (a relative
+  `COMPOSE_FILE` resolves there) and returns Compose's status. The restart
+  rules of `maintenance_run` are unchanged apart from the helper and the
+  dropped `--profile app`. With no password, `ps` fails and maintenance does
+  not start. N-331's claim holds: `RequireCurrentSchema` refuses any schema
+  other than the binary's latest, in both directions. `scripts/lint-shell.sh`
+  is clean (13 files).
+- The docs: no `--profile app` remains; the image caveat is present;
+  `openssl rand -hex 32` is given; the plain-Compose maintenance steps match
+  the wrappers (with the more conservative «read the findings» after doctor's
+  exit 1). The note on the old default `musiclib` is correct, since HEAD's
+  `:-musiclib` also covered an empty value. There is no mention of a player
+  application, and «Vibrance» appears only in the product name.
+- `scripts/check.sh` (whole module; Docker, real PostgreSQL, ext4): «gate
+  passed», every package `ok`.
+
+**Nits (non-blocking)**
+- README «Start from source» still writes a literal placeholder password
+  into `.env`. The `sed … $(openssl rand -hex 32)` line of operations.md
+  would remove the chance of initializing with the placeholder. The
+  README's «rather than a documented published application image» is now
+  stale; leave it to T5/T6.
+- For the owner at commit time: add `COMPOSE_FILE=compose.dev.yaml` to the
+  live `.env` before any plain `docker compose` command or wrapper.
+  Otherwise `scripts/doctor.sh` stops the source-built app and tries to pull
+  the not yet published image.
+- N-332 (opinion): the version tag is acceptable for 1.0.0. DESIGN.md §2.1
+  names Go, TagLib, ffmpeg and the base images, not the application's own
+  image. T4's workflow should refuse to re-push an existing tag, since GHCR
+  tags are mutable, and state the digest in the release notes. Pinning the
+  digest in a later `main` commit adds nothing for users who download the
+  tagged `compose.yaml`; skip it unless the owner wants it.
+
+### N-335 · Fix pass for N-334 — DONE
+- Blocking 1: `docs/docker.md`, «Services and profiles», «The database alone,
+  during development»: the last command is now `docker compose -f
+  compose.dev.yaml stop postgres`, with no `down` and no `-v` hint. A
+  paragraph after the block says these are the installation's volumes, not
+  throwaway ones: both files are the project `musiclib` with the same
+  `postgres` and the volumes `musiclib_pgdata`, `musiclib_musiclib-data`
+  (the originals) and `musiclib_musiclib-backup`; a running app uses the
+  same `postgres`; `down` removes the installation's containers and `down -v`
+  deletes the library's database, originals and backups; the tests use
+  `postgres-test`, not these volumes.
+- Sweep of README, CONTRIBUTING, `docs/`, `scripts/`, `docker/`, the Compose
+  files and `.env.example` for `down`, `down -v`, `--volumes`, `volume rm`
+  and `volume prune`. Left as they are: `docs/operations.md` (orphans: «never
+  with `down -v`»; restore: «never run `down -v` against…»), both warnings;
+  `docs/docker.md` «Full-disk tests» and `docker/with-testdata.sh`, which
+  name `docker volume rm` only for the development volumes
+  `musiclib_testdata`, `musiclib_go-build-cache`, `musiclib_go-mod-cache`
+  (test data and caches, recreated on the next run). PROGRESS/NOTES
+  mentions of the smoke teardown are history of isolated `musiclib-smoke*`
+  projects.
+- Nit applied: README «Start from source» no longer writes a placeholder
+  password. It copies `.env.example` (which carries `PUBLIC_ORIGIN` with the
+  same value the old heredoc wrote), generates the password with the `sed …
+  $(openssl rand -hex 32)` line of `docs/operations.md`, and appends
+  `COMPOSE_FILE=compose.dev.yaml`. The sentence after the block now
+  describes the `sed` line instead of asking to replace a placeholder; the
+  rest of the README prose is left to T6. Replayed in a scratch directory
+  (copies of `.env.example` and both Compose files): a 64-hex password,
+  `PUBLIC_ORIGIN` and `COMPOSE_FILE` in `.env`; `docker compose -p
+  musiclib-n335 config` resolved the dev file (`postgres`, `app`,
+  `musiclib-app:local`). `config` only: nothing was created, and the
+  owner's `musiclib` containers and volumes were not touched.
+- No code, script or Compose change; no tests (documentation only).
+
+### N-336 · Re-review of release T3 — APPROVED
+Reviewer: senior DevOps/SRE engineer (Docker Compose deployments, upgrade
+safety), independent of the implementer, as in N-334. Scope: the N-335 fix
+pass (`docs/docker.md`, `README.md`, `NOTES.md`). Only these three files
+changed after N-334. The rest of the T3 tree is as verified there.
+
+**N-334 blocking finding: resolved.** `docs/docker.md` «The database alone,
+during development» now ends with `docker compose -f compose.dev.yaml stop
+postgres`. The bold paragraph after it is accurate: same project `musiclib`,
+same `postgres`, same volumes (N-329), `down` removes the installation's
+containers and `down -v` deletes the database, originals and backups (with
+the default named volumes). A sweep of README, CONTRIBUTING, `docs/`,
+`scripts/`, `docker/`, both Compose files and `.env.example` for `down`,
+`-v`/`--volumes`, `volume rm`/`prune`, `rm -s -f`, `--remove-orphans` and
+`--force-recreate` found no command that deletes the installation's
+containers or volumes without a warning. What remains: the operations.md
+warnings («never with `down -v`», «never run `down -v` against…»), `rm -s -f
+postgres-test` (a tool container only), and `docker volume rm` of
+`musiclib_testdata`/`go-build-cache`/`go-mod-cache`, which only
+`compose.dev.yaml` defines (test data and caches).
+
+**README «Start from source»**, replayed with bash and GNU sed 4.9 in a
+scratch directory. The files are LF (`.gitattributes` `eol=lf`), and
+`.env.example` ends with a newline, so the appended `COMPOSE_FILE` goes on its
+own line. Its `POSTGRES_PASSWORD=` line has no trailing blank and matches
+`^POSTGRES_PASSWORD=$`: a 64-hex password. `docker compose -p musiclib-n336
+config` resolved the dev file (`postgres`, `app`, `musiclib-app:local`) with a
+URL-safe `DATABASE_URL`. `config` only: the owner's `musiclib` project was
+not touched. Failure modes are safe. Without `openssl`, or with BSD `sed -i`
+on macOS (not a supported host), the password stays empty: the production
+file refuses to start, and PostgreSQL refuses to initialize from the dev file.
+GNU `sed -i` keeps the 0600 mode set by the preceding `chmod`.
+
+**Nits (non-blocking)**
+- Re-running the block (README, both operations.md blocks, the docker.md
+  one) re-copies `.env.example` over an existing `.env` and generates a new
+  password. The next `up` then recreates `postgres` and `app` with it, while
+  the initialized volume keeps the old one, so the app cannot authenticate.
+  This is recoverable with the documented `\password` (local socket trust)
+  and loses no data, and HEAD's `cat > .env` heredoc had the same behavior.
+  `[ -e .env ] || cp .env.example .env` would make the block idempotent: the
+  `sed` is then a no-op on a set password, and a duplicate `COMPOSE_FILE`
+  line was checked to resolve.
+- README: `umask 077` is now redundant, since `chmod 600` runs before the
+  password is written, and it stays in the user's shell. Files then copied
+  into `import/` from that shell are 0600, unreadable by the app if the host
+  uid is not 1000. This was in HEAD, and operations.md does not use it. Drop
+  it in T6.
+- `docs/docker.md:192`: one line of the warning paragraph is not wrapped
+  like the rest (cosmetic).
+
+**N-332: confirmed by the owner (2026-09-28).** The app image in
+`compose.yaml` is pinned by its exact release version
+(`ghcr.io/tommasonovelli/musiclib:1.0.0`), without a digest. The N-334
+recommendations still hold for T4: never re-push a released tag, and state
+the digest in the release notes. N-332's heading still reads «TO CONFIRM»:
+this entry records the decision.
+
+`scripts/check.sh` was not re-run. The fix pass changed documentation only,
+N-334 recorded «gate passed» on the same code, and the gate runs in the
+owner's project `musiclib`, which this re-review had to leave untouched.

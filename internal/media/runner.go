@@ -326,7 +326,7 @@ func (p *proc) killGroup() {
 
 // waitGroupGone polls until no process of the group exists any more. After
 // the SIGKILL of killGroup this only waits for the kernel to finish the
-// kills and for the init process to reap orphans (compose.yaml runs
+// kills and for the init process to reap orphans (both Compose files run
 // `init: true`).
 func waitGroupGone(pgid int) error {
 	deadline := time.Now().Add(groupWaitTimeout)

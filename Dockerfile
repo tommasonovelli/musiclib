@@ -291,10 +291,11 @@ RUN --mount=type=cache,target=/home/dev/.cache/go-build,uid=${DEV_UID},gid=${DEV
 # ---------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
 
-# UID/GID are chosen in Compose (DESIGN.md §11.1). They are also build args so
-# that /data is created with the right owner: an empty named volume mounted
-# on /data inherits that owner. With a bind mount the host directory must be
-# owned by the same ids.
+# The image's uid:gid: the defaults, 1000:1000, in the published image and in
+# the source build of compose.dev.yaml (NOTES.md N-330). /data and /backup
+# are created owned by it: an empty named volume mounted there inherits that
+# owner. Compose may run the process as other ids with `user:` (DESIGN.md
+# §11.1); /data and /backup must then be bind mounts owned by those ids.
 ARG APP_UID=1000
 ARG APP_GID=1000
 
