@@ -7975,3 +7975,366 @@ testing) of N-320: `cmd/musiclibd/boot.go`, `boot_test.go`,
   `TestBootStepsInOrder` is a fix of the test, not a new one. N-320 and
   the PROGRESS.md entry match the code.
 - **Nits (not blocking).** None requiring a change.
+
+### N-322 · Release 1.0.0: zero-config database password and a versioned image — DECIDED (owner, 2026-09-28); the password part SUPERSEDED by N-327 (the password stays in `.env`)
+The owner's decisions for the published image
+(`ghcr.io/tommasonovelli/musiclib`, amd64), installed from a downloaded
+`compose.yaml` with `docker compose up -d` and **no `.env`**:
+- **Zero-config database password.** A one-shot Compose service generates a
+  random password into a dedicated volume on first start. PostgreSQL reads
+  it through `POSTGRES_PASSWORD_FILE`; musiclibd, and the `pg_dump` /
+  `pg_restore` it runs, read it from the same file. The user never sees or
+  types it.
+- **The image carries its version** (N-325).
+- UID/GID fixed at 1000:1000 in the published image (task T3, not T2).
+
+T2 (this entry to N-325) is the Go and Dockerfile side only: the password
+file (N-323), the `init-db-secret` subcommand (N-324) and version stamping
+(N-325). T3 writes the production `compose.yaml` / `compose.dev.yaml` and
+scripts, T4 the release workflow.
+
+**Deviation from DESIGN.md §11.1**, recorded as the owner's decision:
+«Configurazione solo da ambiente: `DATABASE_URL`, …» is no longer the whole
+truth, since the password may come from a file. The sentence now adds, in
+Italian, that the password may instead be in the file named by
+`DATABASE_PASSWORD_FILE`. The file's path still comes from the environment;
+nothing else is read from a file.
+
+### N-323 · `DATABASE_PASSWORD_FILE`: one endpoint for every connection — SUPERSEDED by N-327 (removed)
+- **Rules.** When the variable is set, the file must be an absolute, clean
+  path to a regular file (opened through `fsops`, so a symlink as the last
+  component, a FIFO, a device or a directory is refused, never followed),
+  at most 1024 bytes, with one non-empty line and no byte below 0x20 or
+  0x7f. One trailing `\n` is stripped, no more: `pw\n\n` and `pw\r\n` are
+  refused. PostgreSQL's entrypoint strips every trailing newline, so a file
+  both accept means the same password to both. UTF-8 and spaces are
+  allowed; they are password characters.
+- **No URL surgery.** `DATABASE_URL` must then be a `postgres://` or
+  `postgresql://` URI with no password of its own: `user:pw@` (an empty
+  `user:@` too) or a `password` query parameter (any escaping of the key)
+  is `store_database_password_conflict`. Two sources would leave the
+  operator unsure which one is used. The keyword/value form is refused with
+  a file (`store_database_url`): checking it for a password would need a
+  second DSN parser. The password is set on the parsed pgx configuration
+  (`ConnConfig.Password`), never concatenated, so it needs no escaping.
+- **One helper.** `store.Endpoint{URL, Password}` with `PoolConfig()` is the
+  only way a connection is configured. `cmd/musiclibd.loadConfig` builds it
+  (via `dbsecret.Read`) for the server and for `startOffline`, which serves
+  doctor, rebuild, backup and restore. `store.NewPool`, `connectOffline`,
+  `maintenance.Backup` and `maintenance.Restore` take it. `pgConnection`
+  gives `pg_dump`/`pg_restore` the password in `PGPASSWORD`: the file's
+  when set, the URL's otherwise. It passes the same password to
+  `safeToolStderr` for redaction. `pgConnection` now parses with
+  `pgxpool.ParseConfig`, as the server does, instead of `pgx.ParseConfig`:
+  `pool_*` keys are validated and stripped, not kept as runtime parameters.
+  No approved field changes.
+- **Never printed.** `Config.LogValue` leaves the endpoint out, as it did
+  the URL (N-064). `Endpoint` also has `String`/`GoString` returning
+  `[redacted]`, so a `%v`/`%+v`/`%#v` of a Config cannot print it either.
+  `dbsecret` messages name the problem and a byte offset, never the content.
+  Store errors withhold pgx's parse error.
+- **Backwards compatible.** Without the variable, the URL is parsed and used
+  exactly as before, keyword/value form included.
+- **Tests.** `dbsecret.TestReadContent`, `TestReadRefusals`;
+  `store.TestEndpointPoolConfig`, `TestEndpointNeverPrinted`;
+  `cmd/musiclibd.TestLoadConfigPasswordFile`;
+  `maintenance.TestPGConnectionDoesNotExposeCredentialsOrPGXOptions` (file
+  cases added). `maintenance.TestBackupAndRestoreEmptyOriginals` now runs
+  the real `pg_dump` and `pg_restore` with the password only in the
+  endpoint (`pgtest.SplitPassword`). `cmd/musiclibd.TestServerProcessSIGINT`
+  runs the real server process with `DATABASE_PASSWORD_FILE` and a bare
+  URL, and checks the password is not in its logs.
+  `TestServerProcessLifecycle` keeps the password in the URL.
+- **Mutations** (each reverted). No conflict check: `TestEndpointPoolConfig`
+  fails. `pgConnection` returning an empty password: the pg_dump of
+  `TestBackupAndRestoreEmptyOriginals` fails authentication, so the
+  test-db's scram auth makes that test non-vacuous. `loadDatabase` dropping
+  the file's password: `TestLoadConfigPasswordFile` and
+  `TestServerProcessSIGINT` fail. No `Endpoint.String`:
+  `TestEndpointNeverPrinted` fails. Control characters allowed:
+  `TestReadContent` fails.
+
+### N-324 · `musiclibd init-db-secret PATH` — SUPERSEDED by N-327 (removed)
+- **Semantics.** The conservative reading of «if the file exists and is
+  valid, do nothing; otherwise generate»: generate **only when nothing is
+  at the path**. A valid file is kept (exit 0, `created` false), whoever
+  wrote it, so an operator may place their own password there. Anything
+  else at the path (a symlink, even to a valid file; a dangling symlink; a
+  directory; an empty or malformed file) is refused with exit 2 and never
+  replaced: PostgreSQL may already have been initialized from it, and our
+  own protocol can never leave a partial file at the path.
+- **Secret.** 32 bytes from `crypto/rand`, `base64.RawURLEncoding`: 43
+  characters of `[A-Za-z0-9_-]` (256 bits), then `\n`.
+- **Atomic, never overwriting.** Through `fsops`: `CreateExclusive` of
+  `.<name>.<random>.tmp` in the same directory, write, explicit `fchmod
+  0444` (whatever the umask), fsync and close, then
+  `renameat2(RENAME_NOREPLACE)` onto the name, then fsync of the directory.
+  The directory is also fsynced when the file was already there, so a run
+  that failed after its rename is completed by the next one. A concurrent
+  run that loses the rename removes its temporary file and keeps the
+  winner's (`TestInitConcurrent`: 20 × 8 goroutines, exactly one creator).
+  A crash between create and rename can leave a `.db-password.*.tmp`
+  holding a password that was never used. It is harmless and is never read
+  or cleaned automatically, like `.musiclib-backup-*.tmp` (§11.4).
+- **Mode 0444, directory 0755.** PostgreSQL's entrypoint reads
+  `POSTGRES_PASSWORD_FILE` as root and again as `postgres` (uid 999).
+  musiclibd reads it as uid 1000. The file is created by uid 1000, so
+  another uid can read it only through "other" bits. Nobody needs to write
+  it after creation, hence no write bit at all. World-readable is acceptable
+  because the volume is mounted only in the PostgreSQL and app containers,
+  whose only users are root, `postgres` and the app user. Every one of them
+  must read it anyway, and nothing else runs there. The host sees the file
+  only as root, under Docker's volume directory. A database reachable only
+  on the Compose network (§10.4) keeps the password's reach small.
+- **Where it runs.** In the app image as uid 1000, with a read-only root
+  filesystem, no capabilities, no database and no `/data`. It reads no
+  environment, takes no lock and refuses root, like every other command.
+  Exit 0: a valid file is at the path; 1: writing failed
+  (`db_password_write`); 2: refused before writing
+  (`db_password_path`, `db_password_unreadable`, `db_password_invalid`,
+  `run_as_root`).
+- **The image.** `runtime` now has an empty `/secrets` owned by
+  `APP_UID:APP_GID`, mode 0755. A new named volume is populated from the
+  mount point of the **first** container that mounts it, so its root
+  inherits that owner only if the app image mounts it before PostgreSQL
+  does.
+- **Points for T3 (compose).** One volume (for example `db-secret`) mounted
+  at `/secrets` in the one-shot (read-write), and read-only in `postgres`
+  and `app`. The one-shot is `command: ["init-db-secret",
+  "/secrets/db-password"]` on the app image, with `restart: "no"`.
+  `postgres` gets `depends_on: {<one-shot>: {condition:
+  service_completed_successfully}}`, so the app image mounts the volume
+  first and the password exists before initdb. Set
+  `POSTGRES_PASSWORD_FILE=/secrets/db-password` on `postgres`, and
+  `DATABASE_PASSWORD_FILE=/secrets/db-password` plus a `DATABASE_URL`
+  **without** a password on `app` and on every `run` of the maintenance
+  scripts (they use the service's environment). An existing installation
+  whose database was initialized with `POSTGRES_PASSWORD` needs a migration
+  path: the operator writes that password into the file before the first
+  start, since a valid existing file is kept. The postgres healthcheck
+  (`pg_isready`) needs no password.
+- **Found by the image smoke test, fixed.** `codeOf` checked
+  `publish.Code` (which falls through to the fsops code) before the
+  dbsecret error, so a symlink refusal was logged as `fs_symlink` instead
+  of `db_password_unreadable`. The dbsecret case now comes right after the
+  maintenance one. `cmd/musiclibd.TestInitDBSecretCommand` covers it (it
+  fails with the old order), with the exit codes.
+- **Tests and mutations.** `dbsecret.TestInitCreatesOnceReadOnly` (umask
+  077 during the call), `TestInitNeverReplaces`, `TestInitConcurrent`,
+  `cmd/musiclibd.TestInitDBSecretCommand`. Mutations: no `fchmod`: mode
+  0400, the first test fails. A replacing rename (`RENAME_EXCHANGE`):
+  `TestInitConcurrent` fails. The pre-check removed: still caught by
+  `RENAME_NOREPLACE`, so the tests pass. This is the intended second layer.
+  Pre-check removed **and** a replacing rename: `TestInitNeverReplaces`
+  fails.
+
+### N-325 · Version stamping and image labels — DECIDED
+- **Single source.** `internal/buildinfo.Version`, `"devel"` unless the
+  linker sets it: `go build -ldflags "-X
+  musiclib/internal/buildinfo.Version=…"`. It is read by the boot's first
+  event (`starting`, field `version`), by `musiclibd version` and by the
+  backup manifest's `app_version`. The latter replaces
+  `debug.ReadBuildInfo()` → `"musiclib-devel"`: a development backup now
+  says `devel`. Restore only requires a non-empty `app_version`
+  (`verifyBackup`), so manifests written before this change, with
+  `musiclib-devel`, still restore. `TestBackupManifestAndRefusals` now
+  checks `app_version == buildinfo.Version`.
+- **`musiclibd version`** prints `version: <v>` and `render_version: <rv>`
+  on two lines and exits 0. It reads no environment and needs no database,
+  lock or volume, so it runs in a bare `docker run --rm IMAGE version`.
+  It is not refused under root: it only prints.
+- **Dockerfile.** Global `ARG MUSICLIB_VERSION=devel`, `MUSICLIB_REVISION=`,
+  `MUSICLIB_SOURCE=`, redeclared only in `build-app` (the version, after
+  `COPY`, right before the go build) and at the very end of `runtime` (the
+  three, for the labels, after every `RUN` and `COPY`). A new version or
+  revision therefore invalidates only the go build and the label metadata:
+  `toolchain`, `deps`, `test`, `dev` and the `runtime` layers are reused.
+  `build-app` refuses an empty version or one outside `[0-9A-Za-z.+-]`
+  (semver's characters; an empty `app_version` would make every backup
+  unrestorable). It also checks that the built binary's `version` prints
+  exactly `MUSICLIB_VERSION`, since a mistyped `-X` path is silently
+  ignored by the linker. `-trimpath`, the pinned toolchain and no VCS
+  stamping keep the build reproducible for a given version.
+- **Labels** on `runtime`: `org.opencontainers.image.title` «Vibrance
+  MusicLib», `.description`, `.version` (= `MUSICLIB_VERSION`),
+  `.revision` (`MUSICLIB_REVISION`, empty by default), `.source`
+  (`MUSICLIB_SOURCE`, empty by default; T4 passes the repository URL),
+  `.licenses` «MIT» (owner). Remark, not a change: the sun logo embedded in
+  the UI is not under the MIT License (`LOGO.md`, N-318). The label is the
+  owner's choice and describes the software's licence. If an SPDX
+  expression covering the logo is wanted, the owner decides.
+- **Smoke** (Docker Desktop):
+  - `docker build --target runtime --build-arg MUSICLIB_VERSION=1.0.0-test
+    --build-arg MUSICLIB_REVISION=abc123`: `docker run --rm IMAGE version`
+    prints `version: 1.0.0-test` and the render_version, and the labels are
+    as above.
+  - A rehearsal of T3's wiring on throwaway volumes and network, all
+    removed afterwards: `init-db-secret` as 1000:1000 on a read-only root
+    creates `/secrets/db-password` (`-r--r--r-- 1000 1000`, 44 bytes), and
+    a second run leaves it unchanged.
+  - The pinned PostgreSQL 17.11 initialized from `POSTGRES_PASSWORD_FILE`
+    on that volume (read-only). The server with a password-free
+    `DATABASE_URL` plus `DATABASE_PASSWORD_FILE` became healthy and logged
+    `"version":"1.0.0-test"` in `starting`. `backup --to /backup/t2` (the
+    real `pg_dump`) exited 0 with `app_version` `1.0.0-test` in its
+    manifest, and `doctor` exited 0. The password was not in the logs.
+  - Refusals: a password in both places gives `config_invalid` /
+    `store_database_password_conflict`, exit 2; a symlink at the path,
+    exit 2; root, exit 2; a relative path, exit 2.
+
+### N-326 · Review of release T2 — CHANGES REQUIRED
+Reviewer: Go platform engineer (configuration, secrets, release
+engineering), independent of the implementer. Scope: the uncommitted T2
+tree (N-322 to N-325). `scripts/check.sh` (whole module) passed. The new and
+changed tests passed under `-race` (`dbsecret` ×5, `TestEndpoint*` ×5,
+`TestPGConnection…`/`TestBackupAndRestoreEmptyOriginals`/
+`TestBackupManifestAndRefusals` ×3, `TestLoadConfig*`/`TestInitDBSecret*`/
+`TestServerProcessSIGINT`/`…Lifecycle` ×3). `go vet` and `gofmt` are clean.
+
+Verified and sound: every connection is built from `store.Endpoint`. That
+covers the server pool, the migrations (from the pool), `connectOffline`
+for doctor, rebuild, backup and restore, and `pg_dump`/`pg_restore` through
+`pgConnection`. The password stays out of argv and goes to the child in
+`PGPASSWORD`, and `safeToolStderr` redacts it. Only test code still calls
+`pgx.Connect` on a raw URL. Without `DATABASE_PASSWORD_FILE`, behaviour is
+unchanged for URI and keyword/value DSNs. Refusing the keyword/value form
+when the file is set is documented in the docs. `dbsecret.Read` opens the
+file through `fsops`, which uses openat2 and refuses a symlink or special
+file on the descriptor, so there is no TOCTOU. `Init` uses O_EXCL for the
+temp file, fchmod, fsync, RENAME_NOREPLACE and a directory fsync, and the
+concurrency test is meaningful. The secret has 256 bits and a URL-safe
+alphabet. Mode 0444 and refusing root fit the threat model. The Dockerfile
+ARG placement keeps toolchain, test and dev cached, and the version check
+after the build catches a wrong `-X` path. The `codeOf` fix is correct.
+«Vibrance» appears only in the product name.
+
+**Blocking.**
+1. `internal/store/endpoint.go:28-30` says an Endpoint «prints as
+   "[redacted]" with fmt and slog alike». That is false for the handler
+   musiclibd uses (`slog.NewJSONHandler`, `cmd/musiclibd/main.go:78`). For
+   a non-error value without `LogValue`/`MarshalJSON`, the JSON handler
+   calls `json.Marshal` and ignores `String()`. Reproduced with an
+   identical type: `{"db":{"URL":"postgres://u@db/m","Password":"file-secret"}}`.
+   The TextHandler redacts, but musiclibd does not use it. PROGRESS.md
+   (T2, "The endpoint … prints as `[redacted]`") makes the same claim.
+   Failure scenario: a later change logs `"db", cfg.Database` on the
+   strength of this guarantee, and the password lands in the JSON logs.
+   Nothing in the current code does this, so there is no regression today,
+   but the one type that exists to hold the secret documents a protection
+   it lacks. Fix: give `Endpoint` a `LogValue() slog.Value` that returns
+   `[redacted]`, and extend `TestEndpointNeverPrinted` to log through the
+   JSON handler (`newLogger` or `slog.NewJSONHandler`) and assert neither
+   secret appears. Alternatively, correct the comment and PROGRESS.md to
+   say fmt only. The first is preferred.
+
+**Nits (not blocking).**
+- `dbsecret.readFrom` sets `Refusal: true` on every open or read failure,
+  so an EIO while reading an existing file exits 2 ("refused") instead of
+  1. That is harmless, since nothing was written.
+- The `docs/operations.md` table lists `db_password_*` only for
+  `init-db-secret`. At server or offline start they appear inside
+  `config_invalid`. `docs/docker.md` says so, so this is acceptable.
+- A new volume inherits `/secrets`'s owner through Docker's copy-up of the
+  first mounter's mount point (N-324). T3 must keep the one-shot as the
+  first mounter. Rootless or Podman engines may differ.
+- The "two installations never share a password" check in
+  `TestInitCreatesOnceReadOnly` is low-value but cheap. Keep it or drop it.
+- The `org.opencontainers.image.licenses=MIT` label and the logo outside
+  MIT (N-318) are already flagged for the owner in N-325.
+
+### N-327 · The database password stays in `.env`: the password file is removed — DECIDED (owner, 2026-09-28)
+The owner reversed the password part of N-322: «teniamo la password nel
+.env senza complicare le cose come era prima». The database password stays
+in `.env` and reaches musiclibd inside `DATABASE_URL`, exactly as before
+T2. T2 is therefore version stamping only (N-325). T3 will make the
+password required in Compose and document how to generate a URL-safe one;
+nothing of that is done here.
+
+Removed, back to the HEAD code before T2:
+- `internal/dbsecret` (reading and creating the password file) and the
+  `musiclibd init-db-secret PATH` subcommand with its test.
+- `DATABASE_PASSWORD_FILE` in `cmd/musiclibd` (`loadConfig`,
+  `loadDatabase`, `TestLoadConfigPasswordFile`) and the `codeOf` case for
+  the password file's errors, which existed only for them (N-324).
+- `store.Endpoint` and its tests. `store.NewPool`, `connectOffline`,
+  `maintenance.Backup`, `maintenance.Restore` and `pgConnection` take the
+  `DATABASE_URL` string again; `pgConnection` parses with `pgx.ParseConfig`
+  again, as before N-323. `pgtest.SplitPassword` and every mechanical test
+  call-site change are reverted.
+- `/secrets` in the `runtime` image; the DESIGN.md §11.1 clause about the
+  file (the sentence is back to its previous wording, so the deviation
+  recorded in N-322 and PROGRESS.md no longer exists); the docs about the
+  password file and its error codes.
+
+Kept (N-325): `internal/buildinfo`, `musiclibd version` (now in
+`cmd/musiclibd/version.go`, with the usage text), the `version` field of the
+`starting` event, the manifest's `app_version`, and the Dockerfile's
+`MUSICLIB_VERSION`/`MUSICLIB_REVISION`/`MUSICLIB_SOURCE`, version check,
+`-X` stamping, binary check and OCI labels. Of T2's tests only those for
+the version remain: `TestBackupManifestAndRefusals` checks
+`app_version == buildinfo.Version`, and `TestServerProcessSIGINT` checks
+the `starting` event's `version` (with the password back in the URL). The
+smoke items of N-325 that exercised the password file describe code that
+no longer exists.
+
+N-326's blocking finding (the `Endpoint` redaction under the JSON handler)
+is moot: `Endpoint` no longer exists, and the URL is kept out of the logs by
+`Config.LogValue` as before (N-064). Its nits about `dbsecret`, `/secrets`
+and the `db_password_*` codes are moot for the same reason; the one about
+the `licenses` label stays with N-325.
+
+### N-328 · Re-review of release T2 — APPROVED
+Reviewer: Go platform engineer (release engineering for containerized
+services), independent of the implementer. Scope: the uncommitted T2 tree
+after N-327 (version stamping only).
+
+- **Revert complete.** `git diff HEAD --stat` (excluding `.claude/`) lists
+  only `Dockerfile`, `NOTES.md`, `PROGRESS.md`, `cmd/musiclibd/main.go`,
+  `process_test.go`, `docs/docker.md`, `internal/maintenance/backup.go` and
+  `backup_test.go`, plus the new `cmd/musiclibd/version.go` and
+  `internal/buildinfo/`. Every other file is identical to HEAD. DESIGN.md
+  and `docs/operations.md` are unchanged. `dbsecret`,
+  `DATABASE_PASSWORD_FILE`, `init-db-secret`, `SplitPassword`, `PoolConfig`
+  and `store.Endpoint` appear nowhere outside NOTES.md history. `/secrets`
+  appears only in PROGRESS.md's evidence line, which says it is gone. N-326's
+  blocking finding is therefore moot.
+- **Version stamping.** The `-X musiclib/internal/buildinfo.Version` path
+  matches the package var. `build-app` refuses a bad version: `1.0 bad`
+  fails the build. The post-build check compares the binary's `version`
+  output. The ARGs are redeclared only in `build-app`, after `COPY . .`, and
+  at the end of `runtime`, after the last `COPY`, so a new version rebuilds
+  only the go build, the final binary layer and the labels. `-trimpath`
+  and the excluded `.git` keep the build reproducible for a given version.
+  `musiclibd version` is dispatched before any environment, lock or
+  database access. `starting` carries `version`. The manifest's
+  `app_version` is `buildinfo.Version`, and `verifyBackup`
+  (`restore.go:222`) only requires it to be non-empty, so `musiclib-devel`
+  manifests still restore.
+- **Tests.** Only the two focused assertions were added
+  (`TestBackupManifestAndRefusals`, `TestServerProcessSIGINT`), in line with
+  the owner's policy. «Vibrance» appears only in the product name; no player
+  application is mentioned.
+- **Evidence (reviewer).** `scripts/check.sh` (whole module; Docker, real
+  PostgreSQL, ext4): «gate passed», every package `ok`. The focused run
+  `scripts/dev.sh go test -race -count=3 ./internal/maintenance/
+  ./cmd/musiclibd/ -run 'TestServerProcessSIGINT|TestBackupManifest|Restore'`
+  was `ok`, and `gofmt -l` and `go vet ./...` were clean.
+  `docker build --target runtime --build-arg MUSICLIB_VERSION=1.0.0-rc
+  --build-arg MUSICLIB_REVISION=deadbeef`, then `docker run --rm --network
+  none IMAGE version`, printed `version: 1.0.0-rc` and the render_version
+  and exited 0. The labels were as documented. The review image was
+  removed afterwards.
+
+**Nits (not blocking).**
+- PROGRESS.md (T2) says a new version «invalidates no … runtime layer», and
+  N-325 says the `runtime` layers are reused. This is true of every layer
+  except the last `COPY` of `musiclibd`, which necessarily changes with the
+  version. The wording could say «only the binary layer».
+- The `org.opencontainers.image.licenses=MIT` label describes MusicLib's own
+  code. The image also ships FFmpeg, TagLib and the PostgreSQL client under
+  their own licences, and the logo is outside MIT (N-318). This is already
+  left to the owner in N-325, and T4/opensource.md may want an SPDX
+  expression.
+- `.claude/worktrees/` is untracked and holds a stale copy of the pre-T2
+  tree (e.g. `musiclib-devel` in its `backup.go`). Do not stage it with the
+  commit.

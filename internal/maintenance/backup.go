@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"musiclib/internal/blobstore"
+	"musiclib/internal/buildinfo"
 	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
 	"musiclib/internal/media"
@@ -160,7 +160,7 @@ func Backup(ctx context.Context, db *pgxpool.Pool, v *volume.Volume, to, dbURL s
 			return fail("backup_blob_missing", "referenced blob is absent: "+b.Hash, nil)
 		}
 	}
-	manifest := Manifest{StoreID: v.StoreID(), SchemaVersion: version, AppVersion: appVersion(), RenderVersion: render.Version, DumpSHA256: dumpHash, Blobs: blobs}
+	manifest := Manifest{StoreID: v.StoreID(), SchemaVersion: version, AppVersion: buildinfo.Version, RenderVersion: render.Version, DumpSHA256: dumpHash, Blobs: blobs}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
@@ -375,13 +375,6 @@ func safeToolStderr(stderr []byte, password string) string {
 		text = strings.ReplaceAll(text, password, "[redacted]")
 	}
 	return text
-}
-
-func appVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	return "musiclib-devel"
 }
 
 type contextReader struct {

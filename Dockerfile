@@ -15,7 +15,7 @@
 #   toolchain     Go compiler + gcc (race detector), ffmpeg, lame, musiclib-tags, non-root `dev` user
 #   deps          toolchain + module cache downloaded from go.mod/go.sum
 #   test          deps + a read-only snapshot of the source tree (scripts/check.sh)
-#   build-app     compiles ./cmd/musiclibd (static, CGO_ENABLED=0)
+#   build-app     compiles ./cmd/musiclibd (static, CGO_ENABLED=0), stamped with MUSICLIB_VERSION
 #   runtime       the image of the `app` service (DESIGN.md §11.1), with ffmpeg and musiclib-tags
 
 ARG GO_IMAGE=golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
@@ -27,6 +27,17 @@ ARG RUNTIME_IMAGE=debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec5
 # them.
 ARG DEV_UID=10001
 ARG DEV_GID=10001
+
+# Release metadata (NOTES.md N-325). Only `build-app` (the version stamped
+# into musiclibd) and the end of `runtime` (OCI labels) redeclare them, so a
+# new value never invalidates the toolchain, test or dev layers. The
+# defaults suit a local build; the release workflow passes all three.
+#   MUSICLIB_VERSION   the application version, a token of [0-9A-Za-z.+-]
+#   MUSICLIB_REVISION  the source revision (git commit) of the build
+#   MUSICLIB_SOURCE    the URL of the source repository
+ARG MUSICLIB_VERSION=devel
+ARG MUSICLIB_REVISION=
+ARG MUSICLIB_SOURCE=
 
 # ---------------------------------------------------------------------------
 # ffmpeg and ffprobe (DESIGN.md §2.1, §8.4; NOTES.md N-025, N-073).
@@ -260,9 +271,22 @@ ARG DEV_GID
 COPY . .
 # Static binary: the Go side has no libc dependency. Native code (TagLib) lives
 # in the separate `musiclib-tags` helper, not in this binary (DESIGN.md §2.1).
-# -trimpath + pinned toolchain + no VCS stamping => reproducible output.
+# -trimpath + pinned toolchain + no VCS stamping => reproducible output: the
+# same sources and MUSICLIB_VERSION give the same bytes.
+#
+# The version is the single source of buildinfo.Version (NOTES.md N-325). It
+# must be a non-empty token (restore refuses an empty app_version), and the
+# built binary must report it: a mistyped -X path would silently leave
+# "devel".
+ARG MUSICLIB_VERSION
 RUN --mount=type=cache,target=/home/dev/.cache/go-build,uid=${DEV_UID},gid=${DEV_GID} \
-    CGO_ENABLED=0 go build -trimpath -o /home/dev/out/musiclibd ./cmd/musiclibd
+    case "${MUSICLIB_VERSION}" in \
+      ''|*[!0-9A-Za-z.+-]*) echo "MUSICLIB_VERSION must be a non-empty token of [0-9A-Za-z.+-]: '${MUSICLIB_VERSION}'" >&2; exit 1 ;; \
+    esac \
+ && CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-X musiclib/internal/buildinfo.Version=${MUSICLIB_VERSION}" \
+      -o /home/dev/out/musiclibd ./cmd/musiclibd \
+ && test "$(/home/dev/out/musiclibd version | sed -n 's/^version: //p')" = "${MUSICLIB_VERSION}"
 
 # ---------------------------------------------------------------------------
 FROM ${RUNTIME_IMAGE} AS runtime
@@ -312,3 +336,15 @@ ENV HTTP_ADDR=:8080
 EXPOSE 8080
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/musiclibd"]
+
+# OCI annotations of the published image (NOTES.md N-325), last so that new
+# values change no layer. The version is the one stamped into musiclibd.
+ARG MUSICLIB_VERSION
+ARG MUSICLIB_REVISION
+ARG MUSICLIB_SOURCE
+LABEL org.opencontainers.image.title="Vibrance MusicLib" \
+      org.opencontainers.image.description="Self-hosted music library manager: imports albums, keeps the originals unchanged and generates an organized, tagged library." \
+      org.opencontainers.image.version="${MUSICLIB_VERSION}" \
+      org.opencontainers.image.revision="${MUSICLIB_REVISION}" \
+      org.opencontainers.image.source="${MUSICLIB_SOURCE}" \
+      org.opencontainers.image.licenses="MIT"

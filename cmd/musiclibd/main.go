@@ -2,6 +2,7 @@
 //
 //	musiclibd              run the server
 //	musiclibd healthcheck  query /health/ready on HTTP_ADDR; exit 0 or 1
+//	musiclibd version      print the version and render_version
 //
 // Configuration comes only from the environment (§11.1): DATABASE_URL,
 // PUBLIC_ORIGIN, HTTP_ADDR (default ":8080") and WORKERS (default
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"musiclib/internal/blobstore"
+	"musiclib/internal/buildinfo"
 	"musiclib/internal/fsops"
 	"musiclib/internal/maintenance"
 	"musiclib/internal/media"
@@ -75,6 +77,8 @@ func musiclibd(args []string, getenv func(string) string, stderr io.Writer) int 
 		return serve(log, getenv, defaultPaths)
 	case len(args) == 1 && args[0] == "healthcheck":
 		return healthcheck(log, getenv)
+	case len(args) == 1 && args[0] == "version":
+		return printVersion(os.Stdout, log)
 	case len(args) == 1 && args[0] == "doctor":
 		return runDoctor(getenv, defaultPaths, false, os.Stdout, log)
 	case len(args) == 2 && args[0] == "doctor" && args[1] == "--deep":
@@ -91,7 +95,7 @@ func musiclibd(args []string, getenv func(string) string, stderr io.Writer) int 
 		log.Error("rebuild requires a canonical non-nil UUID for --store-id", "code", "usage")
 		return exitUsage
 	default:
-		log.Error("usage: musiclibd [healthcheck|doctor [--deep]|rebuild --store-id UUID|backup --to /backup/NAME|restore --from /backup/NAME]", "code", "usage", "args", args)
+		log.Error("usage: musiclibd [healthcheck|version|doctor [--deep]|rebuild --store-id UUID|backup --to /backup/NAME|restore --from /backup/NAME]", "code", "usage", "args", args)
 		return exitUsage
 	}
 }
@@ -111,7 +115,7 @@ func serve(log *slog.Logger, getenv func(string) string, p paths) int {
 		logFatal(log, err)
 		return exitUsage
 	}
-	log.Info("starting", "config", cfg)
+	log.Info("starting", "version", buildinfo.Version, "config", cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), unix.SIGTERM, unix.SIGINT)
 	defer stop()

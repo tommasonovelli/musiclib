@@ -212,6 +212,28 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
   `/health/ready` on `HTTP_ADDR` and exits 0 or 1; it takes no lock.
   `start_period` is 120 s, polled every second.
 
+### Version
+
+`musiclibd version` prints the application version and `render_version`
+(§2.1) on two lines, `version: …` and `render_version: …`, and exits 0. It
+reads no environment and needs neither the database nor the volumes. The
+server also logs the version in its first event, `starting`. The version is
+stamped at build time from the build argument `MUSICLIB_VERSION` (default
+`devel`, a token of `[0-9A-Za-z.+-]`; the build fails on anything else, or
+if the binary does not report it); it is also the backup manifest's
+`app_version` (NOTES.md N-325). The `runtime` image carries the OCI labels
+`org.opencontainers.image.{title,description,version,revision,source,licenses}`,
+fed by `MUSICLIB_VERSION`, `MUSICLIB_REVISION` and `MUSICLIB_SOURCE`
+(empty by default):
+
+```sh
+docker build --target runtime --build-arg MUSICLIB_VERSION=1.0.0 \
+  --build-arg MUSICLIB_REVISION="$(git rev-parse HEAD)" \
+  --build-arg MUSICLIB_SOURCE=https://github.com/OWNER/REPO -t musiclib-app:1.0.0 .
+docker run --rm musiclib-app:1.0.0 version
+docker image inspect musiclib-app:1.0.0 --format '{{json .Config.Labels}}'
+```
+
 ### Offline inspection and rebuild (Phase 6)
 
 Stop the app first, but leave PostgreSQL running. `doctor` is read-only

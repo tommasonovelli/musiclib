@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"musiclib/internal/buildinfo"
 	"musiclib/internal/media"
 	"musiclib/internal/store/pgtest"
 )
@@ -172,7 +173,8 @@ func TestServerProcessLifecycle(t *testing.T) {
 	}
 }
 
-// SIGINT stops the server like SIGTERM.
+// SIGINT stops the server like SIGTERM. The server logs its version when
+// starting (NOTES.md N-325).
 func TestServerProcessSIGINT(t *testing.T) {
 	dbURL := pgtest.EmptyDB(t)
 	p := testPaths(t)
@@ -185,6 +187,10 @@ func TestServerProcessSIGINT(t *testing.T) {
 		t.Fatalf("exit %d after SIGINT; stderr:\n%s", code, s.stderr)
 	}
 	assertLockFree(t, p.data)
+	events := s.stderr.events(t)
+	if len(events) == 0 || events[0]["msg"] != "starting" || events[0]["version"] != buildinfo.Version {
+		t.Fatalf("the first event is not `starting` with version %q:\n%s", buildinfo.Version, s.stderr)
+	}
 }
 
 // processUmask reads the Umask line of /proc/<pid>/status (Linux 4.7).
