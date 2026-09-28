@@ -1,6 +1,6 @@
 # Operating Vibrance MusicLib (Ubuntu 24.04+, Docker Engine, local ext4)
 
-DESIGN.md §3, §10.4, §11–§12. See [Docker and tests](docker.md) and [the UI](ui.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
+DESIGN.md §3, §10.4, §11–§12. See [Docker and tests](docker.md) and [the UI](archive/ui.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
 
 ## First start
 
@@ -40,7 +40,7 @@ The image runs as `1000:1000` and owns `/data` and `/backup`, so a new named vol
 
 The fixed paths in the container are `/data`, `/import` (read-only, must exist) and `/backup` (must not be inside `/data`). `MUSICLIB_BACKUP` must not be a host directory inside `MUSICLIB_DATA` either: backup and restore compare the filesystem device and root of both mounts from `/proc/self/mountinfo` and refuse a nested destination with `backup_destination` (exit 2). The check sees bind mounts of one host filesystem; it cannot see through a network share or a second filesystem layered over the data directory, so keep the two host paths plainly separate. `/data/.lock` is never deleted; `.musiclib-store` identifies the paired database; `originals/` is immutable content-addressed media; `library/` is disposable published output; `work/` is staging. Do not edit `library/` or change `.maintenance` manually. Only one app instance per volume and database. A missing store marker cannot be replaced by pointing an existing database at a new volume.
 
-`GET /health/live` checks the HTTP process; `GET /health/ready` checks boot, recovery and PostgreSQL. Read JSON logs with `docker compose logs --tail=100 app`. Import by placing albums under the configured `MUSICLIB_IMPORT`, then open the Import page at `PUBLIC_ORIGIN` or use `POST /api/imports` (see [Docker API examples](docker.md#importing-the-queue-and-the-library-list)). Do not change or unmount the source before jobs complete. Job failures remain visible in Activity and require an explicit retry.
+`GET /health/live` checks the HTTP process; `GET /health/ready` checks boot, recovery and PostgreSQL. Read JSON logs with `docker compose logs --tail=100 app`. Import by placing albums under the configured `MUSICLIB_IMPORT`, then open the Import page at `PUBLIC_ORIGIN` or use `POST /api/imports` (see [Docker API examples](docker.md#importing-the-queue-and-the-library-list-round-16)). Do not change or unmount the source before jobs complete. Job failures remain visible in Activity and require an explicit retry.
 
 ### Running from source
 

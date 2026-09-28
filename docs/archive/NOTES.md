@@ -8714,3 +8714,59 @@ this entry records the decision.
 `scripts/check.sh` was not re-run. The fix pass changed documentation only,
 N-334 recorded «gate passed» on the same code, and the gate runs in the
 owner's project `musiclib`, which this re-review had to leave untouched.
+
+### N-337 · Project documents moved to `docs/archive/` — DECIDED (owner, 2026-09-28)
+The owner asked for a `docs/archive` folder holding `ui.md`, `NOTES.md`,
+`DESIGN.md`, `opensource.md` and `PROGRESS.md`, to tidy the repository
+without deleting anything. They were moved with `git mv` (history kept, content
+unchanged): `docs/ui.md`, `NOTES.md`, `DESIGN.md`, `opensource.md` and
+`PROGRESS.md` are now `docs/archive/ui.md`, `docs/archive/NOTES.md`,
+`docs/archive/DESIGN.md`, `docs/archive/opensource.md` and
+`docs/archive/PROGRESS.md`. Every relative markdown link to or from them was
+fixed (CONTRIBUTING, README, `docs/docker.md`, `docs/operations.md`, and the
+links inside `opensource.md` and `ui.md`); at the owner's request the README
+guide table no longer lists them. Nothing reads these files at build or test
+time. Citations such as «DESIGN.md §11.1» or «NOTES.md N-245» in code, comments
+and prose still mean these files and were left as they are. NOTES and PROGRESS
+stay live: new entries keep being appended here.
+
+### N-338 · Review of the docs/archive move — APPROVED
+Reviewer: senior technical writer and documentation engineer (repository
+documentation structure, link integrity), independent of the implementer.
+Scope: the N-337 working tree (`.claude/` excluded, never committed).
+
+**Pure renames, nothing deleted.** The index holds five `R100` renames
+(`DESIGN.md`, `NOTES.md`, `PROGRESS.md`, `opensource.md`, `docs/ui.md` to
+`docs/archive/`). `git diff -M HEAD`: `DESIGN.md` identical; the other four
+differ only in relative links (`opensource.md`, `ui.md`), the N-337 entry and
+the one PROGRESS line. No file is deleted anywhere.
+
+**Link integrity.** A throwaway checker outside the repository parsed every
+tracked `.md` (inline, reference and HTML links, fenced code skipped) and
+resolved relative paths against tracked files and heading anchors with
+GitHub's slug rules (duplicate suffixes included). Tree: 79 relative links,
+zero broken (one false positive: an HTML fragment inside a code span wrapped
+across lines in N-249). The same checker on HEAD found 84 links and one real
+break, `docs/operations.md` → `docker.md#importing-the-queue-and-the-library-list`,
+now fixed to `…-round-16`, which resolves. The five fewer links are the
+README guide-table rows the owner asked to drop. Links inside the moved files
+(`../`, `../../`, and the sibling `DESIGN.md`/`PROGRESS.md`/`ui.md` links of
+`opensource.md`) all resolve.
+
+**No functional reference.** Go (no `go:embed`/open of these files),
+tests, `scripts/`, `Dockerfile`, `.dockerignore`, `.gitattributes`,
+`sqlc.yaml`, both Compose files and `.env.example` only cite «DESIGN.md §…»
+or «NOTES.md N-…» in comments; nothing reads the files by path. No `docs/ui`
+reference is left outside NOTES/PROGRESS history.
+
+**No unintended edits.** Every changed file differs only in link targets,
+plus the owner-requested README table rows and the `.gitignore` comment. No
+player application is mentioned in the added text.
+
+**Nits (non-blocking)**
+- N-337 and the PROGRESS line say «content unchanged», while
+  `opensource.md` and `ui.md` got link fixes (N-337 does say so later).
+- N-337 does not mention the pre-existing broken anchor fixed in
+  `docs/operations.md`.
+
+No gate run: the change is Markdown and a `.gitignore` comment only.

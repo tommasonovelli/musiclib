@@ -35,7 +35,7 @@ library/
 
 The supported production target is **Ubuntu 24.04 or later, Docker Engine with Compose v2, and local ext4 storage**. Start with **Linux amd64**: the current build downloads an x86_64 CMake binary, and ARM support has not been established. Docker Desktop is used for development; NAS filesystems and Docker Desktop are not declared production targets.
 
-The implementation and existing test evidence are recorded in [PROGRESS.md](PROGRESS.md). The native Ubuntu/ext4 release acceptance gate remains open (N-017); this README does not declare a completed public release. There is currently a source build workflow, rather than a documented published application image. See the [public release checklist](opensource.md) for the remaining work, including the audit of bundled third-party software.
+The implementation and existing test evidence are recorded in [PROGRESS.md](docs/archive/PROGRESS.md). The native Ubuntu/ext4 release acceptance gate remains open (N-017); this README does not declare a completed public release. There is currently a source build workflow, rather than a documented published application image. See the [public release checklist](docs/archive/opensource.md) for the remaining work, including the audit of bundled third-party software.
 
 MusicLib runs as one application instance paired with one database and data volume. It has no player, streaming, transcoding of published audio, online music recognition, automatic filesystem watcher, or user accounts and roles. The interface is in English.
 
@@ -80,7 +80,7 @@ For existing source directories or host bind mounts, configure `MUSICLIB_IMPORT`
 | `/data/work` | Temporary staging for imports and renders |
 | `/backup` | Backup destination outside `/data` |
 
-PostgreSQL holds the catalog, queue and publication journal. A render prepares a complete album in staging, writes its managed tags, verifies the audio and publishes it through a recoverable directory replacement protocol. Originals remain available for future renders. The storage contract and recovery rules are detailed in [DESIGN.md](DESIGN.md).
+PostgreSQL holds the catalog, queue and publication journal. A render prepares a complete album in staging, writes its managed tags, verifies the audio and publishes it through a recoverable directory replacement protocol. Originals remain available for future renders. The storage contract and recovery rules are detailed in [DESIGN.md](docs/archive/DESIGN.md).
 
 Budget roughly **twice the imported media bytes** for originals plus library, with additional room for staging, covers, attachments and retired output. The external source collection and separate backups add to this total. MusicLib reserves space conservatively, but external writes and a full disk can still interrupt a job.
 
@@ -101,7 +101,7 @@ The default published address is `127.0.0.1:8080`. `PUBLIC_ORIGIN` must match th
 
 **There is no authentication.** Host/Origin validation and the `X-Musiclib-Request: 1` mutation header protect the browser boundary; that header is not a credential. Do not expose MusicLib directly to the Internet. Remote access requires an authenticated reverse proxy; consult the [security and troubleshooting guidance](docs/operations.md#security-and-troubleshooting).
 
-The HTTP API supports catalog editing, import reports, queue management and downloads by entity ID. Changes to existing albums and artists use `ETag`/`If-Match` to detect conflicting edits. File uploads use raw request bodies. See the [API examples and request rules](docs/docker.md#the-api) and [import/queue examples](docs/docker.md#importing-the-queue-and-the-library-list-round-16). A complete OpenAPI document is future work tracked in [opensource.md](opensource.md).
+The HTTP API supports catalog editing, import reports, queue management and downloads by entity ID. Changes to existing albums and artists use `ETag`/`If-Match` to detect conflicting edits. File uploads use raw request bodies. See the [API examples and request rules](docs/docker.md#the-api) and [import/queue examples](docs/docker.md#importing-the-queue-and-the-library-list-round-16). A complete OpenAPI document is future work tracked in [opensource.md](docs/archive/opensource.md).
 
 ## Architecture and further reading
 
@@ -111,12 +111,8 @@ The HTTP API supports catalog editing, import reports, queue management and down
 |---|---|
 | [Operations](docs/operations.md) | Configuration, storage, upgrades, maintenance, restore, troubleshooting and native release checks |
 | [Docker and development](docs/docker.md) | Services, variables, pinned dependencies, test workflow and API examples |
-| [Browser interface](docs/ui.md) | Import, editing, activity, limits and current UI behavior |
-| [Design](DESIGN.md) | Domain model, storage invariants and recovery protocol (Italian) |
-| [Progress](PROGRESS.md) / [decisions](NOTES.md) | Existing implementation evidence and unresolved questions |
 | [Contributing](CONTRIBUTING.md) | Contributor setup and change validation |
-| [Public release checklist](opensource.md) | License, packaging, documentation and acceptance work (Italian) |
 
 ## License
 
-MusicLib's original code and documentation are licensed under the [MIT License](LICENSE), copyright 2026 tommasonovelli. Third-party dependencies and assets retain their own licenses, including the [SIL Open Font License](web/OFL.txt) for Hanken Grotesk. The audit and distribution requirements for bundled third-party software remain tracked in [opensource.md](opensource.md#p0--licenza-provenienza-e-distribuzione). The logo, the sun symbol, is the author's artwork and is not covered by the MIT License: see [LOGO.md](LOGO.md).
+MusicLib's original code and documentation are licensed under the [MIT License](LICENSE), copyright 2026 tommasonovelli. Third-party dependencies and assets retain their own licenses, including the [SIL Open Font License](web/OFL.txt) for Hanken Grotesk. The audit and distribution requirements for bundled third-party software remain tracked in [opensource.md](docs/archive/opensource.md#p0--licenza-provenienza-e-distribuzione). The logo, the sun symbol, is the author's artwork and is not covered by the MIT License: see [LOGO.md](LOGO.md).

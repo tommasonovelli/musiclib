@@ -16,5 +16,5 @@ coverage.html
 # Local builds of the TagLib helper (it is built in Docker only)
 /native/musiclib-tags/build/
 
-# UI review screenshots taken by the browser tests (docs/ui.md)
+# UI review screenshots taken by the browser tests (docs/archive/ui.md)
 /tmp/

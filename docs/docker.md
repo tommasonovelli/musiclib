@@ -66,7 +66,7 @@ for `go get`. The test/dev image also contains **Chromium 154.0.8037.57-1~deb13u
 contains neither Chromium nor Node. The browser tests use a local listener
 inside the test container on an ephemeral localhost port, with the test
 `PUBLIC_ORIGIN` adjusted to that port; they require no published database or app port.
-The dev/test-only package and its dependency closure come from a fixed, signed Debian snapshot (NOTES.md N-212). UI usage is described in [docs/ui.md](ui.md).
+The dev/test-only package and its dependency closure come from a fixed, signed Debian snapshot (NOTES.md N-212). UI usage is described in [docs/archive/ui.md](archive/ui.md).
 
 `dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
 so `scripts/dev.sh go test ./internal/store/...` runs the PostgreSQL tests. `fuzz.sh` needs that, so a failing input is written back to

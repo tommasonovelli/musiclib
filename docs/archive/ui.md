@@ -1,6 +1,6 @@
 # Browser interface
 
-Open `http://127.0.0.1:8080/` after starting the app (see [Docker](docker.md)). Use the exact host and port in `PUBLIC_ORIGIN`; a different Host is rejected. The interface is in English (NOTES.md N-256).
+Open `http://127.0.0.1:8080/` after starting the app (see [Docker](../docker.md)). Use the exact host and port in `PUBLIC_ORIGIN`; a different Host is rejected. The interface is in English (NOTES.md N-256).
 
 ## Layout
 
@@ -47,7 +47,7 @@ While the import runs, one row shows its progress (looking for albums, then albu
 
 Activity lists what is **In progress**, **Waiting** and **Needs attention**, each with its count: albums with their cover and name (linking to the album), and imports by their folder (linking to their results). Times are relative («2 minutes ago»), with the full date on hover and next to the time on keyboard focus. Rows that need attention say the problem in one sentence; imports can be dismissed there too. **Retry all** tries every one of them again, leaving work in progress alone, and says how many were queued («3 albums queued again»). Up to 100 rows are shown per group. With nothing to do, the page says «Nothing in progress. Your library is up to date.».
 
-**Advanced**, closed by default, holds **Rebuild the library folder**: use it when files in the library folder were changed or deleted outside MusicLib. It says how many albums it writes again before it starts (this takes time and disk space), then how many it queued. This is not the offline `rebuild` command of [Operations](operations.md): the app stays running and nothing is deleted first.
+**Advanced**, closed by default, holds **Rebuild the library folder**: use it when files in the library folder were changed or deleted outside MusicLib. It says how many albums it writes again before it starts (this takes time and disk space), then how many it queued. This is not the offline `rebuild` command of [Operations](../operations.md): the app stays running and nothing is deleted first.
 
 Import and Activity check for changes every two seconds only while something is waiting or in progress; an idle page makes no requests. Without JavaScript both pages can be read, and have no actions.
 

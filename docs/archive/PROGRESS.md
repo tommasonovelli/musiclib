@@ -2052,6 +2052,10 @@ scripts/dev.sh go test -race -count=10 -timeout 60m ./internal/publish/
 - **Commands**: production `docker compose up -d --wait`; the owner's source build `COMPOSE_FILE=compose.dev.yaml` in `.env`, then `docker compose up -d --build --wait` (or `docker compose -f compose.dev.yaml up -d --build --wait`); maintenance `scripts/doctor.sh --deep` etc., or `docker compose stop app`, `docker compose run --rm --no-deps app doctor --deep`, `docker compose start app`.
 - **Evidence** (N-333): `config` of both files with and without the password; old vs new resolved configs differ only in the app's image/build; production smoke in the isolated project `musiclib-smoke` from a scratch directory holding only `compose.yaml` and `.env` (image built locally under the release tag, `version 1.0.0-smoke`): healthy, `/health/ready` ready, `version`, plain doctor `--deep` and backup, `scripts/doctor.sh --deep` and `scripts/backup.sh` (plus the `backup_exists` refusal leaving the app stopped), then `down -v` after checking the `musiclib-smoke_` volume names, and the smoke tag removed; `COMPOSE_FILE` from `.env` honoured by the wrappers; the dev file's password-less PostgreSQL refusal. `scripts/lint-shell.sh` clean; `scripts/check.sh` (whole module) passed.
 
+### Release 1.0.0: documents archived (owner, N-337) ✔
+
+- `DESIGN.md`, `NOTES.md`, `PROGRESS.md`, `opensource.md` and `docs/ui.md` moved with `git mv` to `docs/archive/`, content unchanged; every relative markdown link fixed and checked mechanically (zero broken); the README guide table no longer lists them.
+
 ### `internal/http` — the API's conventions, security boundary and first endpoints (§2.3, §10.1, §10.2, §10.4) ✔ (round 11)
 
 The API is plain `net/http` (Go 1.22 method and wildcard patterns). There
