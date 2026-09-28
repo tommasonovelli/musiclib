@@ -1,4 +1,4 @@
-![Vibrance MusicLib](docs/assets/banner.png)
+![Vibrance MusicLib](docs/assets/banner.jpg)
 
 # Vibrance MusicLib
 
