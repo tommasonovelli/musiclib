@@ -87,16 +87,16 @@ func TestBrowserImportAndOverride(t *testing.T) {
 	}
 	run(jobs.KindImport)
 	run(jobs.KindImport)
-	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('completed') && document.querySelector('#candidates')?.textContent.includes('mixed_album')`)
+	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('Finished') && document.querySelector('#candidates')?.textContent.includes('mixed_album')`)
 	// Title override resolves discordant album tags; the retry's body has only
 	// the two specified fields. The real executor revalidates the source.
 	browserEval(t, tab, `window.retryBodies=[];const realFetch=window.fetch;window.fetch=(url,opts)=>{if(String(url).endsWith('/retry'))window.retryBodies.push(JSON.parse(opts.body));return realFetch(url,opts)};const f=[...document.querySelectorAll('#candidates > li')].find(li=>li.firstChild.textContent.includes('Mixed')).querySelector('form');f.elements.namedItem('title').value='Fixed title';f.querySelector('button').click();''`)
 	if got := browserEval(t, tab, `String(window.retryBodies.length===1 && Object.keys(window.retryBodies[0]).sort().join(',')==='artist,title')`); got != "true" {
 		t.Fatalf("unexpected override fields: %s", got)
 	}
-	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('importing')`)
+	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('Importing')`)
 	run(jobs.KindImport)
-	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('completed') && document.querySelector('#candidates')?.textContent.includes('Album')`)
+	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('Finished') && document.querySelector('#candidates')?.textContent.includes('Open album')`)
 	if n := e.count(`SELECT count(*) FROM albums WHERE title='Fixed title'`); n != 1 {
 		t.Fatalf("override album count %d", n)
 	}

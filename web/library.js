@@ -24,7 +24,7 @@ async function fetchPage(url, signal) {
     if (!response.ok) throw new Error(String(response.status));
     return new DOMParser().parseFromString(await response.text(), 'text/html');
   } catch (error) {
-    if (error.name !== 'AbortError') announce('La libreria non ha risposto. Riprova tra poco.');
+    if (error.name !== 'AbortError') announce('The library didn’t respond. Try again in a moment.');
     return null;
   }
 }
@@ -61,7 +61,7 @@ async function search() {
   history.replaceState(null, '', url);
   document.title = doc.title;
   const count = tiles().length;
-  announce(count ? `${count} album${document.querySelector('#more') ? ' e altri' : ''}` : results.textContent.trim());
+  announce(count ? `${count} album${count === 1 ? '' : 's'}${document.querySelector('#more') ? ' and more' : ''}` : results.textContent.trim());
   watchMore();
 }
 if (input) {
@@ -69,7 +69,7 @@ if (input) {
   input.form.addEventListener('submit', event => { event.preventDefault(); clearTimeout(searchTimer); search(); });
 }
 
-// ---- More albums on scroll: the sentinel is the real «Mostra altri» link ----
+// ---- More albums on scroll: the sentinel is the real «Load more» link ----
 
 let loading = false;
 const observer = new IntersectionObserver(entries => {
@@ -173,7 +173,7 @@ function tracks(album) {
   for (const track of album.tracks) {
     if (discs && track.disc !== disc) {
       disc = track.disc;
-      list.append(element('li', 'disc', `Disco ${disc}`));
+      list.append(element('li', 'disc', `Disc ${disc}`));
     }
     const item = element('li');
     item.append(element('span', 'track-no', String(track.no)));
@@ -192,7 +192,7 @@ async function fill(panel, tile, info) {
     if (!response.ok) throw new Error(String(response.status));
     album = await response.json();
   } catch {
-    info.querySelector('.panel-edit').before(element('p', 'panel-error', 'L’album non si è aperto: il server non risponde. Riprova tra poco.'));
+    info.querySelector('.panel-edit').before(element('p', 'panel-error', 'This album didn’t open because the library isn’t responding. Try again in a moment.'));
     return;
   }
   if (!panel.isConnected) return;
@@ -216,7 +216,7 @@ function build(tile) {
   info.append(title, element('p', 'panel-artist', tile.querySelector('.tile-artist').textContent));
   const status = statusLine(tile);
   if (status) info.append(status);
-  const edit = element('a', 'btn panel-edit', 'Modifica album');
+  const edit = element('a', 'btn panel-edit', 'Edit album');
   edit.href = tile.querySelector('.tile-link').getAttribute('href');
   info.append(edit);
   const source = tile.querySelector('.art img');

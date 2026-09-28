@@ -145,7 +145,7 @@ func TestBrowserLibraryGridPanelAndKeys(t *testing.T) {
 	dot := func(id uuid.UUID) string {
 		return `(s=>s.backgroundColor+' '+s.animationName)(getComputedStyle(` + tile(id) + `.querySelector('.dot'))), ` + tile(id) + `.querySelector('.tile-status').textContent`
 	}
-	if got := browserEval(t, tab, `JSON.stringify([document.querySelectorAll('#grid img').length, [...document.querySelectorAll('.initials')].map(n=>n.textContent), `+dot(broken)+`, `+dot(hostile)+`, `+dot(muted)+`, `+tile(kob)+`.querySelector('.dot, .tile-status')===null])`); got != `[3,["S","NB"],"rgb(215, 0, 21) none","Da sistemare","rgb(110, 110, 115) none","In attesa","rgb(201, 52, 0) pulse","In aggiornamento",true]` {
+	if got := browserEval(t, tab, `JSON.stringify([document.querySelectorAll('#grid img').length, [...document.querySelectorAll('.initials')].map(n=>n.textContent), `+dot(broken)+`, `+dot(hostile)+`, `+dot(muted)+`, `+tile(kob)+`.querySelector('.dot, .tile-status')===null])`); got != `[3,["S","NB"],"rgb(215, 0, 21) none","Needs attention","rgb(110, 110, 115) none","Waiting","rgb(201, 52, 0) pulse","Updating",true]` {
 		t.Fatalf("grid state: %s", got)
 	}
 	// The font is ours, and the escaping held.
@@ -183,6 +183,11 @@ func TestBrowserLibraryGridPanelAndKeys(t *testing.T) {
 	if got := browserEval(t, tab, `(()=>{const a=document.querySelector('#album-panel .track-artist'),s=getComputedStyle(a),t=a.parentElement;return [a.textContent,s.display,s.fontSize,s.color===getComputedStyle(document.querySelector('#album-panel .panel-body')).color,a.getBoundingClientRect().top>=t.getBoundingClientRect().top+10].join('|')})()`); got != "Miles & Cannonball|block|13px|true|true" {
 		t.Fatalf("track artist: %s", got)
 	}
+	// A disc caption (library.js's li.disc) keeps the panel's ink too: the
+	// album page's graphite .disc stays out of it (N-278).
+	if got := browserEval(t, tab, `(()=>{const l=document.createElement('li');l.className='disc';l.textContent='Disc 1';document.querySelector('#album-panel .panel-tracks').prepend(l);const c=getComputedStyle(l).color===getComputedStyle(document.querySelector('#album-panel .panel-body')).color;l.remove();return String(c)})()`); got != "true" {
+		t.Fatal("the panel's disc caption is not in the panel's ink")
+	}
 
 	// Esc closes and gives the focus back to the cover.
 	browserKey(t, tab, kb.Escape)
@@ -193,7 +198,7 @@ func TestBrowserLibraryGridPanelAndKeys(t *testing.T) {
 	browserWait(t, tab, `document.querySelector('#album-panel.is-open') !== null`)
 	browserEval(t, tab, link(broken)+`.click();''`)
 	browserWait(t, tab, `document.querySelectorAll('.album-panel').length === 1 && document.querySelector('#album-panel .panel-title')?.textContent === 'No Cover Broken' && document.querySelector('#album-panel .panel-tracks') !== null`)
-	if got := browserEval(t, tab, `JSON.stringify([`+link(kob)+`.getAttribute('aria-expanded'), `+link(broken)+`.getAttribute('aria-expanded'), document.querySelector('#album-panel').style.getPropertyValue('--cover-bg'), 'cover' in document.querySelector('#album-panel').dataset, getComputedStyle(document.querySelector('#album-panel .panel-body')).backgroundColor, document.querySelector('#album-panel .panel-status').textContent, document.activeElement.className])`); got != `["false","true","",false,"rgb(255, 255, 255)","Da sistemare","panel-title"]` {
+	if got := browserEval(t, tab, `JSON.stringify([`+link(kob)+`.getAttribute('aria-expanded'), `+link(broken)+`.getAttribute('aria-expanded'), document.querySelector('#album-panel').style.getPropertyValue('--cover-bg'), 'cover' in document.querySelector('#album-panel').dataset, getComputedStyle(document.querySelector('#album-panel .panel-body')).backgroundColor, document.querySelector('#album-panel .panel-status').textContent, document.activeElement.className])`); got != `["false","true","",false,"rgb(255, 255, 255)","Needs attention","panel-title"]` {
 		t.Fatalf("moved panel: %s", got)
 	}
 	browserEval(t, tab, link(broken)+`.click();''`)
@@ -241,7 +246,7 @@ func TestBrowserLibraryGridPanelAndKeys(t *testing.T) {
 		}
 	}
 
-	// «Modifica album» names only this cover for the view transition.
+	// «Edit album» names only this cover for the view transition.
 	browserEval(t, tab, link(kob)+`.click();''`)
 	browserWait(t, tab, `document.querySelector('#album-panel.is-open .panel-edit') !== null`)
 	if got := browserEval(t, tab, `addEventListener('click', e => { window.named = [...document.querySelectorAll('*')].filter(n => n.style.viewTransitionName).map(n => n.className + ':' + n.style.viewTransitionName); e.preventDefault(); }, { once: true }); document.querySelector('#album-panel .panel-edit').click(); JSON.stringify(window.named)`); got != `["panel-cover:album-cover"]` {
@@ -319,7 +324,7 @@ func TestBrowserLibrarySearchAndScroll(t *testing.T) {
 	if err := chromedp.Run(tab, chromedp.SendKeys("#filter-q", "zzz")); err != nil {
 		t.Fatal(err)
 	}
-	browserWait(t, tab, `document.querySelector('#results .empty-title')?.textContent === 'Nessun album per “<script>zzz”.'`)
+	browserWait(t, tab, `document.querySelector('#results .empty-title')?.textContent === 'No albums for “<script>zzz”.'`)
 	if got := browserEval(t, tab, `JSON.stringify(window.cspViolations)`); got != "[]" {
 		t.Fatalf("CSP violations: %s", got)
 	}
@@ -327,7 +332,7 @@ func TestBrowserLibrarySearchAndScroll(t *testing.T) {
 		t.Fatalf("console: %q", p)
 	}
 
-	// Without JavaScript: links, a real «Mostra altri», a GET form.
+	// Without JavaScript: links, a real «Load more», a GET form.
 	plain, _ := browserTab(t, root)
 	if err := chromedp.Run(plain, emulation.SetScriptExecutionDisabled(true)); err != nil {
 		t.Fatal(err)
@@ -346,7 +351,7 @@ func TestBrowserLibrarySearchAndScroll(t *testing.T) {
 	browserWait(t, plain, `location.search === '?q=other' && document.querySelectorAll('#grid > .tile').length === 1`)
 }
 
-// The «Da sistemare» entry and Cestino from the sidebar.
+// The «Needs attention» entry and Trash from the sidebar.
 func TestBrowserLibraryFixAndTrash(t *testing.T) {
 	e, root := browserEnv(t)
 	broken := e.seed("Artist", "Broken")
@@ -361,11 +366,11 @@ func TestBrowserLibraryFixAndTrash(t *testing.T) {
 	browserWait(t, tab, `document.querySelector('.fix-filter .count')?.textContent === ': 1'`)
 	browserEval(t, tab, `document.querySelector('.fix-filter').click();''`)
 	browserWait(t, tab, `location.search === '?fix=true' && document.querySelectorAll('#grid > .tile').length === 1`)
-	if got := browserEval(t, tab, `document.querySelector('h1').textContent + '|' + document.querySelector('#grid .tile').dataset.album + '|' + document.querySelector('.fix-filter').getAttribute('aria-current')`); got != "Da sistemare|"+broken.String()+"|page" {
+	if got := browserEval(t, tab, `document.querySelector('h1').textContent + '|' + document.querySelector('#grid .tile').dataset.album + '|' + document.querySelector('.fix-filter').getAttribute('aria-current')`); got != "Needs attention|"+broken.String()+"|page" {
 		t.Fatalf("fix view: %s", got)
 	}
-	browserEval(t, tab, `[...document.querySelectorAll('.nav a')].find(a => a.textContent === 'Cestino').click();''`)
-	browserWait(t, tab, `location.search === '?trash=true' && document.querySelector('h1').textContent === 'Cestino' && document.querySelectorAll('#grid > .tile').length === 1`)
+	browserEval(t, tab, `[...document.querySelectorAll('.nav a')].find(a => a.textContent === 'Trash').click();''`)
+	browserWait(t, tab, `location.search === '?trash=true' && document.querySelector('h1').textContent === 'Trash' && document.querySelectorAll('#grid > .tile').length === 1`)
 	if got := browserEval(t, tab, `document.querySelector('#grid .tile').dataset.album + '|' + (document.querySelector('#grid .dot') === null)`); got != gone.String()+"|false" {
 		// A trashed album whose removal is still queued shows its activity.
 		t.Fatalf("trash view: %s", got)
@@ -444,14 +449,24 @@ func TestBrowserLibraryScreenshots(t *testing.T) {
 		err := chromedp.Run(tab,
 			emulation.SetDeviceMetricsOverride(width, height, 2, width < 600),
 			emulation.SetEmulatedMedia().WithFeatures([]*emulation.MediaFeature{{Name: "prefers-color-scheme", Value: scheme}, {Name: "prefers-reduced-motion", Value: "reduce"}}),
+			// Every shot starts from the default, expanded sidebar (N-272).
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				_, err := page.AddScriptToEvaluateOnNewDocument(`try{localStorage.removeItem('musiclib.sidebar')}catch{}`).Do(ctx)
+				return err
+			}),
 			chromedp.Navigate(url),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		browserWait(t, tab, `document.fonts.status === 'loaded' && [...document.images].every(i => i.complete)`)
+		browserWait(t, tab, `document.fonts.status === 'loaded' && [...document.images].every(i => i.complete || !i.checkVisibility())`)
 		if then != "" {
 			browserEval(t, tab, then+`;''`)
+			if name == "sidebar-tooltip" {
+				// From the focused toggle, past Library, to Import: a keyboard focus.
+				browserKey(t, tab, kb.Tab)
+				browserKey(t, tab, kb.Tab)
+			}
 			browserWait(t, tab, `!document.querySelector('.album-panel') || (document.querySelector('.album-panel .panel-tracks') && (!document.querySelector('.album-panel[data-cover]') || document.querySelector('.album-panel').dataset.painted))`)
 			time.Sleep(600 * time.Millisecond)
 		}
@@ -476,6 +491,14 @@ func TestBrowserLibraryScreenshots(t *testing.T) {
 			shoot(root, e.srv.URL+"/albums/"+first.String(), "album", w, h, dark, "")
 			shoot(root, e.srv.URL+"/activity", "activity", w, h, dark, "")
 			shoot(root, e.srv.URL+"/import", "import", w, h, dark, "")
+			if w > 600 {
+				// The sidebar: expanded on Activity, collapsed, and collapsed
+				// with the tooltip of a focused entry.
+				toggle := `document.querySelector('#sidebar-toggle').click()`
+				shoot(root, e.srv.URL+"/activity", "sidebar-expanded", w, h, dark, "")
+				shoot(root, e.srv.URL+"/", "sidebar-collapsed", w, h, dark, toggle)
+				shoot(root, e.srv.URL+"/", "sidebar-tooltip", w, h, dark, toggle+`;document.querySelector('#sidebar-toggle').focus()`)
+			}
 		}
 	}
 }

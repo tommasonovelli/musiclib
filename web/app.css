@@ -8,7 +8,6 @@
 
 @font-face {
   font-family: "Hanken Grotesk";
-  font-style: normal;
   font-weight: 100 900;
   font-display: swap;
   src: url(hanken-grotesk-v12-latin.woff2) format("woff2");
@@ -16,7 +15,6 @@
 }
 @font-face {
   font-family: "Hanken Grotesk";
-  font-style: normal;
   font-weight: 100 900;
   font-display: swap;
   src: url(hanken-grotesk-v12-latin-ext.woff2) format("woff2");
@@ -43,7 +41,7 @@
   --error: #d70015;
 
   --family: "Hanken Grotesk", system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* file names only */
+  --mono: ui-monospace, Menlo, Consolas, monospace; /* file names only */
   /* Type scale: size / line height, weight. */
   --type-large: 700 2.125rem/2.5625rem var(--family);
   --type-title: 600 1.375rem/1.75rem var(--family);
@@ -70,7 +68,7 @@
   --quick: 200ms;
   --slow: 400ms;
 
-  --sidebar: 13.5rem;
+  --sidebar: 15.5rem; /* 248px; collapsed 4.5rem: the Save bar follows it */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -108,10 +106,10 @@ h2 { font: var(--type-head); }
 h3 { font: 600 .9375rem/1.375rem var(--family); }
 p { margin: 0; }
 a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-button, input, select, textarea { font: inherit; color: inherit; }
+a:hover, .link:hover { text-decoration: underline; }
+button, input, textarea { font: inherit; color: inherit; }
 /* Numbers that line up: counts, years, track and disc numbers. */
-.count, .tile-year, .track-no, input[type="number"], .col-num, .rt-no { font-variant-numeric: tabular-nums; }
+.count, .tile-year, .track-no, input[type="number"] { font-variant-numeric: tabular-nums; }
 
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 main:focus { outline: none; }
@@ -127,28 +125,63 @@ main:focus { outline: none; }
 }
 .skip-link:focus { top: var(--s4); }
 
-/* 4. Shell: the sidebar and the page head. */
+/* 4. Shell: the sidebar and the page head. Every sidebar row is a 3rem
+   icon cell and a label, so collapsing to the icons (sidebar.js, N-272)
+   moves no icon and leaves the toggle under the pointer. */
 
-.app { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); min-height: 100vh; }
+.app { display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 100vh; }
 
 .sidebar {
-  position: sticky; top: 0; align-self: start;
+  position: sticky; top: 0; z-index: 5; align-self: start;
   display: flex; flex-direction: column; gap: var(--s5);
-  height: 100vh; padding: var(--s5) var(--s3);
-  background: var(--canvas);
+  width: var(--sidebar); height: 100vh; padding: var(--s4) var(--s3);
+  background: var(--canvas); transition: width var(--slow) var(--ease);
 }
-.brand { padding-inline: var(--s3); font: var(--type-head); font-weight: 700; color: var(--ink); }
+.sidebar-top { display: flex; align-items: center; }
+.sidebar-toggle {
+  position: relative; display: grid; place-items: center; flex: none;
+  width: 3rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--r-control);
+  background: none; color: var(--graphite); cursor: pointer; visibility: hidden;
+}
+[data-sidebar] .sidebar-toggle { visibility: visible; }
+.brand { min-width: 0; overflow: hidden; font: var(--type-head); font-weight: 700; color: var(--ink); white-space: nowrap; }
 .brand:hover { text-decoration: none; }
 .nav { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .nav a, .fix-filter {
-  display: flex; align-items: center; gap: var(--s2);
-  min-height: 2rem; padding: var(--s1) var(--s3); border-radius: var(--r-control);
-  color: var(--ink); font-weight: 500;
+  position: relative; display: grid; grid-template-columns: 3rem minmax(0, 1fr) auto; align-items: center;
+  min-height: 2.25rem; padding-right: var(--s3); border-radius: var(--r-control);
+  color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden;
 }
-.nav a:hover, .fix-filter:hover { text-decoration: none; background: var(--fill-strong); }
+.icon { justify-self: center; color: var(--graphite); }
+.nav a:hover, .fix-filter:hover, .sidebar-toggle:hover { text-decoration: none; background: var(--fill-strong); color: var(--ink); }
 .nav a[aria-current="page"], .fix-filter[aria-current="page"] { background: var(--fill-strong); font-weight: 650; }
-.fix-filter .count { margin-left: auto; color: var(--graphite); font: var(--type-note); }
-.fix-filter[data-count="0"] .dot { background: var(--hairline); }
+:is(:hover, [aria-current="page"]) > .icon { color: var(--ink); }
+.fix-filter:not([data-count="0"]) > .icon { color: var(--error); }
+.fix-filter .count { color: var(--graphite); font: var(--type-note); }
+
+/* Collapsed: the icons only. The count becomes a badge on its icon and the
+   activity dot moves onto its icon too. */
+@media (width > 52rem) {
+  [data-sidebar="collapsed"] { --sidebar: 4.5rem; }
+  [data-sidebar="collapsed"] .brand { visibility: hidden; }
+  [data-sidebar="collapsed"] :is(.nav a, .fix-filter) { padding-right: 0; overflow: visible; }
+  [data-sidebar="collapsed"] .fix-filter .count {
+    position: absolute; left: 1.625rem; top: 2px; min-width: 1rem; padding: 0 4px; border-radius: var(--r-pill);
+    background: var(--error); color: var(--paper); font: var(--type-caption); line-height: 1rem; text-align: center;
+    outline: 2px solid var(--canvas);
+  }
+  [data-sidebar="collapsed"] .fix-filter[data-count="0"] .count { display: none; }
+  [data-sidebar="collapsed"] #nav-active { position: absolute; left: 1.875rem; top: 6px; outline: 2px solid var(--canvas); }
+  /* The label stays the accessible name; on hover and focus it is shown
+     as a tooltip beside the icon. The toggle's label always is. */
+  :is(.sidebar-toggle, [data-sidebar="collapsed"] .sidebar a) .nav-label {
+    position: absolute; left: calc(100% + var(--s3)); top: 50%; translate: 0 -50%;
+    padding: var(--s1) var(--s2); border-radius: var(--r-control);
+    background: var(--ink); color: var(--paper); font: var(--type-note); font-weight: 500;
+    white-space: nowrap; pointer-events: none; clip-path: inset(50%);
+  }
+  :is(.sidebar-toggle, [data-sidebar="collapsed"] .sidebar a):is(:hover, :focus-visible) .nav-label { clip-path: none; }
+}
 
 .page { --gutter: var(--s6); min-width: 0; padding: 0 var(--gutter) var(--s8); background: var(--paper); }
 .page-head {
@@ -174,19 +207,16 @@ html:has(.page-head .search) { scroll-padding-top: 8.5rem; }
    graphite, Processing orange and pulsing, Error red (N-248). */
 
 .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--graphite); }
-.dot-error, [data-status="Error"] .dot { background: var(--error); }
+[data-status="Error"] .dot { background: var(--error); }
 .dot-busy, [data-status="Processing"] .dot { background: var(--busy); animation: pulse 2.4s var(--ease) infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
 
-/* The queue views and the album page keep their data-state/data-status
-   words until rounds 20–21; they read as dot + word too. */
-.badge, .chip, .statuschip { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink); font: var(--type-note); }
-.badge::before, .statuschip::before { content: ""; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--graphite); }
-:is(.badge, .statuschip):is([data-status="Aligned"], [data-state="done"])::before { background: var(--ok); }
-:is(.badge, .statuschip):is([data-status="Processing"], [data-state="running"])::before { background: var(--busy); animation: pulse 2.4s var(--ease) infinite; }
-:is(.badge, .statuschip):is([data-status="Error"], [data-state="failed"])::before { background: var(--error); }
-.statuschip { margin-bottom: var(--s4); }
-.chip-ok { color: var(--ok); }
+/* Queue badges: dot and word too, until round 21. */
+.badge { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink); font: var(--type-note); }
+.badge::before { content: ""; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--graphite); }
+.badge[data-state="done"]::before { background: var(--ok); }
+.badge[data-state="running"]::before { background: var(--busy); animation: pulse 2.4s var(--ease) infinite; }
+.badge[data-state="failed"]::before { background: var(--error); }
 
 /* 6. Controls. At most one filled button per view: .btn-primary. */
 
@@ -202,12 +232,9 @@ html:has(.page-head .search) { scroll-padding-top: 8.5rem; }
 .btn:disabled { opacity: .5; cursor: default; filter: none; }
 .btn-primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn-primary:hover { filter: brightness(1.08); }
-.btn-danger, .btn-quiet-danger { color: var(--error); }
-.btn-quiet-danger { background: none; }
 .btn-sm { min-height: 1.75rem; padding: 2px var(--s3); font: var(--type-note); font-weight: 500; }
-.btn-lg { min-height: 2.5rem; padding-inline: var(--s5); }
 
-input, select, textarea {
+input, textarea {
   min-height: 2rem; max-width: 100%; padding: var(--s1) var(--s2);
   border: 1px solid var(--hairline); border-radius: var(--r-control);
   background: var(--paper); line-height: 1.2;
@@ -215,16 +242,11 @@ input, select, textarea {
 input::placeholder { color: var(--graphite); }
 input[type="number"] { text-align: right; }
 input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; accent-color: var(--accent); }
-input[type="file"] { padding: 3px; font: var(--type-note); }
-input[type="file"]::file-selector-button { margin-right: var(--s2); padding: 2px var(--s3); border: 0; border-radius: 6px; background: var(--fill); font: inherit; font-weight: 500; }
 
 .field { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
 .field > label, .field > span { color: var(--graphite); font: var(--type-note); }
-.field > input, .field > select { width: 100%; }
+.field > input { width: 100%; }
 .field-grow { flex: 1 1 16rem; }
-.field-toggle { display: flex; align-items: center; gap: var(--s2); align-self: end; min-height: 2rem; }
-.cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
-.cluster > select, .cluster > input { flex: 1 1 8rem; min-width: 0; }
 
 .help { max-width: 66ch; margin-top: var(--s2); color: var(--graphite); font: var(--type-note); }
 .page > .help { margin: 0 0 var(--s5); }
@@ -236,16 +258,12 @@ input[type="file"]::file-selector-button { margin-right: var(--s2); padding: 2px
   border-radius: var(--r-panel); background: color-mix(in srgb, var(--error) 9%, var(--paper));
 }
 .notice-title { color: var(--error); font-weight: 600; overflow-wrap: anywhere; }
-.notice-details { margin: 0; font: var(--type-note); font-family: var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.notice-hint { font: var(--type-note); }
 .notice-info { background: var(--canvas); }
 
 /* Sections of the views not yet redesigned: space and a hairline, no box. */
 .panel { margin: 0; padding: var(--s5) 0; border-top: 1px solid var(--hairline); }
 .panel > h2, .panel-head { margin-bottom: var(--s4); }
 .panel-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); }
-.fieldgroup { min-width: 0; border: 0; border-top: 1px solid var(--hairline); }
-.fieldgroup legend { padding-inline-end: var(--s2); font: var(--type-head); }
 .empty-row { padding: var(--s3) 0; color: var(--graphite); }
 
 /* 7. Library. */
@@ -289,7 +307,7 @@ input[type="file"]::file-selector-button { margin-right: var(--s2); padding: 2px
 }
 .art img { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; transition: filter var(--quick) var(--ease); }
 .tile-link:hover img { filter: brightness(1.06); }
-.art-none { background: var(--graphite); color: var(--paper); }
+.art-none, .cover-none { background: var(--graphite); color: var(--paper); }
 .initials { font: 600 30cqi/1 var(--family); letter-spacing: -.03em; }
 .art .dot { position: absolute; right: var(--s2); bottom: var(--s2); outline: 2px solid var(--paper); }
 
@@ -335,7 +353,7 @@ input[type="file"]::file-selector-button { margin-right: var(--s2); padding: 2px
 /* A long album reads in two columns; a short one stays one list. */
 .panel-tracks:has(li:nth-child(9)) { columns: 2 16rem; column-gap: var(--s6); }
 .panel-tracks li { display: flex; gap: var(--s3); padding: 5px 0; break-inside: avoid; border-top: 1px solid color-mix(in srgb, var(--cover-ink, var(--ink)) 16%, transparent); }
-.panel-tracks .disc { padding-top: var(--s3); border: 0; font: var(--type-caption); }
+.panel-tracks .disc { padding-top: var(--s3); border: 0; color: inherit; font: var(--type-caption); }
 .track-no { flex: none; min-width: 1.5rem; text-align: right; }
 .track-title { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 /* Panel text stays --cover-ink (4.5:1): a track's artist gets its own
@@ -354,53 +372,86 @@ input[type="file"]::file-selector-button { margin-right: var(--s2); padding: 2px
 .more { display: flex; justify-content: center; padding-top: var(--s7); }
 .more a { padding: var(--s2) var(--s4); font-weight: 500; }
 
-/* 8. Album (round 20 redesigns it): the read-only view and the editor. */
+/* 8. Album (N-256): fields read as text until used. */
 
-.readonly-body, .cover-body { display: flex; flex-wrap: wrap; gap: var(--s5); }
-.cover, .cover-placeholder { width: 15rem; height: 15rem; margin: 0; border-radius: var(--r-cover); object-fit: cover; }
-.cover { box-shadow: var(--shadow-cover); view-transition-name: album-cover; }
-.cover-placeholder { display: grid; place-items: center; background: var(--graphite); color: var(--paper); }
-.facts { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s4); margin: 0; align-content: start; }
-.facts dt { color: var(--graphite); }
-.facts dd { margin: 0; }
-.readonly-tracks { margin: 0; padding-left: 1.5rem; }
-.readonly-tracks li { padding: var(--s1) 0; }
-.rt-no, .rt-meta { margin-right: var(--s2); color: var(--graphite); }
-.rt-links { display: inline-flex; gap: var(--s3); font: var(--type-note); }
-.grid-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
-.field-wide { grid-column: span 3; }
-.field-span2 { grid-column: span 2; }
-.table-wrap { position: relative; overflow-x: auto; }
-table.tracks { width: 100%; min-width: 60rem; border-collapse: collapse; }
-table.tracks th { padding: var(--s2); border-bottom: 1px solid var(--hairline); color: var(--graphite); font: var(--type-note); text-align: left; }
-table.tracks td { padding: var(--s2); border-bottom: 1px solid var(--hairline); vertical-align: top; }
-table.tracks input:not([type="file"]) { width: 100%; }
-table.tracks .col-num input { width: 3.75rem; }
-.col-num { width: 4.75rem; }
-.col-title { min-width: 14rem; }
-.col-inherit { min-width: 11rem; }
-.col-lyrics { min-width: 15rem; }
-.col-inherit input { margin-bottom: var(--s1); }
-.col-lyrics .cluster, .lyrics-state { margin-bottom: var(--s1); }
-.col-files a { display: block; font: var(--type-note); }
-input[data-inherited="true"] { background: var(--canvas); }
-input[data-inherited="true"]::placeholder { color: var(--graphite); }
-#editor[data-trashed="false"] [data-action="restore"],
-#editor[data-trashed="true"] [data-action="trash"] { display: none; }
-.formbar {
-  position: sticky; bottom: 0; z-index: 3;
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s3);
-  margin-bottom: var(--s5); padding: var(--s3) 0; border-top: 1px solid var(--hairline); background: var(--paper);
+.band, .files li, .section-head { display: flex; align-items: center; justify-content: space-between; }
+.band { margin-top: var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-panel); background: var(--canvas); }
+.album-head { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: var(--s6); align-items: start; padding: var(--s5) 0 var(--s6); }
+.cover-box { display: grid; justify-items: start; gap: var(--s3); }
+.cover, .thumbs img { border-radius: var(--r-cover); box-shadow: var(--shadow-cover); object-fit: cover; }
+.cover { display: grid; place-items: center; width: 240px; height: 240px; view-transition-name: album-cover; }
+.cover-none { container-type: inline-size; }
+.is-drop .cover { outline: 3px solid var(--accent); outline-offset: 6px; }
+.album-fields { display: grid; gap: var(--s2); }
+.album :is(input:not([type="checkbox"]), textarea) { min-height: 0; margin-inline: -4px; padding: 1px 4px; border: 0; border-radius: 6px; background: none; field-sizing: content; appearance: textfield; }
+.album :is(input, textarea):is(:hover, :focus):not([readonly]) { background: var(--fill); }
+.album input::-webkit-inner-spin-button, #artist-name::-webkit-calendar-picker-indicator { display: none !important; }
+.album-title textarea { width: 100%; font: var(--type-large); letter-spacing: -.022em; resize: none; }
+#artist-name { min-width: 6ch; font: var(--type-title); font-weight: 500; }
+.artist, .facts, .extra-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+.check, .status, .extra-row label { display: flex; align-items: center; gap: var(--s2); }
+.facts input { min-width: 4ch; }
+.status:empty { display: none; }
+.link { padding: 0; border: 0; background: none; color: var(--accent); font: var(--type-note); font-weight: 500; cursor: pointer; }
+.danger, .menu > .danger { color: var(--error); }
+
+/* ⋯ from a gradient: no glyph, no image. */
+.dots { display: grid; place-items: center; width: 2rem; height: 2rem; border: 0; border-radius: var(--r-pill); background: none; color: var(--graphite); cursor: pointer; }
+.dots::before { content: ""; width: 16px; height: 4px; background: radial-gradient(circle, currentcolor 1.5px, transparent 2px) 0 0 / 6px 4px; }
+.dots:hover, .dots:has(+ :popover-open) { background: var(--fill); color: var(--ink); }
+.menu, .sheet { border: 1px solid var(--hairline); border-radius: var(--r-panel); background: var(--paper); color: var(--ink); }
+.menu { position-area: bottom span-left; position-try-fallbacks: flip-block; min-width: 13rem; margin: var(--s1) 0; padding: var(--s1); }
+.menu > *, .picks button, .thumbs button { display: flex; align-items: center; gap: var(--s2); width: 100%; min-height: 2rem; padding: var(--s1) var(--s3); border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; cursor: pointer; }
+.menu > :is(:hover, :focus-visible), :is(.picks, .thumbs) button:hover { background: var(--fill); text-decoration: none; }
+.menu input[type="number"] { width: 3.5rem; margin-left: auto; background: var(--fill); }
+.menu > hr { min-height: 0; margin: var(--s1) 0; padding: 0; border-top: 1px solid var(--hairline); }
+.status, .menu-note, .t-lyrics, .disc, #changes, .extra-row label, .notice summary { color: var(--graphite); font: var(--type-note); }
+
+.track-list, .files, .picks, .thumbs { margin: 0; padding: 0; list-style: none; }
+.section-head { padding: var(--s5) 0 var(--s3); }
+.track { display: grid; grid-template: "no title artist genre lyr dots" / 2rem minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1.4fr) 2.5rem 2rem; align-items: center; gap: var(--s3); }
+.t-no { grid-area: no; } .t-title { grid-area: title; } .t-artist { grid-area: artist; } .t-genre { grid-area: genre; } .t-lyrics { grid-area: lyr; } .track .dots { grid-area: dots; }
+.track, .files li { min-height: 2.75rem; }
+.track, .files li, .picks li + li { border-top: 1px solid var(--hairline); }
+.track > input { width: 100%; text-overflow: ellipsis; }
+.t-no { text-align: right; color: var(--graphite); }
+.t-lyrics, .disc { font: var(--type-caption); }
+.is-wrong { background: color-mix(in srgb, var(--error) 9%, var(--paper)); }
+.disc { padding: var(--s4) 0 var(--s2); }
+.file-name { font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
+.extra-row { padding-top: var(--s4); }
+.notice pre { margin: var(--s2) 0 0; font: var(--type-note); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notice .btn { justify-self: start; }
+
+.sheet { width: min(100% - 2rem, 32rem); padding: var(--s5); }
+.sheet::backdrop { background: none; }
+.sheet h2, #ask-text { margin-bottom: var(--s4); }
+#ask-input { width: 100%; }
+.sheet-actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s5); }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); gap: var(--s4); }
+.thumbs button { display: grid; padding: var(--s1); }
+.thumbs img { width: 100%; height: auto; aspect-ratio: 1; }
+.picks label { display: grid; grid-template-columns: auto 1fr 1fr; align-items: center; gap: var(--s3); padding: var(--s2) 0; }
+
+/* Shown at once: its error takes the focus. */
+.savebar { position: fixed; inset: auto 0 0 var(--sidebar); z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); padding: var(--s3) var(--s6); border-top: 1px solid var(--hairline); background: var(--paper); transform: translateY(100%); visibility: hidden; transition: transform var(--slow) var(--ease), visibility var(--slow), left var(--slow) var(--ease); }
+.savebar.is-on { transform: none; visibility: visible; transition-property: transform, left; }
+#changes { margin-right: auto; font: inherit; }
+.savebar .notice { flex-basis: 100%; margin: 0; }
+
+@media (max-width: 40rem) {
+  .album-head { grid-template-columns: minmax(0, 1fr) auto; gap: var(--s4); }
+  .cover-box { grid-column: 1 / -1; }
+  .cover { width: min(100%, 240px); height: auto; aspect-ratio: 1; }
+  .album-title textarea { font: 700 1.625rem/2rem var(--family); }
+  .track { grid-template: "no title title lyr dots" ". artist genre genre dots" / 1.5rem minmax(0, 1fr) minmax(0, 1fr) 3rem 2rem; gap: 0 var(--s2); padding-block: var(--s2); }
+  .t-artist, .t-genre { font: var(--type-note); }
 }
-.formbar-note { margin-right: auto; color: var(--graphite); font: var(--type-note); }
-.cover-controls { flex: 1 1 22rem; display: flex; flex-direction: column; gap: var(--s4); }
-.rows { margin: 0; padding: 0; list-style: none; }
-.rows li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--hairline); }
-.row-main { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: .8125rem; }
-.upload-row, .actions-bar, .actionrow, .toolbar-actions { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s3); }
-.upload-row { margin-top: var(--s4); }
 
 /* 9. Import and Activity (round 21 redesigns them). */
+
+.row-main { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: .8125rem; }
+.actionrow, .toolbar-actions { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s3); }
 
 .pathcrumb { font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
 .browser { max-height: 22rem; margin: 0 0 var(--s4); padding: 0; overflow-y: auto; list-style: none; }
@@ -431,10 +482,8 @@ input[data-inherited="true"]::placeholder { color: var(--graphite); }
 .retry-form { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s2); }
 .retry-form .field { flex: 1 1 15rem; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s4); }
-.joblist .empty-row .empty-hint { color: var(--graphite); font: var(--type-note); }
 
-/* 10. Motion: only in answer to the user. Page changes are native
-   cross-document view transitions; the clicked cover keeps its name. */
+/* 10. Motion answers the user; pages change by view transition. */
 
 @media (prefers-reduced-motion: no-preference) {
   @view-transition { navigation: auto; }
@@ -444,19 +493,23 @@ input[data-inherited="true"]::placeholder { color: var(--graphite); }
   *, *::before, *::after { animation: none !important; transition-duration: 0s !important; }
 }
 
-/* 11. Narrow screens: the sidebar becomes a row of the four views. */
+/* 11. Narrow screens: the sidebar becomes a row of the four views, each
+   icon over its label; Needs attention is its icon and count, when any. */
 
 @media (max-width: 52rem) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar {
-    position: static; height: auto; flex-direction: row; align-items: center; gap: var(--s1);
+    position: static; width: auto; height: auto; flex-direction: row; align-items: stretch; gap: var(--s1);
     padding: var(--s2) var(--s3); overflow-x: auto;
   }
-  .brand { display: none; }
-  .nav { display: flex; gap: 0; }
-  .nav a, .fix-filter { padding-inline: var(--s3); white-space: nowrap; }
-  .fix-filter { margin-left: auto; font-size: 0; gap: var(--s1); }
-  .fix-filter .count { font: var(--type-note); color: var(--ink); }
+  .sidebar-top { display: none; }
+  .nav { flex: 1; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--s1); }
+  .nav a { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 2px; padding: 6px var(--s1); font: var(--type-caption); }
+  .nav a[aria-current="page"] { font-weight: 650; }
+  #nav-active { position: absolute; left: calc(50% + 7px); top: 6px; outline: 2px solid var(--canvas); }
+  .fix-filter { grid-template-columns: auto auto; gap: var(--s1); padding-inline: var(--s2); }
+  .fix-filter .nav-label { position: absolute; clip-path: inset(50%); }
+  .fix-filter .count { color: var(--ink); }
   .fix-filter[data-count="0"] { display: none; }
   .page { --gutter: var(--s4); padding-bottom: var(--s7); }
   .page-head { padding: var(--s5) 0 var(--s4); }
@@ -466,15 +519,13 @@ input[data-inherited="true"]::placeholder { color: var(--graphite); }
   .panel-body { grid-template-columns: minmax(0, 1fr); gap: var(--s4); padding: var(--s5) var(--s4); }
   .panel-cover { width: min(100%, 15rem); }
   .panel-title { font: var(--type-title); }
-  .grid-meta { grid-template-columns: minmax(0, 1fr); }
-  .field-wide, .field-span2 { grid-column: auto; }
   .job { grid-template-columns: minmax(0, 1fr); }
-  .cover, .cover-placeholder { width: 100%; height: auto; aspect-ratio: 1; }
+  .savebar { left: 0; padding-inline: var(--s4); }
 }
 
 /* Progressive enhancement: continuous corners where supported. */
 @supports (corner-shape: squircle) {
   .art, .art img, .panel-cover, .cover { corner-shape: squircle; border-radius: calc(var(--r-cover) * 1.6); }
-  .btn, input, .nav a, .fix-filter { corner-shape: squircle; border-radius: calc(var(--r-control) * 1.6); }
+  .btn, input, .nav a, .fix-filter, .sidebar-toggle { corner-shape: squircle; border-radius: calc(var(--r-control) * 1.6); }
   .panel-body { corner-shape: squircle; border-radius: calc(var(--r-panel) * 1.6); }
 }

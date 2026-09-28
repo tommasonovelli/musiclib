@@ -73,7 +73,7 @@ func TestLibraryGridTiles(t *testing.T) {
 	running := e.seed("Dave Brubeck", "Time Out")
 	e.runRender(running)
 	_, _, body := pageRequest(t, e, "/", testHost)
-	if tile := tileOf(t, body, running); !strings.Contains(tile, `data-status="Processing"`) || !strings.Contains(tile, `class="dot"`) || !strings.Contains(tile, `<span class="tile-status">In aggiornamento</span>`) {
+	if tile := tileOf(t, body, running); !strings.Contains(tile, `data-status="Processing"`) || !strings.Contains(tile, `class="dot"`) || !strings.Contains(tile, `<span class="tile-status">Updating</span>`) {
 		t.Errorf("running tile: %s", tile)
 	}
 
@@ -83,20 +83,20 @@ func TestLibraryGridTiles(t *testing.T) {
 			t.Errorf("aligned tile lacks %s: %s", want, tile)
 		}
 	}
-	if strings.Contains(tile, `class="dot"`) || strings.Contains(tile, "tile-status") || strings.Contains(tile, "Aggiornato") {
+	if strings.Contains(tile, `class="dot"`) || strings.Contains(tile, "tile-status") || strings.Contains(tile, "Up to date") {
 		t.Errorf("aligned album shows a status: %s", tile)
 	}
 	tile = tileOf(t, body, failed)
-	if !strings.Contains(tile, `data-status="Error"`) || !strings.Contains(tile, `class="dot"`) || !strings.Contains(tile, `<span class="tile-status">Da sistemare</span>`) || !strings.Contains(tile, `<span class="tile-year">1961</span>`) {
+	if !strings.Contains(tile, `data-status="Error"`) || !strings.Contains(tile, `class="dot"`) || !strings.Contains(tile, `<span class="tile-status">Needs attention</span>`) || !strings.Contains(tile, `<span class="tile-year">1961</span>`) {
 		t.Errorf("failed tile: %s", tile)
 	}
 	tile = tileOf(t, body, queued)
 	if !strings.Contains(tile, `class="art art-none"`) || !strings.Contains(tile, `<span class="initials" aria-hidden="true">C</span>`) ||
-		strings.Contains(tile, "<img") || strings.Contains(tile, "tile-year") || !strings.Contains(tile, "In attesa") {
+		strings.Contains(tile, "<img") || strings.Contains(tile, "tile-year") || !strings.Contains(tile, "Waiting") {
 		t.Errorf("coverless queued tile: %s", tile)
 	}
 	if !strings.Contains(body, `data-count="1"`) {
-		t.Error("the Da sistemare count is not 1")
+		t.Error("the Needs attention count is not 1")
 	}
 }
 
@@ -120,7 +120,7 @@ func TestLibraryFixFilterAndCount(t *testing.T) {
 	}
 	_, _, body := pageRequest(t, e, "/?fix=true", testHost)
 	if !strings.Contains(body, "Broken album") || !strings.Contains(body, "Broken trashed album") || strings.Contains(body, "Fine album") ||
-		!strings.Contains(body, `<h1 class="page-title">Da sistemare</h1>`) || !strings.Contains(body, `href="/?fix=true" data-count="2" aria-current="page"`) {
+		!strings.Contains(body, `<h1 class="page-title">Needs attention</h1>`) || !strings.Contains(body, `href="/?fix=true" data-count="2" aria-current="page"`) {
 		t.Fatalf("fix filter: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/?fix=true&q=trashed", testHost)
@@ -136,7 +136,7 @@ func TestLibraryFixFilterAndCount(t *testing.T) {
 	e.align(broken)
 	e.exec(`DELETE FROM jobs WHERE album_id = $1`, trashed)
 	_, _, body = pageRequest(t, e, "/?fix=true", testHost)
-	if !strings.Contains(body, "Nessun album da sistemare.") || !strings.Contains(body, `data-count="0"`) {
+	if !strings.Contains(body, "No albums need attention.") || !strings.Contains(body, `data-count="0"`) {
 		t.Fatalf("empty fix filter: %s", body)
 	}
 	_ = fine
@@ -145,27 +145,27 @@ func TestLibraryFixFilterAndCount(t *testing.T) {
 func TestLibraryEmptyStatesAndTrash(t *testing.T) {
 	e := pageEnv(t)
 	_, _, body := pageRequest(t, e, "/", testHost)
-	if !strings.Contains(body, "La tua libreria è vuota.") || !strings.Contains(body, "gli originali restano come sono.") ||
-		!strings.Contains(body, `<a class="btn btn-primary" href="/import">Importa musica</a>`) || strings.Contains(body, `id="grid"`) {
+	if !strings.Contains(body, "Your library is empty.") || !strings.Contains(body, "Import your music folder. The originals stay as they are.") ||
+		!strings.Contains(body, `<a class="btn btn-primary" href="/import">Import music</a>`) || strings.Contains(body, `id="grid"`) {
 		t.Fatalf("empty library: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/?trash=true", testHost)
-	if !strings.Contains(body, "Il cestino è vuoto.") || !strings.Contains(body, `<h1 class="page-title">Cestino</h1>`) || strings.Contains(body, "Importa musica") {
+	if !strings.Contains(body, "The trash is empty.") || !strings.Contains(body, `<h1 class="page-title">Trash</h1>`) || strings.Contains(body, "Import music") {
 		t.Fatalf("empty trash: %s", body)
 	}
 	id := e.seed("Miles Davis", "Kind of Blue")
 	_, _, body = pageRequest(t, e, "/?q=%3Cscript%3E%22%26", testHost)
-	if !strings.Contains(body, "Nessun album per “&lt;script&gt;&#34;&amp;”.") || strings.Contains(body, `<script>"&`) {
+	if !strings.Contains(body, "No albums for “&lt;script&gt;&#34;&amp;”.") || strings.Contains(body, `<script>"&`) {
 		t.Fatalf("empty search: %s", body)
 	}
 	_, etag := e.album(id)
 	e.must(req{method: "DELETE", path: "/api/albums/" + id.String(), ifMatch: etag}, 200)
 	_, _, body = pageRequest(t, e, "/?trash=true", testHost)
-	if !strings.Contains(body, `data-album="`+id.String()+`"`) || !strings.Contains(body, `<a href="/?trash=true" aria-current="page">Cestino</a>`) {
+	if !strings.Contains(body, `data-album="`+id.String()+`"`) || !regexp.MustCompile(`<a href="/\?trash=true" aria-current="page"><svg [^>]*><use href="#i-trash"/></svg><span class="nav-label">Trash</span></a>`).MatchString(body) {
 		t.Fatalf("trash grid: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/", testHost)
-	if !strings.Contains(body, "La tua libreria è vuota.") {
+	if !strings.Contains(body, "Your library is empty.") {
 		t.Fatalf("library with only trash: %s", body)
 	}
 }
@@ -188,13 +188,13 @@ func TestLibraryArtistHits(t *testing.T) {
 		t.Fatalf("hits lost the trash view: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/?artist="+artist.String(), testHost)
-	if !strings.Contains(body, `<h1 class="page-title">Miles Davis</h1>`) || !strings.Contains(body, "Album di Miles Davis.") ||
-		!strings.Contains(body, `<a href="/">Tutti gli artisti</a>`) || strings.Contains(body, "Milestones") || strings.Contains(body, "artist-hits") ||
+	if !strings.Contains(body, `<h1 class="page-title">Miles Davis</h1>`) || !strings.Contains(body, "Albums by Miles Davis.") ||
+		!strings.Contains(body, `<a href="/">All artists</a>`) || strings.Contains(body, "Milestones") || strings.Contains(body, "artist-hits") ||
 		!strings.Contains(body, `<input type="hidden" name="artist" value="`+artist.String()+`">`) {
 		t.Fatalf("artist filter: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/?artist="+uuid.New().String(), testHost)
-	if !strings.Contains(body, "Nessun album di questo artista.") || !strings.Contains(body, "Artista sconosciuto.") {
+	if !strings.Contains(body, "No albums by this artist.") || !strings.Contains(body, "Unknown artist.") {
 		t.Fatalf("unknown artist: %s", body)
 	}
 }
@@ -207,6 +207,7 @@ func TestStaticAssets(t *testing.T) {
 		{"/static/app.css", "text/css; charset=utf-8", "no-store", "app.css"},
 		{"/static/library.js", "text/javascript; charset=utf-8", "no-store", "library.js"},
 		{"/static/queue.js", "text/javascript; charset=utf-8", "no-store", "queue.js"},
+		{"/static/sidebar.js", "text/javascript; charset=utf-8", "no-store", "sidebar.js"},
 		{"/static/" + fontLatin, "font/woff2", "public, max-age=31536000, immutable", fontLatin},
 		{"/static/" + fontLatinExt, "font/woff2", "public, max-age=31536000, immutable", fontLatinExt},
 		{"/static/OFL.txt", "text/plain; charset=utf-8", "no-store", "OFL.txt"},
@@ -243,7 +244,7 @@ func TestInitials(t *testing.T) {
 
 func TestStatusWords(t *testing.T) {
 	for status, want := range map[string]string{
-		"Aligned": "", "Archived": "", "Queued": "In attesa", "Processing": "In aggiornamento", "Error": "Da sistemare",
+		"Aligned": "", "Archived": "", "Queued": "Waiting", "Processing": "Updating", "Error": "Needs attention",
 	} {
 		if got := statusWord(status); got != want {
 			t.Errorf("statusWord(%s) = %q", status, got)

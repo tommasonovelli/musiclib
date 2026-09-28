@@ -1,5 +1,10 @@
 // Queue views transport JSON; only the server validates paths and overrides.
 const errorBox = document.querySelector('#error');
+// Plain words for the API's states and kinds (N-271); data-state keeps the
+// API's value for CSS and tests.
+const words = { pending: 'Waiting', running: 'In progress', failed: 'Needs attention', done: 'Imported', skipped: 'Already there', scanning: 'Looking for albums', importing: 'Importing', completed: 'Finished', scan: 'Album search', import: 'Import', render: 'Library update', file: 'File', symlink: 'Link, not followed', special: 'Special file, skipped', invalid_name: 'Unreadable name, skipped' };
+const word = value => words[value] || value;
+const offline = 'The library isn’t responding. Try again in a moment.';
 function text(parent, tag, value) {
   const node = document.createElement(tag);
   node.textContent = value;
@@ -8,7 +13,7 @@ function text(parent, tag, value) {
 }
 function error(value, background = false) {
   errorBox.replaceChildren();
-  text(errorBox, 'strong', `${value.status ? value.status + ' ' : ''}${value.code || 'network_error'}: ${value.message || 'Cannot reach the server'}`).className = 'notice-title';
+  text(errorBox, 'strong', `${value.status ? value.status + ' ' : ''}${value.code || 'network_error'}: ${value.message || offline}`).className = 'notice-title';
   errorBox.hidden = false;
   if (!background) errorBox.focus();
 }
@@ -21,10 +26,10 @@ async function request(url, method = 'GET', payload, background = false) {
     if (!response.ok) { error({ ...result, status: response.status }, background); return null; }
     errorBox.hidden = true;
     return result;
-  } catch { error({ code: 'network_error', message: 'Cannot reach the server' }, background); return null; }
+  } catch { error({ code: 'network_error', message: offline }, background); return null; }
 }
 function badge(parent, state) {
-  const node = text(parent, 'span', state);
+  const node = text(parent, 'span', word(state));
   node.className = 'badge';
   node.dataset.state = state;
   return node;
@@ -45,8 +50,8 @@ function warnings(parent, values) {
   parent.hidden = !parent.childElementCount;
 }
 function jobLinks(parent, job) {
-  if (job.batch_id) link(parent, `/import?batch=${encodeURIComponent(job.batch_id)}`, 'Batch report');
-  if (job.result_album_id || job.album_id) link(parent, `/albums/${encodeURIComponent(job.result_album_id || job.album_id)}`, 'Album');
+  if (job.batch_id) link(parent, `/import?batch=${encodeURIComponent(job.batch_id)}`, 'Import results');
+  if (job.result_album_id || job.album_id) link(parent, `/albums/${encodeURIComponent(job.result_album_id || job.album_id)}`, 'Open album');
 }
 function retry(parent, job, refresh, overrides = false) {
   if (job.state !== 'failed') return;
@@ -56,7 +61,7 @@ function retry(parent, job, refresh, overrides = false) {
     for (const field of ['artist', 'title']) {
       const label = text(form, 'label', '');
       label.className = 'field';
-      text(label, 'span', `${field === 'artist' ? 'Album artist' : 'Album title'} (blank clears)`);
+      text(label, 'span', `Use this ${field} (empty = use the tags)`);
       const input = text(label, 'input', '');
       input.name = field;
       input.value = job.overrides?.[field] || '';
@@ -91,7 +96,7 @@ if (source) {
     const data = await request(`/api/import-source?path=${encodeURIComponent(path)}`);
     if (!data) return;
     input.value = data.path;
-    document.querySelector('#source-path').textContent = `/import${data.path ? '/' + data.path : ''}`;
+    document.querySelector('#source-path').textContent = `Music folder${data.path ? '/' + data.path : ''}`;
     entries.replaceChildren();
     if (data.path) {
       const up = data.path.split('/').slice(0, -1).join('/');
@@ -99,7 +104,7 @@ if (source) {
       item.className = 'browser-entry entry-up';
       const anchor = link(item, '#', '..');
       anchor.className = 'entry-link';
-      anchor.setAttribute('aria-label', 'Parent directory');
+      anchor.setAttribute('aria-label', 'Parent folder');
       anchor.addEventListener('click', event => { event.preventDefault(); browse(up); });
     }
     for (const entry of data.entries) {
@@ -113,11 +118,12 @@ if (source) {
         });
       } else {
         li.classList.add('entry-inert');
+        li.dataset.type = entry.type;
         text(li, 'span', entry.name).className = 'entry-name';
-        text(li, 'span', `${entry.type}; not navigable`).className = 'entry-kind';
+        text(li, 'span', word(entry.type)).className = 'entry-kind';
       }
     }
-    if (!entries.childElementCount) text(entries, 'li', 'This directory is empty.').className = 'empty-row';
+    if (!entries.childElementCount) text(entries, 'li', 'This folder is empty.').className = 'empty-row';
   }
   async function loadReport(id, background = false) {
     const generation = reportGeneration;
@@ -140,13 +146,13 @@ if (source) {
       drafts.set(li.dataset.jobId, values);
     }
     source.hidden = true; report.hidden = false;
-    document.querySelector('#batch-state').textContent = `${data.path || '/import'} — ${data.state} — created ${data.created_at}`;
-    document.querySelector('#scan').textContent = `${data.scan.state}${data.scan.error_code ? ': ' + data.scan.error_code + ' — ' + data.scan.error_message : ''}`;
+    document.querySelector('#batch-state').textContent = `${data.path || 'Music folder'}: ${word(data.state)}, started ${data.created_at}`;
+    document.querySelector('#scan').textContent = `${data.scan.state === 'done' ? 'Finished' : word(data.scan.state)}${data.scan.error_code ? ': ' + data.scan.error_code + ' — ' + data.scan.error_message : ''}`;
     const scanWarnings = document.querySelector('#scan-warnings');
     warnings(scanWarnings, data.scan.warnings);
     document.querySelector('#warnings-section').hidden = scanWarnings.hidden;
     const list = document.querySelector('#candidates'); list.replaceChildren();
-    if (!data.candidates.length) text(list, 'li', data.state === 'completed' ? 'No valid candidate. See scan error and warnings above.' : 'Scanning for candidates…').className = 'empty-row';
+    if (!data.candidates.length) text(list, 'li', data.state === 'completed' ? 'No albums found. The album search above says why.' : 'Looking for albums…').className = 'empty-row';
     for (const job of data.candidates) {
       const li = text(list, 'li', '');
       li.className = 'candidate';
@@ -212,28 +218,24 @@ if (activity) {
       const head = text(li, 'div', '');
       head.className = 'row-head';
       badge(head, job.state);
-      text(head, 'span', `${job.kind}${job.source_rel ? ' — ' + job.source_rel : ''}`).className = 'row-main';
-      text(head, 'span', `queued ${job.queued_at}, updated ${job.updated_at}`).className = 'row-times';
+      text(head, 'span', `${word(job.kind)}${job.source_rel ? ' — ' + job.source_rel : ''}`).className = 'row-main';
+      text(head, 'span', `Added ${job.queued_at}, updated ${job.updated_at}`).className = 'row-times';
       if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`).className = 'row-error';
       const actions = text(li, 'div', '');
       actions.className = 'row-actions';
       jobLinks(actions, job);
       retry(actions, job, refresh);
     }
-    if (!all.length) {
-      const li = text(activity, 'li', 'No pending, running or failed jobs.');
-      li.className = 'empty-row';
-      text(li, 'p', 'Imports and renders appear here while they are pending, running or failed.').className = 'empty-hint';
-    }
+    if (!all.length) text(activity, 'li', 'Your library is up to date.').className = 'empty-row';
     active = all.some(job => job.state === 'pending' || job.state === 'running');
     document.querySelector('#nav-active').hidden = !active;
-    document.querySelector('#activity-state').textContent = `${all.length} jobs${active ? ' — work in progress' : ' — idle'}`;
+    document.querySelector('#activity-state').textContent = active ? 'Updating your library.' : 'Nothing in progress.';
   }
   document.querySelector('#retry-failed').addEventListener('click', async () => {
     if (await request('/api/jobs/retry-failed', 'POST')) await refresh();
   });
   document.querySelector('#render-all').addEventListener('click', async () => {
-    if (!confirm('Queue rendering of every active album and unfinished trash removals? This may take time and disk space.')) return;
+    if (!confirm('Rebuild the library folder? Every album is written again, which takes time and disk space.')) return;
     if (await request('/api/render-all', 'POST')) await refresh();
   });
   refresh();

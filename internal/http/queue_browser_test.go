@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,8 +43,9 @@ func TestBrowserImportReportAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	browserWait(t, tab, `document.querySelector('#source-entries')?.textContent.includes('Album <script>')`)
-	if got := browserEval(t, tab, `String([...document.querySelectorAll('#source-entries li')].filter(li=>/symlink|special|invalid_name/.test(li.textContent)).length===3 && [...document.querySelectorAll('#source-entries li')].filter(li=>/symlink|special|invalid_name/.test(li.textContent)).every(li=>!li.querySelector('a')))`); got != "true" {
-		t.Fatal("unsafe source entry navigable")
+	// The unsafe entries are words, never links (N-271: their type is a data attribute).
+	if got := browserEval(t, tab, `JSON.stringify([...document.querySelectorAll('#source-entries li[data-type]')].map(li=>li.dataset.type+':'+(li.querySelector('a')!==null)+':'+li.querySelector('.entry-kind').textContent).sort())`); got != `["invalid_name:false:Unreadable name, skipped","special:false:Special file, skipped","symlink:false:Link, not followed"]` {
+		t.Fatal("unsafe source entry navigable: " + got)
 	}
 	if got := browserEval(t, tab, `String(document.querySelector('#source-entries script') === null)`); got != "true" {
 		t.Fatal("unescaped source")
@@ -76,8 +78,8 @@ func TestBrowserImportReportAndRetry(t *testing.T) {
 	if err := im.ExecuteScan(t.Context(), claim); err != nil {
 		t.Fatal(err)
 	}
-	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('completed')`)
-	if got := browserEval(t, tab, `document.querySelector('#candidates').textContent`); !strings.Contains(got, "No valid candidate") {
+	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('Finished')`)
+	if got := browserEval(t, tab, `document.querySelector('#candidates').textContent`); !strings.Contains(got, "No albums found") {
 		t.Fatal(got)
 	}
 	if got := browserEval(t, tab, `String(document.querySelector('#report script') === null && document.querySelector('#scan-warnings').textContent.includes('<script>'))`); got != "true" {
@@ -104,7 +106,7 @@ func TestBrowserImportDraftSurvivesPolling(t *testing.T) {
 	}
 	artist := `#candidates input[name=artist]`
 	title := `#candidates input[name=title]`
-	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('importing') && document.querySelector('#candidates form') !== null`)
+	browserWait(t, tab, `document.querySelector('#batch-state')?.textContent.includes('Importing') && document.querySelector('#candidates form') !== null`)
 	if err := chromedp.Run(tab, chromedp.SendKeys(artist, "A careful override"), chromedp.SendKeys(title, "Another careful title")); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +230,7 @@ func TestBrowserActivityActionsAndIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	browserWait(t, tab, `document.querySelector('#jobs')?.textContent.includes('mixed_album')`)
-	if got := browserEval(t, tab, `String([...document.querySelectorAll('#jobs li')].filter(li=>/pending|running/.test(li.firstChild?.textContent)).every(li=>!li.querySelector('button')))`); got != "true" {
+	if got := browserEval(t, tab, `String([...document.querySelectorAll('#jobs li')].filter(li=>/pending|running/.test(li.querySelector('.badge')?.dataset.state)).every(li=>!li.querySelector('button')) && [...document.querySelectorAll('#jobs .badge')].filter(b=>/pending|running/.test(b.dataset.state)).length===`+strconv.Itoa(e.count(`SELECT count(*) FROM jobs WHERE state IN ('pending', 'running')`))+`)`); got != "true" {
 		t.Fatal("nonfailed job has retry")
 	}
 	browserEval(t, tab, `document.querySelector('#jobs button').click(); ''`)
@@ -256,11 +258,11 @@ func TestBrowserActivityActionsAndIdle(t *testing.T) {
 		e.count(`SELECT count(*) FROM jobs WHERE kind='render' AND album_id=$1`, runningAlbum) != 1 {
 		t.Fatal("retry-failed changed or duplicated running job")
 	}
-	if got := browserEval(t, tab, `String([...document.querySelectorAll('#jobs li')].filter(li=>li.querySelector('a[href="/albums/`+runningAlbum.String()+`"]')).length===1 && [...document.querySelectorAll('#jobs li')].filter(li=>li.querySelector('a[href="/albums/`+runningAlbum.String()+`"]')).every(li=>li.firstChild.textContent.includes('running')&&!li.querySelector('button')))`); got != "true" {
+	if got := browserEval(t, tab, `String([...document.querySelectorAll('#jobs li')].filter(li=>li.querySelector('a[href="/albums/`+runningAlbum.String()+`"]')).length===1 && [...document.querySelectorAll('#jobs li')].filter(li=>li.querySelector('a[href="/albums/`+runningAlbum.String()+`"]')).every(li=>li.querySelector('.badge').dataset.state==='running'&&li.querySelector('.badge').textContent==='In progress'&&!li.querySelector('button')))`); got != "true" {
 		t.Fatal("running job row gained retry or changed state: " + got)
 	}
 	e.exec(`DELETE FROM jobs`)
-	browserWait(t, tab, `document.querySelector('#activity-state')?.textContent.includes('idle')`)
+	browserWait(t, tab, `document.querySelector('#activity-state')?.textContent === 'Nothing in progress.'`)
 	browserEval(t, tab, `window.jobFetches=0;const prior=window.fetch;window.fetch=(...args)=>{if(String(args[0]).startsWith('/api/jobs?'))window.jobFetches++;return prior(...args)};window.confirm=()=>false;document.querySelector('#render-all').click();''`)
 	time.Sleep(4300 * time.Millisecond)
 	if got := browserEval(t, tab, `String(window.jobFetches)`); got != "0" {
@@ -270,5 +272,5 @@ func TestBrowserActivityActionsAndIdle(t *testing.T) {
 		t.Fatal("cancelled render-all enqueued")
 	}
 	browserEval(t, tab, `window.confirm=()=>true;document.querySelector('#render-all').click();''`)
-	browserWait(t, tab, `document.querySelector('#activity-state')?.textContent.includes('work in progress')`)
+	browserWait(t, tab, `document.querySelector('#activity-state')?.textContent === 'Updating your library.'`)
 }

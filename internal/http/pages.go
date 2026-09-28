@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"musiclib/internal/catalog"
+	"musiclib/internal/media"
 	"musiclib/web"
 )
 
@@ -21,6 +22,7 @@ var staticAssets = map[string]string{
 	"app.js":     "text/javascript; charset=utf-8",
 	"queue.js":   "text/javascript; charset=utf-8",
 	"library.js": "text/javascript; charset=utf-8",
+	"sidebar.js": "text/javascript; charset=utf-8",
 	"OFL.txt":    "text/plain; charset=utf-8",
 	fontLatin:    "font/woff2",
 	fontLatinExt: "font/woff2",
@@ -70,9 +72,9 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/":
 		a.libraryPage(w, r, b.Catalog)
 	case r.URL.Path == "/import":
-		a.renderPage(w, r, b.Catalog, "import.html", pageData{Title: "Importa", Nav: "import", Queue: true})
+		a.renderPage(w, r, b.Catalog, "import.html", pageData{Title: "Import", Nav: "import", Queue: true})
 	case r.URL.Path == "/activity":
-		a.renderPage(w, r, b.Catalog, "activity.html", pageData{Title: "Attività", Nav: "activity", Queue: true})
+		a.renderPage(w, r, b.Catalog, "activity.html", pageData{Title: "Activity", Nav: "activity", Queue: true})
 	case strings.HasPrefix(r.URL.Path, "/albums/"):
 		id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/albums/"))
 		if err != nil || id == uuid.Nil || id.String() != strings.TrimPrefix(r.URL.Path, "/albums/") {
@@ -111,26 +113,85 @@ func (a *API) staticAsset(w http.ResponseWriter, name string) {
 type pageData struct {
 	Title string
 	// Nav is the sidebar entry of the page: library, import, activity,
-	// trash or fix (the "Da sistemare" filter).
+	// trash or fix (the "Needs attention" filter).
 	Nav string
 	// FixCount is the number of albums to fix, on every page (N-245).
 	FixCount int64
-	// Back shows the link back to the library above the title.
-	Back, Pending, Queue bool
-	Status               string
-	Album                albumJSON
-	Artists              []pageArtist
-	ETag                 string
-	// The album editor's attachment choices.
-	ImageAttachments, LyricsAttachments []attachmentJSON
-	Library                             *libraryData
+	// Back shows the link back above the title: to the Trash when Nav is
+	// "trash" (a trashed album), to the Library otherwise (N-281).
+	Back, Queue bool
+	Library     *libraryData
+	// Editor is the album page; it draws its own head (the title is a
+	// field), so the layout's page head is left out.
+	Editor *editorData
 }
 
 type pageArtist struct {
 	ID, Name string
 	// URL is the Library filtered to the artist (search hits only).
-	URL      string
-	Selected bool
+	URL string
+	// ETag is the artist's, for the album page's «Rename artist».
+	ETag string
+}
+
+// editorData is the album page (round 20, NOTES.md N-256): the album, its
+// §10.3 status with the Library's word, its tracks by disc, the
+// attachments the cover and the lyrics can be chosen from, the cover limit
+// in plain words and every artist of the catalog.
+type editorData struct {
+	Album albumJSON
+	ETag  string
+	// Genre is the album's genre, "" without one: the placeholder of the
+	// tracks that inherit it.
+	Genre string
+	// Status is the §10.3 status (a CSS and test contract), StatusWord its
+	// word (statusWord), empty for Aligned and Archived
+	// (N-248). Pending is true while a render job is pending or running:
+	// the page polls.
+	Status, StatusWord string
+	Pending            bool
+	// Initials stand in for a missing cover, as in the Library.
+	Initials string
+	// Discs are the tracks by disc, in the album's order. MultiDisc shows
+	// the disc headings: only when there is more than one disc.
+	Discs     []pageDisc
+	MultiDisc bool
+	// ImageAttachments are the attachments the cover can be chosen from
+	// (coverCandidate); LyricsAttachments the .lrc ones.
+	ImageAttachments, LyricsAttachments []attachmentJSON
+	// CoverMB is the largest cover the album takes, in whole megabytes.
+	CoverMB int64
+	// ArtistAlbums is how many albums, trashed ones included, a rename of
+	// the album's artist changes (§4.3): the words of its confirmation.
+	ArtistAlbums int
+	// Artists are every artist of the catalog, the choices of the artist
+	// field (the list of GET /api/artists, N-146).
+	Artists []pageArtist
+}
+
+type pageDisc struct {
+	No     int32
+	Tracks []pageTrack
+}
+
+// pageTrack is a track row. Artist and Genre are the track's own values,
+// "" when it inherits the album's (§4.1); GenreNone is the explicit «no
+// genre» (genre "" in the API), whose field is empty too.
+type pageTrack struct {
+	ID, Title, Artist, Genre string
+	Disc, No                 int32
+	GenreNone, Lyrics        bool
+}
+
+func trackRow(t trackJSON) pageTrack {
+	p := pageTrack{ID: t.ID, Title: t.Title, Disc: t.Disc, No: t.No, Lyrics: t.LyricsHash != nil}
+	if t.Artist != nil {
+		p.Artist = *t.Artist
+	}
+	if t.Genre != nil {
+		p.Genre, p.GenreNone = *t.Genre, *t.Genre == ""
+	}
+	return p
 }
 
 // libraryData is the Library view: its filters, the artists matching the
@@ -147,7 +208,7 @@ type libraryData struct {
 }
 
 // pageAlbum is one cover of the grid. Status is the §10.3 status (a test
-// and CSS contract); StatusWord is its Italian word, empty when the status
+// and CSS contract); StatusWord is its English word, empty when the status
 // needs no attention (Aligned, and Archived in the trash).
 type pageAlbum struct {
 	ID, Title, ArtistName, Status, StatusWord, Initials string
@@ -207,12 +268,12 @@ func (a *API) libraryPage(w http.ResponseWriter, r *http.Request, c *catalog.Ser
 	}
 	lib := &libraryData{Query: f.Query, Trash: f.Trashed, Fix: f.Failed}
 	v := libraryValues(f)
-	d := pageData{Title: "Libreria", Nav: "library", Library: lib}
+	d := pageData{Title: "Library", Nav: "library", Library: lib}
 	switch {
 	case f.Trashed:
-		d.Title, d.Nav = "Cestino", "trash"
+		d.Title, d.Nav = "Trash", "trash"
 	case f.Failed:
-		d.Title, d.Nav = "Da sistemare", "fix"
+		d.Title, d.Nav = "Needs attention", "fix"
 	}
 	if f.Query != "" || f.ArtistID != uuid.Nil {
 		artists, err := c.ListArtists(r.Context())
@@ -306,17 +367,19 @@ func emptyState(f catalog.AlbumFilter) string {
 	return "library"
 }
 
-// statusWord is the Italian word of a §10.3 status in the Library, from
-// the glossary of the UI principles; "" when the status needs no mention:
-// Aligned is the norm and Archived is the norm of the trash (N-248).
+// statusWord is the word of a §10.3 status on every page, the Library's
+// tiles and panel and the album page alike (NOTES.md N-256, N-270): the
+// glossary of the UI principles in English. It is "" when the status needs
+// no mention: Aligned («Up to date») is the norm, and Archived («In the
+// trash») is the norm of the trash (N-248), so neither word is shown.
 func statusWord(status string) string {
 	switch status {
 	case "Error":
-		return "Da sistemare"
+		return "Needs attention"
 	case "Processing":
-		return "In aggiornamento"
+		return "Updating"
 	case "Queued":
-		return "In attesa"
+		return "Waiting"
 	}
 	return ""
 }
@@ -357,28 +420,99 @@ func (a *API) albumPage(w http.ResponseWriter, r *http.Request, c *catalog.Servi
 		a.fail(w, r, err)
 		return
 	}
-	d := pageData{Title: v.Title, Nav: "library", Back: true, Album: albumRep(v), ETag: ETag(KindAlbum, v.ID, v.Revision)}
-	if v.Trashed {
-		d.Nav = "trash"
+	ed := &editorData{Album: albumRep(v), ETag: ETag(KindAlbum, v.ID, v.Revision), Initials: initials(v.Title),
+		CoverMB: coverMB(audioFormats(v))}
+	if v.Genre != nil {
+		ed.Genre = *v.Genre
 	}
 	for _, ar := range artists {
-		d.Artists = append(d.Artists, pageArtist{ID: ar.ID.String(), Name: ar.Name, Selected: ar.ID == v.ArtistID})
+		ed.Artists = append(ed.Artists, pageArtist{ID: ar.ID.String(), Name: ar.Name, ETag: ETag(KindArtist, ar.ID, ar.Revision)})
+	}
+	if ed.ArtistAlbums, err = artistAlbums(r, c, v.ArtistID); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	d := pageData{Title: v.Title, Nav: "library", Back: true, Editor: ed}
+	if v.Trashed {
+		d.Nav = "trash"
 	}
 	var state *string
 	if st.Job != nil {
 		state = &st.Job.State
 	}
-	d.Status = statusBadge(st.Trashed, st.Revision, st.PublishedRevision, st.PublishedRenderer, st.PublishedPath, state, a.renderVersion)
-	d.Pending = state != nil && (*state == "pending" || *state == "running")
-	for _, at := range d.Album.Attachments {
-		// An uploaded attachment may have no format hint. The API inspects
-		// the bytes and validates image dimensions on selection.
-		d.ImageAttachments = append(d.ImageAttachments, at)
+	ed.Status = statusBadge(st.Trashed, st.Revision, st.PublishedRevision, st.PublishedRenderer, st.PublishedPath, state, a.renderVersion)
+	ed.StatusWord = statusWord(ed.Status)
+	ed.Pending = state != nil && (*state == "pending" || *state == "running")
+	for _, t := range ed.Album.Tracks {
+		if n := len(ed.Discs); n == 0 || ed.Discs[n-1].No != t.Disc {
+			ed.Discs = append(ed.Discs, pageDisc{No: t.Disc})
+		}
+		ed.Discs[len(ed.Discs)-1].Tracks = append(ed.Discs[len(ed.Discs)-1].Tracks, trackRow(t))
+	}
+	ed.MultiDisc = len(ed.Discs) > 1
+	for _, at := range ed.Album.Attachments {
+		if coverCandidate(at) {
+			ed.ImageAttachments = append(ed.ImageAttachments, at)
+		}
 		if strings.HasSuffix(strings.ToLower(at.RelPath), ".lrc") {
-			d.LyricsAttachments = append(d.LyricsAttachments, at)
+			ed.LyricsAttachments = append(ed.LyricsAttachments, at)
 		}
 	}
 	a.renderPage(w, r, c, "album.html", d)
+}
+
+// artistAlbums counts the albums of an artist, active and trashed, page
+// by page.
+func artistAlbums(r *http.Request, c *catalog.Service, id uuid.UUID) (int, error) {
+	n := 0
+	for _, trashed := range []bool{false, true} {
+		f := catalog.AlbumFilter{ArtistID: id, Trashed: trashed, Limit: catalog.MaxPageSize}
+		for {
+			page, err := c.ListAlbums(r.Context(), f)
+			if err != nil {
+				return 0, err
+			}
+			n += len(page.Albums)
+			if page.Next == nil {
+				break
+			}
+			f.After = page.Next
+		}
+	}
+	return n, nil
+}
+
+// coverCandidate reports whether the cover picker offers an attachment
+// (NOTES.md N-257, superseding N-209's "every attachment"): only what PUT
+// /cover can accept, a JPEG or a PNG (§8.5). An attachment whose blob has a
+// known format is a candidate exactly when it is one of the two. An
+// uploaded attachment has no format hint (N-118, N-209): it is a candidate
+// when its name says JPEG or PNG. PUT /cover still validates the bytes;
+// the picker only leaves out what cannot be a cover.
+func coverCandidate(at attachmentJSON) bool {
+	if f := at.Blob.Format; f != nil {
+		return *f == catalog.FormatJPEG || *f == catalog.FormatPNG
+	}
+	switch strings.ToLower(path.Ext(at.RelPath)) {
+	case ".jpg", ".jpeg", ".png":
+		return true
+	}
+	return false
+}
+
+// coverMB is the largest cover an album with tracks of these audio formats
+// takes (§8.5 and N-091, the rule of PUT /cover), in whole decimal
+// megabytes rounded down, so that the words never promise more than the
+// server accepts: 16 with a FLAC track (16,777,173 bytes for a JPEG, one
+// more for a PNG), 20 otherwise (20 MiB = 20,971,520 bytes).
+func coverMB(formats []string) int64 {
+	limit := int64(MaxCoverBytes)
+	for _, f := range formats {
+		if n, ok := media.MaxEmbeddedCover(f, media.FormatJPEG); ok && n < limit {
+			limit = n
+		}
+	}
+	return limit / 1_000_000
 }
 
 // statusBadge implements DESIGN.md §10.3. A stale active album with no job

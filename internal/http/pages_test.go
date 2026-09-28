@@ -57,7 +57,7 @@ func TestPagesCatalogEscapingAndBoundary(t *testing.T) {
 		if strings.Contains(body, "<script>alert(1)</script>") || strings.Contains(body, `<script>" &`) {
 			t.Fatalf("unescaped title in %s", path)
 		}
-		if path == "/albums/"+id.String() && (!strings.Contains(body, `id="read-only"`) || !strings.Contains(body, "Scans/&lt;script&gt;") || strings.Contains(body, "Scans/<script>") || !strings.Contains(body, "/api/albums/"+id.String())) {
+		if path == "/albums/"+id.String() && (!strings.Contains(body, `<textarea id="album-title" name="title" rows="1" aria-label="Title" required readonly data-js>`) || !strings.Contains(body, "Scans/&lt;script&gt;") || strings.Contains(body, "Scans/<script>") || !strings.Contains(body, "/api/albums/"+id.String())) {
 			t.Fatalf("unescaped or missing attachment: %s", body)
 		}
 	}
@@ -91,7 +91,7 @@ func TestLibraryFiltersAndProcessingState(t *testing.T) {
 	id := e.seed("Artist One", "Find Me")
 	other := e.seed("Artist Two", "Other Title")
 	_, _, body := pageRequest(t, e, "/", testHost)
-	if !strings.Contains(body, "Find Me") || !strings.Contains(body, "Other Title") || !strings.Contains(body, `data-status="Queued"`) || !strings.Contains(body, "In attesa") || !strings.Contains(body, "/albums/"+id.String()) {
+	if !strings.Contains(body, "Find Me") || !strings.Contains(body, "Other Title") || !strings.Contains(body, `data-status="Queued"`) || !strings.Contains(body, "Waiting") || !strings.Contains(body, "/albums/"+id.String()) {
 		t.Fatalf("library page missing catalog/status: %s", body)
 	}
 	_, _, body = pageRequest(t, e, "/?q=find", testHost)
@@ -123,7 +123,7 @@ func TestLibraryCursor(t *testing.T) {
 		e.seed("Cursor Artist", fmt.Sprintf("Cursor %03d", i))
 	}
 	_, _, first := pageRequest(t, e, "/?q=cursor", testHost)
-	match := regexp.MustCompile(` href="([^"]+)" rel="next">Mostra altri</a>`).FindStringSubmatch(first)
+	match := regexp.MustCompile(` href="([^"]+)" rel="next">Load more</a>`).FindStringSubmatch(first)
 	if len(match) != 2 {
 		t.Fatal("50-entry page has no cursor link")
 	}

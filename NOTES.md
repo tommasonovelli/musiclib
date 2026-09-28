@@ -5232,7 +5232,7 @@ published path) reads Queued; pending/running/failed take priority; an
 archived album has neither path nor job. Actual status remains separate
 from metadata and is polled only on an album page with a pending/running job.
 
-### N-206 · Editor state and conflict behavior — DECIDED
+### N-206 · Editor state and conflict behavior — DECIDED (reload and Inherit buttons superseded by N-259, N-260, N-262)
 The SSR page reads desired album, status and artist selector; JavaScript
 holds the initial ETag and form fields only. The Save button PUTs the full
 aggregate; other content operations return a changed aggregate and then
@@ -5254,7 +5254,7 @@ confirmation (cancelled deletion removed a track after the test awaited the
 request), substitute `text/template` for `html/template`
 (`TestPagesCatalogEscapingAndBoundary` found a raw script in Library).
 
-### N-208 · Read-only Album without JavaScript — DECIDED
+### N-208 · Read-only Album without JavaScript — DECIDED (superseded by N-260)
 The album page renders a read-only summary, track list and entity-id download
 links alongside its editor. The editor is hidden in HTML until the JS module
 loads, when it replaces the read-only summary. Thus no-JS users cannot
@@ -5263,7 +5263,7 @@ On the Library the Album navigation item links to the first album of the
 current page (when present); on an empty list or a round-18 placeholder it
 asks the user to select an album rather than linking to the wrong view.
 
-### N-209 · Cover choice lists attachments without format hints — DECIDED
+### N-209 · Cover choice lists attachments without format hints — DECIDED (superseded by N-257)
 Attachment uploads may store `blobs.format = NULL`; the upload API does not
 classify arbitrary attachment contents. The album page therefore offers all
 of its attachments in the cover selector rather than filtering solely on
@@ -5565,7 +5565,7 @@ reason. They are now drawn with `clip-path` polygons on `::before`, and
 inline SVG in the template, or added to the CSP by the owner — the latter is
 a security decision (§10.4), not a styling one.
 
-### N-238 · The album status chip colours follow the live status — DECIDED
+### N-238 · The album status chip colours follow the live status — DECIDED (superseded by N-265)
 `web/album.html` renders `data-status` on `#status` next to the existing
 `data-pending`, and the CSS keys the four §10.3 values (Aligned / Queued /
 Processing / Error, plus Archived as the neutral default) off it. The 2-second
@@ -5573,7 +5573,7 @@ poll in `web/app.js` already rewrote `textContent`; it now also writes
 `dataset.status` with the same label, so the colour cannot go stale while the
 text changes. No request, interval or state logic was modified.
 
-### N-239 · Only the applicable album action is shown — DECIDED
+### N-239 · Only the applicable album action is shown — DECIDED (the page renders only the applicable action since N-263)
 `#editor` already carries `data-trashed`; CSS now hides `[data-action=restore]`
 on an active album and `[data-action=trash]` on a trashed one. Offering the
 inapplicable command was never useful, §10.3 only requires that restoring be
@@ -5589,7 +5589,7 @@ instead. The coupling is invisible from the template and cost one gate cycle
 to find; a future round may prefer to relax the assertion to a DOM query. No
 behaviour depends on it.
 
-### N-241 · Compact track table: `aria-label` replaces the per-cell labels — DECIDED
+### N-241 · Compact track table: `aria-label` replaces the per-cell labels — DECIDED (the table is gone since round 20; the per-field aria-labels remain)
 The editor's track rows used a visible `<label>` per cell, duplicating the
 column header six times per track. Each control now carries an `aria-label`
 naming its field and its track ("Genre, track 1.2"), the real `<th>` header
@@ -5620,7 +5620,7 @@ language of N-236 (the "flat structural" style is gone). Round 19 covers the
 foundations and the Library; round 20 is the album editor, round 21 Import
 and Activity.
 
-### N-243 · Owner decisions for the whole redesign — DECIDED (owner, 2026-09-27)
+### N-243 · Owner decisions for the whole redesign — DECIDED (owner, 2026-09-27; point 1, the language, superseded by N-256)
 1. **The UI language is Italian.** User-visible copy follows the glossary and
    the voice of `webui-principles.md`; code, identifiers, comments, tests,
    docs and API error codes stay English. This supersedes the English-labels
@@ -5806,7 +5806,7 @@ and Chromium, and the file restored (no mutant left; `sqlc diff` clean):
   failed; the count without `state = 'failed'`: `TestLibraryFixFilterAndCount`
   failed on every page.
 
-### N-251 · Performance budget and grid geometry — DECIDED
+### N-251 · Performance budget and grid geometry — DECIDED (the 60 KB target superseded by N-267)
 CSS + JS, uncompressed: `app.css` 25,519, `app.js` 9,247, `queue.js` 11,566,
 `library.js` 13,370 bytes: 59,702 bytes in all (< 60,000; figures after the
 review fixes N-253–N-255, which added 381 bytes of CSS); the Library page
@@ -5886,3 +5886,658 @@ title's first line.
   orange again (killed: "grid state"); the hairline query `stuck` →
   `scrollable` (killed: timeout on the line); the track artist appended as
   plain text (killed: the track-artist check).
+
+## UI redesign, round 20: the album editor (2026-09-27)
+
+### N-256 · The UI language is English — DECIDED (owner, 2026-09-27)
+Mid-round 20 the owner changed direction: **the UI language is English**,
+on every page, which supersedes the language point of N-243. This is the
+decision; round 20b's N-270 records how the rest of the UI was translated.
+User-visible copy follows the glossary and voice of `webui-principles.md`
+rendered in English (the user's music, never the server's internals; plain
+verbs; sentence case; the action and its confirmation share the verb:
+«Save» → «Saved», «Move to trash», «Delete track»); code, identifiers,
+comments, tests, docs and API error codes stay English as before;
+`<html lang="en">`. On the album page, round 20 applied the glossary as:
+attachment → «extra file», relative path → «Save as», render → «Update in
+library», revision / ETag / precondition failed → «changed in another
+window», inherited → the album's value in graphite. The status words are
+one set for the whole UI (`statusWord`, N-278): Queued «Waiting»,
+Processing «Updating», Error «Needs attention»; Aligned («Up to date») and
+Archived («In the trash») show nothing (N-248). Round 20 had its own
+`albumStatusWord` with «Needs fixing» for Error, and `lang="en"` on
+`#editor` and `#savebar` inside the then Italian document: the merge
+removed both.
+
+### N-257 · The cover picker offers only images; the limit in words — DECIDED (supersedes N-209)
+The principles list this backend change: «Scegli fra le immagini dell'album
+… va limitato alle immagini». `coverCandidate` keeps an attachment when its
+blob's format is JPEG or PNG; a known other format is never offered, whatever
+the name. An uploaded attachment has no format hint (N-118, N-209): it is
+offered when its name ends in `.jpg`, `.jpeg` or `.png` (any case). `PUT
+/cover` still validates the bytes, so a misnamed file is refused with its
+sentence; the picker only leaves out what cannot be a cover. It shows
+thumbnails (`<img>` of the attachment's content URL, lazy, in a `<dialog>`);
+an unhinted image is served as `application/octet-stream` with `nosniff`
+and Chromium still renders it in an `<img>` (checked by the browser test:
+every thumbnail has a natural width).
+The help text says «JPEG or PNG, up to N MB and 40 megapixels», N from
+`coverMB`: the lowest of 20 MiB and the per-format embed limit of the
+album's tracks (`media.MaxEmbeddedCover`, JPEG), in whole decimal megabytes
+**rounded down**, so the words never promise more than the server takes:
+16 with a FLAC track (16,777,173 bytes), 20 otherwise (20,971,520). The
+40-megapixel limit is §8.5's.
+
+### N-258 · What counts as an edit — DECIDED
+An edit is a **named** control of `#metadata` whose value differs from the
+last load or save, keyed by track id and name. File inputs, the lyrics
+controls, the artist's text field, the bulk-lyrics checkboxes and the
+dialogs have no `name`, so they never mark the page (this fixes the known
+bug where choosing a lyrics file dirtied the form; `TestBrowserAlbumLyrics`
+checks it). A track's «No genre» box is folded into its genre's value, so
+ticking it is one change, not two. Putting a value back uncounts it. The
+Save bar says «1 change» / «N changes», appears only while the count is not
+zero, and after a save says «Saved» for 2 s. While a save is in flight its
+button is disabled; what was typed during the save stays an edit (the
+baseline is what was sent, not the page that comes back). With no edits
+left, a save error and its row highlights are cleared. `beforeunload` asks
+while the count is not zero.
+
+### N-259 · Inherited values, «No genre», the Disc field — DECIDED
+Mapped onto the existing API exactly (§4.1, §10.2), no new behaviour:
+- track artist: an empty (or blank) field sends `null` = inherit; the album
+  artist's name is its placeholder, in graphite (the placeholder colour),
+  live while the artist field changes. `""` is never sent (`text_empty`).
+- track genre: empty sends `null` = inherit, the album genre as placeholder;
+  «No genre» is a checkbox in the track's ⋯ menu and sends `""`; ticking it
+  empties the field, typing a genre unticks it, unticking goes back to
+  inheriting. The placeholder then reads «No genre».
+- album genre: empty sends `null` (the API stores `""` as NULL anyway).
+This replaces the Inherit buttons and `data-inherited` (§10.3's «comando
+esplicito eredita» is now «clear the field»; «No genre» is the explicit
+choice the principles ask for).
+The principles list a track row as number, title, artist, genre and ⋯. The
+**disc number** stays editable (the PUT takes it and an import can get it
+wrong), so it moved into the track's ⋯ menu as a small «Disc» field; the
+tracks are grouped by disc with a caption heading («Disc 2») only when
+there is more than one disc.
+
+### N-260 · Saving without a reload: the page adopts its own server HTML — DECIDED (since the merge the sidebar part adopts only `.nav` and `.fix-filter`, N-278)
+Every change (Save, cover, lyrics, extra files, track deletion, trash,
+restore, «Update in library», artist creation and rename) goes through the
+JSON API with `X-Musiclib-Request: 1` and the album's `If-Match` (§10.4,
+unchanged). On success the page fetches its own URL and adopts the fresh
+`#editor` and `.sidebar` (the N-246 pattern: `DOMParser`, `adoptNode`, no
+`innerHTML`); catalog text is escaped once, by `html/template`. The ETag
+kept is **the change's own answer's** (`etag` in the album JSON; the
+render's 202 has none and bumps no revision): never the fresh page's, so
+that a newer revision saved by another window meanwhile still meets its
+412. The unsaved edits are re-applied by key on the fresh fields (a deleted
+track's are dropped), and the focus returns to the element with the same
+id. If the page cannot be fetched after a successful change, the new ETag
+is kept and «Done, but the page didn't update: reload it.» is shown.
+One markup serves JS and no-JS (supersedes N-208): fields are `readonly`
+(checkboxes `disabled`) and JS-only controls `hidden`, all marked `data-js`
+and enabled by the module; the ⋯ menus are declarative popovers
+(`popovertarget`), so the download links work without JavaScript. `app.js`
+is now loaded by the album page only (`{{if .Editor}}` in the layout): it
+is the editor and nothing else, which also spares the other pages its
+bytes. The layout draws no page head for the editor, whose title is a field.
+Test contracts changed on purpose: `id="read-only"` is gone
+(`TestPagesCatalogEscapingAndBoundary` pins the readonly title instead);
+`TestBrowserEditorConflictAndContent` is replaced by the round-20 tests,
+which cover all it did; `browserWait`'s debug string reads the notices, not
+`#cover-choice`; `TestBrowserPollingStopsWhenIdle` counts page fetches
+(N-265).
+
+### N-261 · Errors — DECIDED
+Each area has its own notice (`#head-notice`, `#tracks-notice`,
+`#extras-notice`, `#save-notice` in the Save bar), rendered by the template
+with an empty sentence, the hidden «Reload and reapply my changes» button
+and a hidden, closed «Details». A failure fills the sentence from one table
+in `app.js` (code → English sentence, generic fallback «The change didn't go
+through: try again.»), shows «Details» (closed) with the JSON of the answer
+(status, code, message, details, url) and takes the focus. Codes, UUIDs and
+JSON never appear outside «Details». `path_*` codes say «“Save as” must be
+a name like Scans/front.jpg.». `duplicate_track_number` uses
+`details.names` (`"track <uuid>"`, both tracks): «So What and Freddie
+Freeloader both have number 1 on disc 1.» (the disc only when the album has
+more than one) and highlights both rows; without two names it says «Two
+tracks have the same number on the same disc.». Nothing is invented beyond
+the answer. For the budget (N-267) rare codes (`path_reserved`,
+`text_too_long`, `genre_not_writable`, `insufficient_space`, the 503s) take
+the generic sentence and keep their code in «Details».
+
+### N-262 · The conflict: «Reload and reapply my changes» — DECIDED
+A 412 on Save shows «This album was changed in another window.» and the
+button in the Save bar. The button fetches the page, adopts it and **its**
+ETag (the album as it is now), re-applies the local edits on top by key,
+and leaves them unsaved for review: the count shows them, nothing is sent
+until Save. A 412 on the artist's rename says «This artist was changed in
+another window.» with the same button, which reloads the artists' ETags.
+
+### N-263 · «Render now» stays as «Update in library» in the album's ⋯ menu — DECIDED
+The glossary says the render «sparisce come bottone» and rendering happens
+after every save; that matches §4.3/§6.3 (every change enqueues the
+render). But §1.2 lists «rigenerazione di un album» as a v1 feature and
+§10.2 has `POST /api/albums/{id}/render` (forced enqueue with If-Match, no
+new revision): removing the only way to call it from the UI would drop a
+v1 function (the repair of an album whose output was damaged outside the
+app, N-218/doctor). So it is no button: it is the first item of the album's
+⋯ menu, «Update in library». «Move to trash» is the second, with a
+confirmation that says the album can be restored; a trashed album shows the
+band «This album is in the trash.» [Restore] instead.
+
+### N-264 · Bulk lyrics: matching `.lrc` files to tracks — DECIDED
+«Add lyrics» takes several `.lrc` files. Each file's stem (the name without
+`.lrc`) is split into an optional leading number part,
+`^(?:(\d{1,2})[-.])?(\d{1,3})(?!\d)[\s._-]*(.*)$` (`03`, `03 - `, `03.`,
+`2-03 `, `2.03 `: disc and number), and the rest. Titles are compared
+normalised: NFKC, lower case, every run of non-letters/digits one space,
+trimmed. The file goes to the only track that, in this order: has that
+number (and disc, if given) and that title; has that title anywhere; has
+the whole stem as its title; has that number (and disc) whatever its
+title. A file matching nothing, and every file of a track claimed by two
+files, are listed plainly: «No track for a.lrc, b.lrc.». The proposals are
+shown in a dialog, each with a ticked box (file name, track title); «Use as
+lyrics» uploads the ticked ones one by one through `PUT
+…/tracks/{id}/lyrics`, each with the ETag of the previous answer; a failure
+stops there and shows its sentence, the successful ones stay. The
+per-track actions remain in the ⋯ menu: «Upload lyrics», «Use a lyrics file
+of the album» (a dialog of the album's `.lrc` extra files), «Download
+lyrics», «Remove lyrics».
+
+### N-265 · The album status is polled from the page itself — DECIDED
+As before, the page polls every 2 s only while `#status[data-pending]` is
+true (a render job pending or running) and stops when idle. It now fetches
+the album page and adopts its `#status` (dot and English word, N-256)
+instead of computing the §10.3 label from `/status` in JavaScript: one
+rule, the server's, for the word and the dot, and about 700 bytes less
+script. Cost: a page request (a handful of indexed queries) every 2 s while
+a render is in progress, on a single-user local service.
+
+### N-266 · The artist field — DECIDED
+A text field with a native `<datalist>` of every artist (the list of `GET
+/api/artists`, server-rendered with each artist's id and ETag). A name equal
+to an existing artist's (NFKC, trimmed, case-insensitive) chooses it and
+takes its spelling; «Create artist» appears only when there is no such
+match and the field is not empty: it `POST`s the name (no If-Match) and the
+page reloads its artists. A 409 (`artist_exists`, `artist_folder_conflict`)
+says «This artist already exists: choose it from the list.»: no merge
+(§10.3). Saving with a name that matches nothing is refused locally:
+«Choose an artist from the list, or create it.».
+«Rename artist» renames the album's **saved** artist (it is hidden while
+the field names another one): the confirmation says «The new name applies
+to N albums.», N counted by the server when the page renders
+(`artistAlbums`: active and trashed albums, all of which `PUT
+/api/artists/{id}` bumps, §4.3). The rename uses the artist's ETag from the
+datalist. It bumps this album's revision by one, so the page takes exactly
+that bump (the album ETag with its revision + 1, §10.1's
+`"album:<uuid>:<rev>"`): any other change made meanwhile still meets its
+412. A rename to the same name (no new artist revision) takes no bump.
+
+### N-267 · Performance budget: 90 KB of CSS + JS — DECIDED (owner, 2026-09-28; supersedes N-251's 60 KB)
+The owner raised the target to **90,000 bytes of CSS + JS, uncompressed**;
+the fonts are not counted (54,292 bytes, N-251). Duplicated or dead CSS is
+still removed, but features are no longer squeezed to meet a number.
+History (uncompressed bytes):
+- round 19: 59,702 (`app.css` 25,519, `app.js` 9,247, `queue.js` 11,566,
+  `library.js` 13,370), under the old 60,000 target (N-251);
+- round 20 alone: 65,941 (`app.css` 27,327, `app.js` 13,678). To get
+  there the old album CSS (read-only view, table, formbar, chips, clusters,
+  file inputs, danger buttons, ~4.4 KB) was deleted; the editor's DOM comes
+  from the server (refresh by adoption, the notices and the lyrics proposal
+  row as template markup, confirmations and URLs as `data-*` attributes);
+  menus and dialogs are native popovers and `<dialog>`; the artist search
+  is a `<datalist>`; the status comes from the page; the rename's album
+  count is rendered by the server; rare error codes use the generic
+  sentence; comments were cut to the essentials. Nothing the brief asked
+  for was dropped;
+- round 20b alone: 64,226 (`app.css` 28,324, `library.js` 13,412,
+  `queue.js` 12,022, `sidebar.js` 1,221 new; N-275);
+- **after the merge: 70,691**: `app.css` 30,204, `app.js` 13,832,
+  `library.js` 13,412, `queue.js` 12,022, `sidebar.js` 1,221. Per page
+  (`app.js` is loaded by the album page only, N-260): the album page 45,257
+  (CSS, `sidebar.js`, `app.js`), the Library 44,837, Import and Activity
+  43,447. The sidebar icons are inline SVG in the HTML and cost nothing
+  here. The merge found no unused class or id selector in `app.css` (every
+  one is named by a template or a script); its fixes (N-278) added a few
+  dozen bytes of CSS and 154 of JS.
+Round 21 rewrites `queue.js` and the Import/Activity CSS and reports
+against the 90 KB.
+
+### N-268 · Visual decisions of the editor — DECIDED
+- Header: the 240px cover (the one shadow, `view-transition-name:
+  album-cover`) with «Change cover» under it; the title is a `<textarea>`
+  inside the `h1` (Large title; it wraps; a line break is turned into Save,
+  so a title never gets one); the artist (Title size) with «Rename artist»
+  and «Create artist» as text buttons; year, genre and «Compilation» on one
+  line; the status dot and word; the album's ⋯ at the right. Fields have no
+  border or fill until hovered or focused (`field-sizing: content`, a
+  progressive enhancement: Firefox and Safari show them at their default
+  width). Below 40rem the cover goes above the fields and a track row takes
+  two lines.
+- Tracks: a grid of number (tabular, graphite), title, artist, genre, a
+  «Lyrics» caption when the track has lyrics, and ⋯; hairline dividers only.
+- ⋯ is three dots drawn with a CSS gradient (no glyph, no image: N-237).
+  Menus are popovers anchored to their button (`position-area`, flipped at
+  the bottom); menus and dialogs are flat panels with a 1px hairline: **no
+  shadow** (the one shadow belongs to covers) and **no scrim** (the
+  principles forbid transparency over content), so `::backdrop` is cleared.
+- The Save bar is fixed at the bottom of the content column, slides up in
+  400 ms on the system curve and down when nothing is left; it turns
+  visible at once (only the slide is animated), so that a save error can
+  take the focus. One filled button, Save. The trash band is a flat
+  canvas-grey panel with a quiet «Restore» (the view's filled button stays
+  Save). Dialogs carry their verb as a filled button: a modal sheet is its
+  own view.
+- The screenshots (light/dark, 1280/390: default, dirty, conflict, trash,
+  menu open) led to: hiding the datalist's picker arrow, which pushed
+  «Rename artist» 60px away; the menu's «No genre» checkbox stretched to
+  full width by a `.track input` rule reaching into the menu; a fixed
+  lyrics column on the phone so that the genres of all rows line up; a
+  Save bar that was on at load (an unset flag toggled the class); a
+  trashed fixture that is Archived rather than still Queued.
+- `SF Mono` left the monospace stack: no Apple font names (principles,
+  «Niente marchio Apple»).
+
+### N-269 · Round-20 mutation checks — DECIDED
+Each mutant was applied alone to the tree (a script keeps the original and
+restores it), the album tests run against real PostgreSQL and Chromium
+(`TestBrowserAlbum*`, `TestCoverCandidate`, `TestAlbumPage*`,
+`TestPagesCatalogEscapingAndBoundary`), and the file restored; no mutant is
+left. Killed, with the tests that failed:
+- dirty tracking counts unnamed controls (the bulk-lyrics checkboxes):
+  `TestBrowserAlbumLyrics` («1 change» became more);
+- after a save, the old ETag kept instead of the answer's:
+  `TestBrowserAlbumSaveInPlace`, `TestBrowserAlbumArtistPickerAndRename`
+  (412 on the second save);
+- the fresh page's ETag taken instead of the change's: **survived the first
+  run** (no test raced another window against the reload); a new step of
+  `TestBrowserAlbumConflictReapply` saves from another window while the page
+  reloads after its own save and requires the next save to meet its 412:
+  killed;
+- the conflict's reload drops the local edits: `TestBrowserAlbumConflictReapply`
+  (and the lyrics and rename tests, which keep an unsaved edit across a
+  change);
+- the conflict's reload keeps the old ETag: `TestBrowserAlbumConflictReapply`;
+- the cover picker offers every attachment: `TestAlbumPageMarkup`,
+  `TestBrowserAlbumCover`; it ignores a known format: `TestCoverCandidate`;
+- `html/template` → `text/template`: `TestPagesCatalogEscapingAndBoundary`,
+  `TestAlbumPageMarkup`, `TestBrowserAlbumEscapingAndNoScript` and every
+  browser test (the page no longer arms);
+- `.lrc` matching: a track claimed by two files kept one
+  (`TestBrowserAlbumLyrics`); the number-only rule removed
+  (`TestBrowserAlbumLyrics`, «05.lrc»); the whole name read as a title
+  before the number's title: **survived the first run**, killed by the new
+  `TestBrowserAlbumLyricsNumberFirst` («1 Blue.lrc» goes to track 1 «Blue»,
+  not to track 2 «1 Blue»);
+- no `beforeunload` guard: `TestBrowserAlbumSaveInPlace`;
+- no `If-Match`: eight browser tests (428 on every change);
+- «No genre» sent as `null`: `TestBrowserAlbumInheritedValues`;
+- the rename's ETag bump removed: `TestBrowserAlbumArtistPickerAndRename`
+  (412 on the save after the rename);
+- a confirmation that does not wait for the answer:
+  `TestBrowserAlbumTrashAndMenus`, `TestBrowserAlbumEscapingAndNoScript`;
+- a duplicate number that marks no rows: `TestBrowserAlbumErrors`;
+- «Details» left open: `TestBrowserAlbumErrors`,
+  `TestBrowserAlbumConflictReapply`.
+
+## UI redesign, round 20b: English UI and the sidebar (2026-09-27)
+
+Round 20b ran in parallel with round 20 (the album editor), in its own
+worktree and Docker project, so it did not touch `web/album.html` or
+`web/app.js`, and kept its hunks in `pages.go`, `layout.html` and `app.css`
+local to the shell, the sidebar, the Library and the Import/Activity copy.
+
+### N-270 · Round 20b translates the rest of the UI — DECIDED (the decision is N-256)
+The owner's decision that the UI is English is N-256; this entry is round
+20b's side of it: every page but the album's, which round 20 wrote in
+English. `<html lang="en">`. Round 20b translated the layout (skip link «Skip to content», the navigation's name
+«Main», Library / Import / Activity / Trash / Needs attention, the back
+link), the Library (search, artist hits, «Albums by …», «All artists», the
+empty states «Your library is empty.» + «Import your music folder. The
+originals stay as they are.» [Import music], «No albums for “…”.», «The trash
+is empty.», «No albums need attention.», «No albums by this artist.», «Load
+more», the panel's «Edit album», «Disc N», the live-search announcement «N
+albums and more» and both error sentences), the page titles and the Library
+status words in `pages.go` (Waiting / Updating / Needs attention; Aligned
+and Archived still show nothing, N-248), and the Import and Activity copy
+(N-271). The album page is round 20's: it is already English there, and
+since the merge it uses the same `statusWord` (N-278).
+The words where the glossary has no English entry: «Needs attention» for
+«da sistemare» (the brief's word), «Updating» for «in aggiornamento»,
+«Waiting» for «in attesa», «Up to date» for «aggiornato» (not shown in the
+Library), «In the trash» for «nel cestino» (not shown either).
+
+### N-271 · Import and Activity: the copy only, as far as the strings go — DECIDED
+Round 21 redesigns these pages, so only their existing strings changed; no
+section, list, polling rule or request did. Template copy: «Choose a folder
+to import. The originals are never changed; don’t move them until the import
+is finished.» (the principles' fixed sentence) plus the per-album limits in
+words; «Folders», «Folder», [Import folder], «Import results», «Album
+search», «Files without an album, and other warnings», «Albums found»;
+Activity's help sentence, [Retry all] and [Rebuild library folder] (the
+glossary's word for Render all), whose confirmation asks «Rebuild the
+library folder? …». `queue.js` gained one word table: job states (Waiting,
+In progress, Needs attention, Imported, Already there), import states
+(Looking for albums, Importing, Finished; a finished album search is
+«Finished»), job kinds (Album search, Import, Library update) and source
+entry types (File; «Link, not followed»; «Special file, skipped»;
+«Unreadable name, skipped»). The API's values stay in `data-state` and, for
+source entries, in a new `data-type`: they are the CSS and test hooks. The
+path crumb says «Music folder/…» instead of `/import/…`; the retry fields say
+«Use this artist / title (empty = use the tags)»; the network fallback is
+«The library isn’t responding. Try again in a moment.»; an empty Activity is
+«Nothing in progress.» (the status line) and «Your library is up to date.»
+(the list), the principles' empty state, and a busy one «Updating your
+library.».
+**Left for round 21, deliberately:** the error box still leads with the
+HTTP status and the API code (`412 precondition_failed: …`, the rows'
+`render_io: disk full`) because the browser tests pin those codes and the
+principles' «Dettagli» disclosure is a restructuring; Activity rows name the
+kind of work, not the album, and show ISO timestamps, not relative times;
+the import button does not name the open folder; two filled buttons remain
+on Activity (Retry on a row and Rebuild library folder), and «Rebuild
+library folder» is not yet in an «Advanced» section.
+
+### N-272 · The collapsed sidebar: a classic script in `<head>` — DECIDED
+The state is `data-sidebar="expanded|collapsed"` on `<html>`, remembered in
+`localStorage['musiclib.sidebar']`, every access in try/catch, expanded by
+default and whenever storage is missing or throws. It must be on `<html>`
+before the first paint, and the CSP forbids inline scripts. The choices:
+- a **module** (`app.js`, `library.js`, `queue.js`) is deferred: it runs
+  after parsing, possibly after the first paint, and the sidebar would
+  visibly jump and animate (a mutant loading the file as a module fails the
+  test); `library.js` and `queue.js` also run on some pages only, and
+  `app.js` is round 20's file in this parallel round;
+- so the state lives in a **new classic script, `web/sidebar.js`** (1,221
+  bytes), loaded with a plain `<script src>` as the first element of
+  `<head>` after the title, before the stylesheet (a classic script after a
+  stylesheet would wait for it). It is render-blocking by design and tiny;
+  it is served from the `/static/` allowlist with `no-store`, like the
+  modules. It sets the attribute at once, syncs the toggle's
+  `aria-expanded` and label on `DOMContentLoaded`, and handles the toggle
+  with one delegated click listener, so it needs nothing else from the
+  page. This deviates from the brief's "a few lines in an existing module,
+  not a new file" and from the principles' "at most one new module", as the
+  launch message allowed for this parallel round: it cannot be folded into
+  a module without losing the no-flash property.
+- Without JavaScript the attribute is never set: the toggle is
+  `visibility: hidden` (keeping the wordmark on the label column) and the
+  collapsed rules never match.
+- Because the attribute is present at the first style computation, the
+  width transition never runs on load, on navigation or on reload; it runs
+  only when the toggle is pressed (400 ms, the system curve; nothing with
+  reduced motion). A page restored from the back/forward cache keeps the
+  state it had when it was left: re-reading the storage there would animate
+  without a user action, so it is not done.
+The toggle is a real `<button>` at the top of the sidebar, in the icons'
+column, before the wordmark, with `aria-controls="sidebar"`,
+`aria-expanded` and the label «Collapse sidebar» / «Expand sidebar» as its
+text (shown as a tooltip on hover and focus). It sits in the icon column so
+that it stays under the pointer when the sidebar narrows, and a second
+click undoes the first.
+
+### N-273 · Sidebar geometry, icons and the phone row — DECIDED
+- **Widths:** 15.5rem (248px) expanded and 4.5rem (72px) collapsed, both on
+  the 4px grid. Every row (the toggle, the four views, Needs attention) is a
+  grid of a 3rem icon cell, the label and a trailing cell (the activity dot
+  or the count), 2.25rem (36px) high, with 12px of sidebar padding: the
+  icon's left edge is at 26px and the label at 60px in both states, so
+  collapsing moves no icon; only the labels go. Collapsed, a row is 48px.
+- **Icons:** six hand-drawn `<symbol>`s in an `aria-hidden` sprite at the
+  top of `<body>`, used with `<use href="#…">` (same-document fragments, no
+  request, nothing against the CSP or the CSS/JS budget): 20px viewBox,
+  `stroke="currentColor"`, 1.5 strokes, round caps and joins, each spanning
+  about 14.5 units across so they share an optical size. Library is a
+  record half out of its sleeve (the subject, rather than a generic grid),
+  Import a tray with a down arrow, Activity two circular arrows (work being
+  redone), Trash a can with a lid, Needs attention an exclamation mark in a
+  circle, the toggle a panel with a divider. Icons are graphite, ink on
+  hover and on the current page; Needs attention's icon is the status red
+  when the count is not zero (it replaces round 19's red dot, N-245, and
+  `.dot-error` is gone).
+- **Collapsed:** each label becomes a tooltip (ink on paper, the Note size,
+  8px radius, no shadow: the only shadow is under covers) beside its icon on
+  `:hover` and `:focus-visible`; otherwise it is clipped with
+  `clip-path: inset(50%)`, so it stays the accessible name. The current
+  page keeps its filled row. The count becomes a red badge (11px caption,
+  paper text, a 2px canvas ring) on the icon's top-right corner and
+  disappears at zero; the activity dot moves onto the Activity icon. The
+  principles say "a status is a dot beside a word, never a badge": the
+  badge is the owner's explicit request for the collapsed state (a count on
+  an icon, not a status word), so the deviation is recorded here and no
+  other badge exists. The wordmark is `visibility: hidden`, so the hidden
+  link is not a Tab stop.
+- **Phone (≤ 52rem):** still a row at the top, but each view is its icon
+  over its label in the caption size, four equal columns; Needs attention
+  is its icon and number, hidden at zero, its label clipped (still the
+  name); the activity dot sits on the icon; the toggle and the wordmark are
+  not shown, and the stored state has no effect. Inline "icon + label"
+  items did not fit 390px (four items of about 100px).
+- The tooltip and collapsed rules are inside `@media (width > 52rem)`.
+- Contrast: the badge text is `--paper` on `--error`, 5.0:1 light and
+  6.9:1 dark (white on the dark `#ff6961` would be 2.6:1). The tooltip is
+  ink on paper, inverted.
+- The sidebar got `z-index: 5` so that a tooltip paints over the sticky
+  Library head (`z-index: 4`).
+
+### N-274 · Test contracts changed deliberately — DECIDED
+- N-242 said the queue tests read `li.firstChild.textContent` for the state:
+  the badge now shows a word, so the tests read the `.badge`'s `data-state`
+  (the API value) instead, and the pending/running guard counts its rows
+  against the database so that it cannot pass on an empty filter. The
+  unsafe source entries are matched by `data-type` and their words.
+- Strings pinned by tests changed with the copy: the import state words
+  (Importing, Finished), «No albums found», «Waiting», «Open album»,
+  «Nothing in progress.», «Updating your library.», and every Library
+  string of N-249.
+- `TestLibraryEmptyStatesAndTrash` now pins the Trash link with its icon
+  and label; `TestStaticAssets` serves `sidebar.js`.
+- New, `copy_test.go`: `TestNoItalianCopyInAssets` (every embedded `*.html`
+  and `*.js` but the two round-20 files (every file since the merge,
+  N-278), against a short explicit list of round 19's Italian words
+  matched as whole words in any case, plus
+  `lang="it"`; `lang="en"` required), `TestItalianGuardCatches` (the list
+  catches Italian and not «Important», «Disc», «Discography»…),
+  `TestPagesSpeakEnglish` (nine rendered pages with every status and empty
+  state, which also covers the strings in `pages.go`).
+- New, `sidebar_browser_test.go`: `TestBrowserSidebarCollapse` (the
+  geometry of both states, the toggle reached with Tab and pressed with
+  Enter, `aria-expanded` and the label flipping, Chromium's accessible names
+  read through CDP in both states, the badge on the icon and the marked
+  current page, the tooltip on keyboard focus, the state at parse time and
+  no width transition after a navigation and a reload, expanding again,
+  reduced motion, storage that throws, no JavaScript, no CSP violation or
+  console error) and `TestBrowserSidebarPhone`. Chromium separates an
+  out-of-flow label from the count with a space when naming the link
+  («Needs attention : 1» on a phone); the helper folds " :" to ":".
+
+### N-275 · Budget, and what the merge with round 20 must do — DONE (budget: N-267; merge: N-278)
+CSS + JS, uncompressed: `app.css` 28,324 (+2,805), `app.js` 9,247 (not
+touched), `library.js` 13,412 (+42), `queue.js` 12,022 (+456), `sidebar.js`
+1,221 (new): **64,226 bytes**, over the 60,000 target by 4,226 (round 19
+left 298 bytes of room). The icons are in the HTML and cost nothing here.
+The sidebar's CSS is one set of rules for both states (the tooltip is the
+label itself) and one unused selector, `.dot-error`, went. Round 20 adds its
+own; the merge should decide with the owner whether the target is raised or
+CSS removed elsewhere (the album and queue sections that rounds 20–21
+rewrite are the likely place). At the merge:
+- remove `untranslatedUntilMerge` (`album.html`, `app.js`) from
+  `internal/http/copy_test.go` so that the guard covers every file;
+- `statusWord` in `pages.go` here and round 20's `albumStatusWord` give the
+  same English words: keep one;
+- the `<main>` line of `layout.html`: round 20 wraps the page head in
+  `{{if not .Editor}}`; this round only changed «Libreria» to «Library» on
+  that line;
+- round 20's entries from N-256 record the language decision too; N-270 is
+  this round's side of it.
+All four were done at the merge (N-278), and the owner decided the budget
+(90 KB, N-267).
+
+### N-276 · Round-20b mutation checks — DECIDED
+Each mutant was applied alone, the sidebar and copy tests run against real
+PostgreSQL and Chromium, and the file restored; all 13 were killed:
+`sidebar.js` loaded as a module, and the state applied only at
+`DOMContentLoaded` (both: the state was not on `<html>` when the sidebar
+was parsed); no try/catch on the read (blocked storage: no state and an
+exception); the state not written (the storage check); `aria-expanded` not
+updated; the collapsed rules also on phones (a 72px phone row); the labels
+not clipped when collapsed; no tooltip on focus; the toggle visible without
+JavaScript; no badge; «Mostra altri» back in `library.html`; «In attesa»
+back in `pages.go` (the rendered-page guard); `lang="it"`.
+
+### N-277 · Review screenshots of round 20b — DECIDED
+`TestBrowserLibraryScreenshots` now clears the stored sidebar state in
+every tab and adds `sidebar-expanded` (Activity, with its dot),
+`sidebar-collapsed` and `sidebar-tooltip` (collapsed, Import reached with
+Tab) at 1280px in both themes, next to the existing set. What looking at
+them changed: the first Library icon (a sleeve with a thin arc) read as a
+tag at 20px and was redrawn as a record half out of its sleeve with its
+centre hole; the tooltip sat 3px from the focus ring and moved to 12px from
+the row; the Import panel was titled «Music folder» next to the crumb
+«Music folder» and is now «Folders», and the help sentence lost its second
+«music folder». Still visible and left to round 21: Activity's ISO times,
+job kinds and two filled buttons (N-271).
+
+## UI redesign: merge of rounds 20 and 20b (2026-09-28)
+
+### N-278 · Merging the album editor and the English UI with its sidebar — DECIDED
+Both rounds were built in parallel on `0076b94`. Round 20b's files that
+round 20 had not touched were copied; the eight files both changed
+(`NOTES.md`, `PROGRESS.md`, `docs/ui.md`, `layout.html`, `app.css`,
+`pages.go`, `pages_test.go`, `library_browser_test.go`) were merged three
+ways (`git merge-file` against `0076b94`) and the conflicts resolved by
+hand. Round 20b's notes N-300 to N-307 are now N-270 to N-277, every
+reference in the code, tests and docs renumbered.
+- **Layout.** Both behaviours: round 20b's `lang="en"`, `sidebar.js` first
+  in `<head>`, the SVG sprite, the sidebar with its toggle and the English
+  copy (back link «Library»); round 20's `{{if .Editor}}` around `app.js`
+  and `{{if not .Editor}}` around the page head.
+- **One set of status words.** `statusWord` stays and serves the album
+  page too; `albumStatusWord` («Needs fixing» for Error) and its test are
+  gone; `TestStatusWords` pins the words. «Up to date» and «In the trash»
+  remain words of the glossary that are never shown (N-248): the owner's
+  list names five words, and the conservative reading keeps N-248's rule
+  that the norm is not labelled, so no view changed.
+- **The album page's refresh and the sidebar.** Round 20 adopted the whole
+  fresh `.sidebar` after every change (N-260); with round 20b's markup that
+  brings back the server's `aria-expanded="true"` and «Collapse sidebar» on
+  a collapsed sidebar (`sidebar.js` syncs the toggle only at
+  `DOMContentLoaded`). The refresh now adopts the sidebar's server state
+  only: `.nav` (the current view, Library or Trash after a trash or a
+  restore) and `.fix-filter` (the count). The toggle, the wordmark and
+  `<html data-sidebar>` are never replaced, so the collapsed state and the
+  toggle's state survive every refresh, with no width transition.
+- **The Save bar.** Round 20's fixed `.savebar` starts at `var(--sidebar)`;
+  round 20b collapsed the sidebar by setting its `width`, which would leave
+  a 176px gap beside a collapsed sidebar. The collapsed state now sets
+  `--sidebar: 4.5rem` on `<html>` (still only above 52rem), which the
+  sidebar's width and the bar's `left` both read; the bar's `left`
+  transitions with the sidebar (same curve and duration, nothing with
+  reduced motion). On a phone the bar spans the page as before.
+- **A leak found by the consistency pass.** Round 20's album rules style a
+  bare `.disc` (the disc headings) in graphite; `library.js` also names the
+  Library panel's disc caption `li.disc`, which turned graphite on the
+  cover's colour, against the panel's 4.5:1 ink rule (N-254). The panel's
+  rule now says `color: inherit`.
+- **Copy.** `untranslatedUntilMerge` is gone: the Italian guard reads every
+  embedded template and script (nine files) and thirteen rendered pages,
+  among them the album page with a status word, failing, and trashed. No
+  Italian surfaced: round 20 had written the album page in English, and
+  the back link and the title suffix come from the layout.
+- **Tests added.** `TestBrowserSidebarAlbumRefresh`: on the album page at
+  1280px, the Save bar's left edge sits at the sidebar's right edge,
+  expanded and collapsed; after a save in place and a trash with the
+  sidebar collapsed, `<html>`, the width, `aria-expanded`, the label and
+  the single toggle are unchanged, the current view follows the album into
+  Trash, and no width transition runs; the toggle still works on the
+  adopted page; on a 390px phone the bar spans the page under the row of
+  views, with no horizontal scroll. Also: the Library panel's disc caption
+  in the panel's ink; the album screenshots set the sidebar state per shot
+  and add `album-dirty-collapsed` at 1280px. Chromium may not run
+  transitions in a tab that is not in front (the package run opens many),
+  so the new test clears the transition record after collapsing and
+  requires none afterwards, rather than requiring the toggle's own.
+- **Mutation checks**, each applied alone and restored: the whole
+  `.sidebar` adopted again (killed: «true» and «Collapse sidebar» after the
+  save); only `.fix-filter` adopted (killed: the current view stays Library
+  after the trash); the collapsed width set on `.sidebar` instead of
+  `--sidebar` (killed: the Save bar stays at 248px); the panel's
+  `color: inherit` removed (killed: the disc caption check); «Libreria» put
+  back in `album.html` (killed: the asset guard and the three album pages);
+  the album page's status word in Italian (killed: `TestAlbumPageMarkup`
+  and `TestPagesSpeakEnglish`). One survives, on purpose: the Save bar's
+  `left` transition removed. It is motion polish whose run a background
+  tab may skip, so no test can pin it reliably.
+- **Screenshots** (`TestBrowser(Library|Album)Screenshots`, 56 files):
+  looked at the album page expanded and collapsed with the Save bar (1280,
+  light and dark), on a phone with the Save bar and with the conflict
+  notice, the track menu, the trashed album, the Library panel, and the
+  collapsed sidebar with a tooltip. Nothing from the merge needed fixing
+  beyond the points above. Noticed and left as it was, because it is a
+  behaviour change and not a merge artefact: the back link of a trashed
+  album says «Library» and goes to `/` while the sidebar marks Trash;
+  pointing it at the Trash is a small change for round 21 or the owner
+  (done in review, N-281).
+
+## UI redesign: review of rounds 20, 20b and their merge (2026-09-28)
+
+### N-279 · An invalid Disc in a closed ⋯ menu stopped Save silently — DECIDED
+The track's Disc field (`type=number`, 1–99) lives in its ⋯ popover. With
+an out-of-range or non-numeric value in a closed menu, Save ran the
+browser's validation, which could not focus the hidden field: the save was
+aborted with only a console line («An invalid form control with
+name='disc' is not focusable»), nothing on screen, the Save bar still
+counting. `app.js` now listens for `invalid` (capture) and opens the
+closed popover that holds the field, so the browser focuses it and shows
+its own message; nothing is sent. `TestBrowserAlbumErrors` covers it
+(killed by removing the listener).
+
+### N-280 · Downloads are not a navigation: no unsaved-edits prompt — DECIDED
+With unsaved edits, «Download original» (and «Download lyrics», and an
+extra file's name) started a navigation, so the `beforeunload` guard asked
+«Leave site?» although the page does not leave (the server answers
+`Content-Disposition: attachment`). The three links carry `download`, which
+makes them downloads rather than navigations; they still work without
+JavaScript. `TestBrowserAlbumSaveInPlace` clicks «Download original» with an
+edit pending and requires no prompt; `TestAlbumPageMarkup` pins the
+attribute (both killed by removing it).
+
+### N-281 · A trashed album's back link leads to the Trash — DECIDED (closes the item left open in N-278)
+The merge left the back link of a trashed album as «Library» → `/` while
+the sidebar marks Trash and the album is not in the Library view. It was a
+defect, not a design choice: the principles ask for the same names and
+places everywhere («Inevitabilità»), and the link sent the user to a view
+without the album. The layout now draws «Trash» → `/?trash=true` when the
+page's view is the Trash, «Library» → `/` otherwise, and the album page's
+in-place refresh adopts `.backlink` with `.nav` and `.fix-filter`, so the
+link follows a trash and a restore without a reload.
+`TestBrowserAlbumTrashAndMenus` (killed by not adopting it) and
+`TestAlbumPageMarkup` cover both states.
+
+### N-282 · Review mutation checks and the two new guards — DECIDED
+Each mutant applied alone, the named tests run against real PostgreSQL and
+Chromium, the file restored:
+- `coverMB` rounding up (a promise above the server's limit):
+  `TestCoverMB`, `TestAlbumPageMarkup`;
+- `sidebar.js` not syncing the toggle at `DOMContentLoaded`:
+  `TestBrowserSidebarCollapse`;
+- «Details» shown for a local error without an answer:
+  `TestBrowserAlbumArtistPickerAndRename`;
+- the refresh dropping a visible notice (the page's own sentence lost after
+  a partial bulk-lyrics upload): **survived**; killed by the new
+  `TestBrowserAlbumLyricsStopAtFailure` (a refused non-UTF-8 file after a
+  good one: the good one stays, the sentence survives the refresh);
+- «Rename artist» shown while the field names another artist: **survived**;
+  killed by a new check in `TestBrowserAlbumArtistPickerAndRename`;
+- and the three fixes above (N-279 to N-281), each killed as noted.
+
+### N-283 · Track fields end in an ellipsis — DECIDED
+On a phone a track row's artist and genre share half a line each, and a
+long value («Miles Davis & Wynton Kelly») was cut mid-letter. Track inputs
+now use `text-overflow: ellipsis` (shown while the field is not focused).
+Budget after the review (N-267): 70,973 bytes of CSS + JS (`app.css`
+30,229, `app.js` 14,089, `library.js` 13,412, `queue.js` 12,022,
+`sidebar.js` 1,221).
