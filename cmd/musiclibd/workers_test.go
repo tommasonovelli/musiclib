@@ -415,7 +415,7 @@ func TestBootStepsInOrder(t *testing.T) {
 	}
 	want := []string{"journal recovered", "work cleaned", "running jobs recovered", "import reports purged", "stale renders enqueued",
 		"workers started", "ready"}
-	if !slices.Equal(order[len(order)-len(want):], want) {
+	if len(order) < len(want) || !slices.Equal(order[len(order)-len(want):], want) {
 		t.Fatalf("boot events %q, want %q", order, want)
 	}
 	for _, ev := range d.logs.events(t) {

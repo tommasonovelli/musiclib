@@ -7853,3 +7853,125 @@ the `musiclib` identifiers).
   ignored, so leave it out of the commit; the `.claude/agents/*.md` effort
   edits are not part of this round (as N-316 said), so commit them
   separately or leave them out.
+
+### N-320 · Readiness was published before the API served; the lost-answer test made deterministic — FIXED (release 1.0.0, T1)
+`cmd/musiclibd.TestAPIFatalErrorStopsTheProcess` failed intermittently
+with 503 `not_ready` on `POST /api/artists` after `/health/ready` had
+answered 200.
+- **Root cause, a production bug.** Step 7 of `daemon.boot` ran
+  `d.ready.Store(d.pool)` before `d.api.Enable(...)`. A client that saw
+  `/health/ready` 200 in that window (Compose's healthcheck, the UI, a
+  test) could get 503 `not_ready` from `/api`, so readiness did not mean
+  that the service works (§11.1: step 7, «rendere positiva la
+  readiness», is the last step). Every test that calls `/api` once
+  readiness is 200 was exposed, not only this one.
+- **A second, smaller window of the same kind.** The `ready` log event was
+  written by `run` after `boot` returned, so a test reading the logs right
+  after readiness could miss it (`TestBootStepsInOrder`,
+  `TestBootReadinessLifecycle`).
+- **Fix (production).** `boot` now enables the API, logs `ready`, and
+  stores the pool in `d.ready` last; `run` no longer logs `ready`.
+  Everything the boot does and reports happens before readiness can be
+  observed. The shutdown order is unchanged: readiness turns negative
+  first, then the API is disabled. That window (API still enabled,
+  readiness negative) promises nothing.
+- **A second nondeterminism, in the test.** `pgtest.Proxy` loses the
+  answer of the next COMMIT on any connection. The worker's idle poll
+  commits through the same proxy every 2 s (§6.4), so the loss could reach
+  the pool first. The test accepted that (the 201 branch), which meant
+  some runs never tested the API path. Under a 200 µs poll probe, 139 of
+  200 runs took that branch. A `shutting_down` answer was also possible
+  if the pool stopped the run before the request reached the API; it was
+  never seen, but nothing excluded it.
+  - **Fix (test).** `holdJobsTable` takes `LOCK TABLE jobs IN ACCESS
+    EXCLUSIVE MODE` on a direct connection before the loss is armed, and
+    releases it after the API has answered (and at cleanup if the test
+    fails first). LOCK TABLE returns only after a poll already running
+    has committed. A later poll waits at its first read of `jobs`, before
+    its COMMIT, and is then cancelled at shutdown (`store_canceled`, not
+    fatal) or commits normally. The API's COMMIT is the only one that can
+    meet the loss.
+  - The test now asserts only the API path: 503
+    `store_commit_uncertain`, the API's fatal event, no worker fatal
+    event, and the change durable. There are no sleeps and no retries.
+- **Siblings.** `TestDatabaseLossStopsTheProcess` loses the database
+  itself, and its switch already accepts either the API or the pool
+  meeting the loss first, which is inherent. Its only flake was the
+  ordering bug, now fixed in production. No other test in
+  `cmd/musiclibd` arms the proxy. `TestBootStepsInOrder` sliced its event
+  list without a length check and panicked when `ready` was missing. It
+  now fails with its message.
+- **Evidence** (all in the toolchain container, real PostgreSQL 17):
+  - The baseline passed 30/30 under `-race`, so the flake is rare.
+  - A 300 ms probe between the two stores in the old order reproduced the
+    report 3/3 (503 `not_ready`, then the armed loss hit the next idle
+    poll). With the same probe after the reordering, the whole package
+    passes.
+  - Mutations, each reverted:
+    - readiness before `Enable`, widened: 9 tests fail
+      (`TestAPIFatalErrorStopsTheProcess`,
+      `TestDatabaseLossStopsTheProcess`, `TestBootReadinessLifecycle`,
+      `TestBootStepsInOrder`, `TestEndToEndTwoWorkers`,
+      `TestEndToEndImportThroughAPI`,
+      `TestBackupLossRestoreBootAndDoctor`,
+      `TestOfflineDoctorRepairAndRebuildConverge`,
+      `TestReleaseCollectionInterruptedAndRestored`);
+    - readiness before the `ready` event, widened:
+      `TestBootReadinessLifecycle` and `TestBootStepsInOrder` fail;
+    - no `jobs` lock under a 200 µs poll: 15/20 runs fail. With the lock
+      under the same probe, 200/200 pass `-race` on the API path.
+  - With the fix, with no probe:
+    - `go test -race -count=100 -run '^TestAPIFatalErrorStopsTheProcess$'`: ok;
+    - `-race -count=30` of `TestDatabaseLossStopsTheProcess`,
+      `TestBootReadinessLifecycle`, `TestBootStepsInOrder` and
+      `TestRestartOnSamePair`: ok;
+    - `go test -race -count=5 ./cmd/musiclibd/`: ok (190 s).
+    - `scripts/check.sh` (whole module: sqlc diff, build, vet, gofmt,
+      `go test -race -count=1 ./...`): «gate passed», exit 0.
+
+### N-321 · Review of release T1 — APPROVED
+Independent review (Davide Moretti, process lifecycle and deterministic
+testing) of N-320: `cmd/musiclibd/boot.go`, `boot_test.go`,
+`workers_test.go`, PROGRESS.md «Release 1.0.0, T1».
+- **Order against §11.1.** Step 7 is now `startWorkers`, `api.Enable`,
+  the `ready` event, `ready.Store`: readiness is the last act of the boot,
+  as «avviare pool e rendere positiva la readiness» asks. Nothing that can
+  fail runs after `Enable`, so there is no path with the API enabled on a
+  boot that then fails. `Enable` and `ready` are atomics stored in that
+  order, so a client that sees `/health/ready` 200 is guaranteed to see
+  the enabled API. A fatal error in the window between `Enable` and
+  `ready.Store` (an API request or the pool) is only consumed by `run`'s
+  loop after `boot` returns, and the shutdown then clears readiness first,
+  as before; the window is the same as in the old code. `d.log` is the
+  logger `run` received, and the event keeps its message and `store_id`
+  field (`TestRestartOnSamePair` reads it). The shutdown order is
+  untouched.
+- **`holdJobsTable`.** Sound. The proxy decides at the moment it forwards
+  the client's COMMIT (`clientToServer` → `takeAction`), and LOCK TABLE
+  returns only after a running claim's COMMIT has reached the server, so
+  arming after the lock cannot catch that claim. Every claim runs
+  `NextPendingJob` on `jobs` as its first statement (`claimNext`), so a
+  later claim blocks before its COMMIT. No other periodic transaction
+  goes through the proxy in this test (the purge is daily). The API
+  request (`CreateArtist`: advisory lock, artists only) does not touch
+  `jobs`, so it cannot wait on the lock; if a future change made it do
+  so, the test fails on the 30 s client timeout instead of hanging. A
+  claim cancelled while waiting is `store_canceled` (`abort` checks
+  `ctx.Err()`), not fatal. A claim released before the cancellation
+  commits with `context.WithoutCancel` and the loss already consumed, so
+  it cannot become uncertain either. Cleanups run LIFO: the rollback runs
+  before the direct pool closes and before the daemon's cleanup. The
+  double release is harmless (`ErrTxClosed` ignored). The assertion
+  (503 `store_commit_uncertain`, API fatal event, no worker fatal event,
+  change durable) now exercises the API path on every run.
+- **Runs (toolchain container, PostgreSQL 17, ext4).**
+  `-race -count=30` of the three target tests: ok. `-race -count=100` of
+  `TestAPIFatalErrorStopsTheProcess` and `TestDatabaseLossStopsTheProcess`:
+  100/100 each. `-race -count=40 -cpu=1,2` of the three target tests:
+  80/80 each. `gofmt -l cmd/` empty, `go vet ./cmd/musiclibd/` clean.
+  The full gate was not rerun (not required for this review); the
+  mutation figures of N-320 were not reproduced.
+- **Tests and docs.** No unrelated test added; the length guard in
+  `TestBootStepsInOrder` is a fix of the test, not a new one. N-320 and
+  the PROGRESS.md entry match the code.
+- **Nits (not blocking).** None requiring a change.

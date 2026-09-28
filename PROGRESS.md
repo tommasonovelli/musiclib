@@ -606,7 +606,9 @@ restarts it (§6.4, N-070, N-135).
   healthcheck subcommand is unchanged.
 - **The API (round 11, `internal/http`)** is mounted on `/api` and `/api/`
   from step 1. It answers 503 `not_ready` until step 7, then serves the
-  catalog. It is disabled with `publish_illegal_state` while publishing
+  catalog. Step 7 enables it and logs `ready` before `/health/ready`
+  turns positive, so a positive readiness always means a serving API
+  (N-320). It is disabled with `publish_illegal_state` while publishing
   is suspended (N-135), and with `shutting_down` first thing at
   shutdown, before the HTTP server drains the running requests (§11.1).
   A fatal database error met by an API request ends the run like one met
@@ -678,7 +680,9 @@ Tests use real PostgreSQL 17 and ext4, with no mocks:
     whichever of the API and the pool meets the loss first ends the run;
   - a COMMIT answer lost under an API request
     (`TestAPIFatalErrorStopsTheProcess`) ends the run with
-    `store_commit_uncertain`, the change durable;
+    `store_commit_uncertain`, the change durable; a lock on `jobs` keeps
+    the workers' idle polls off the lost answer, so the API path is the
+    one tested on every run (N-320);
   - `TestEndToEndTwoWorkers` makes its changes through the API: the
     artist rename (428 first), trash, restore and a forced render, each
     with the ETag just read. It checks the status after the rename, and
@@ -2022,6 +2026,11 @@ scripts/dev.sh go test -race -count=10 -timeout 60m ./internal/publish/
 - **Budget:** CSS + JS 79,209 bytes (N-315); each page carries about 12 KB more HTML (the inline symbol and word).
 - **Tests** (owner: no new tests, N-314): `TestBrowserSidebarCollapse` (the toggle is now the eighth tab stop, it comes last in the accessible names, the tooltip check starts from the brand), `TestBrowserSidebarPhone` (the brand, not `.sidebar-top`, is hidden), `TestBrowserAlbumEscapingAndNoScript` (the title), the tooltip screenshot's focus. Evidence: review screenshots in `tmp/ui-shots-r23/` from a throwaway test, not committed (N-315).
 - **Logo licence** (owner decisions N-313 and N-318; fix pass after the review N-316, N-317, N-318): `LICENSE` byte-identical; `LOGO.md` states that the sun symbol (`web/brand/logo.svg`, `web/favicon.svg`, `brand-sun`), the owner's artwork, is not under the MIT License, all rights reserved by tommasonovelli; keeping it in unmodified copies is allowed, a modified version distributed to others replaces it with its own. Nothing else is reserved: the names are unrestricted, and the outlined name (`brand-word`) is MIT like the rest, its Bricolage Grotesque letterforms under the OFL. Pointers in the README's «License», CONTRIBUTING, `web/brand/README.md`, the favicon's comment and `opensource.md`'s MIT item; the `opensource.md` P0 name item is only the check that the name does not collide with someone else's. The sidebar toggle at the foot (N-311) confirmed by the owner.
+
+### Release 1.0.0, T1: readiness published last (`cmd/musiclibd`, §11.1) ✔
+
+- **Flaky test removed at its cause** (N-320): `TestAPIFatalErrorStopsTheProcess` sometimes got 503 `not_ready` after `/health/ready` had answered 200. Step 7 published readiness before enabling the API, a production ordering bug that every test calling `/api` after readiness was exposed to. `boot` now enables the API, logs `ready`, then publishes readiness, last. The test also had a second nondeterminism: a worker's idle poll could meet the armed lost COMMIT answer instead of the API. It now holds `jobs` locked while the API request runs, and asserts only the API path. `TestBootStepsInOrder` fails cleanly instead of panicking when an event is missing.
+- **Evidence:** reproduced with a 300 ms probe in the window (3/3 `not_ready`); the fixed order passes with the same probe (whole package). Mutations: readiness before `Enable` fails 9 tests; readiness before the `ready` event fails 2; no `jobs` lock under a 200 µs poll interval fails 15/20. With the fix: the target test `-race -count=100`, four siblings `-race -count=30`, the whole package `-race -count=5`, and `scripts/check.sh` all pass.
 
 ### `internal/http` — the API's conventions, security boundary and first endpoints (§2.3, §10.1, §10.2, §10.4) ✔ (round 11)
 

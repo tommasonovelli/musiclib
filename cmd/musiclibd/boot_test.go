@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"musiclib/internal/fsops"
 	"musiclib/internal/media"
@@ -440,10 +444,14 @@ func TestBootCleansWork(t *testing.T) {
 // §6.4 through the API: a change whose COMMIT answer is lost has an
 // unknown outcome. The API answers 503 store_commit_uncertain, refuses
 // everything after it, and the run ends with that fatal error, so that the
-// process exits 1 and Docker restarts it; the change is durable. The
-// workers' idle polls commit through the same proxy, so the lost answer
-// may reach one of them first: then the pool stops the run with the same
-// code, and the API's change went through.
+// process exits 1 and Docker restarts it; the change is durable.
+//
+// The workers' idle polls commit through the same proxy every 2 s (§6.4),
+// so the armed loss could reach one of them instead of the API. A lock on
+// jobs, held from a direct connection while the API request runs, keeps
+// them out: LOCK TABLE returns only once a poll already running has
+// ended, and every later poll waits at its first read of jobs, before its
+// COMMIT. The only COMMIT through the proxy is then the API's (N-320).
 func TestAPIFatalErrorStopsTheProcess(t *testing.T) {
 	dbURL := pgtest.EmptyDB(t)
 	proxy := pgtest.NewProxy(t, dbURL)
@@ -451,27 +459,50 @@ func TestAPIFatalErrorStopsTheProcess(t *testing.T) {
 	d := startDaemon(t, testConfig(proxy.URL), p)
 	d.waitStatus(t, "/health/ready", http.StatusOK)
 
+	release := holdJobsTable(t, dbPool(t, dbURL))
 	proxy.LoseNextCommitAck()
 	r := d.api(t, http.MethodPost, "/api/artists", "", map[string]string{"name": "Lost Answer"})
+	release()
 	err := d.wait(t)
 	if codeOf(err) != store.CodeCommitUncertain {
 		t.Fatalf("run: %v (code %q), want %s", err, codeOf(err), store.CodeCommitUncertain)
 	}
-	switch r.status {
-	case http.StatusServiceUnavailable:
-		if r.code() != store.CodeCommitUncertain || !d.logs.has(t, "fatal failure in an API request, stopping") {
-			t.Fatalf("API answer %v; logs:\n%s", r.body, d.logs)
-		}
-	case http.StatusCreated:
-		t.Log("the lost answer reached a worker's poll first")
-	default:
-		t.Fatalf("API answer %d %v", r.status, r.body)
+	if r.status != http.StatusServiceUnavailable || r.code() != store.CodeCommitUncertain ||
+		!d.logs.has(t, "fatal failure in an API request, stopping") {
+		t.Fatalf("API answer %d %v; logs:\n%s", r.status, r.body, d.logs)
+	}
+	if d.logs.has(t, "fatal failure, stopping the workers") {
+		t.Fatalf("a worker met the lost answer; logs:\n%s", d.logs)
 	}
 	assertShutdownOrder(t, d.logs, true)
 	assertLockFree(t, p.data)
 	if n := queryInt(t, dbPool(t, dbURL), `SELECT count(*) FROM artists WHERE name = 'Lost Answer'`); n != 1 {
 		t.Fatalf("%d artists: the change must be durable", n)
 	}
+}
+
+// holdJobsTable takes an ACCESS EXCLUSIVE lock on jobs in a transaction of
+// db and returns the function that rolls it back. It returns once a claim
+// already running has ended; the claims that follow wait at their first
+// read of jobs until the release. A test that fails before releasing it
+// releases it at cleanup, before db is closed.
+func holdJobsTable(t *testing.T, db *pgxpool.Pool) (release func()) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release = func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(release)
+	if _, err := tx.Exec(ctx, `LOCK TABLE jobs IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	return release
 }
 
 // A data directory that cannot be described while /import is compared

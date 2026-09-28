@@ -113,7 +113,6 @@ func run(ctx context.Context, cfg Config, p paths, ln net.Listener, log *slog.Lo
 		}
 		return err
 	}
-	log.Info("ready", "store_id", d.vol.StoreID().String())
 	purge := time.NewTicker(reportPurgeInterval)
 	defer purge.Stop()
 	for {
@@ -228,12 +227,16 @@ func (d *daemon) boot(ctx context.Context) error {
 		return err
 	}
 
-	// Step 7: start the pool, then readiness turns positive.
+	// Step 7: start the pool, then readiness turns positive, last: a
+	// positive /health/ready promises that /api serves and that the boot
+	// has been reported, so the API is enabled and the ready event logged
+	// before it (NOTES.md N-320).
 	if err := d.startWorkers(ctx); err != nil {
 		return err
 	}
-	d.ready.Store(d.pool)
 	d.api.Enable(apihttp.Backend{Catalog: d.catalog, Blobs: d.blobs, Budget: d.budget, Work: d.vol.Work(), Source: d.source})
+	d.log.Info("ready", "store_id", d.vol.StoreID().String())
+	d.ready.Store(d.pool)
 	return nil
 }
 
