@@ -315,6 +315,9 @@ func (a *API) routes(b Backend) nethttp.Handler {
 	route("/api/jobs/{id}/retry", map[string]nethttp.HandlerFunc{
 		nethttp.MethodPost: h.retryJob,
 	})
+	route("/api/jobs/{id}/dismiss", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.dismissJob,
+	})
 	route("/api/jobs/retry-failed", map[string]nethttp.HandlerFunc{
 		nethttp.MethodPost: h.retryFailed,
 	})

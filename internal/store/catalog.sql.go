@@ -848,6 +848,50 @@ func (q *Queries) ListAlbumAudioFormats(ctx context.Context, albumID uuid.UUID) 
 	return items, nil
 }
 
+const listAlbumCards = `-- name: ListAlbumCards :many
+SELECT al.id, al.title, ar.name AS artist_name,
+       (al.cover_hash IS NOT NULL)::boolean AS has_cover, (al.deleted_at IS NOT NULL)::boolean AS trashed
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+WHERE al.id = ANY($1::uuid[])
+`
+
+type ListAlbumCardsRow struct {
+	ID         uuid.UUID
+	Title      string
+	ArtistName string
+	HasCover   bool
+	Trashed    bool
+}
+
+// Albums as the queue views show them (NOTES.md N-286): the title, the
+// artist, whether there is a cover and whether the album is in the trash.
+func (q *Queries) ListAlbumCards(ctx context.Context, ids []uuid.UUID) ([]ListAlbumCardsRow, error) {
+	rows, err := q.db.Query(ctx, listAlbumCards, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAlbumCardsRow
+	for rows.Next() {
+		var i ListAlbumCardsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.ArtistName,
+			&i.HasCover,
+			&i.Trashed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAlbumClaims = `-- name: ListAlbumClaims :many
 SELECT path_key, path FROM path_claims WHERE album_id = $1 ORDER BY path_key
 `

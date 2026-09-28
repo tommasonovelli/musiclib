@@ -184,39 +184,53 @@ main:focus { outline: none; }
 }
 
 .page { --gutter: var(--s6); min-width: 0; padding: 0 var(--gutter) var(--s8); background: var(--paper); }
-.page-head {
+.head-bar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   gap: var(--s3) var(--s5); padding: var(--s6) 0 var(--s5);
 }
+.page-title { font: var(--type-large); letter-spacing: -.022em; overflow-wrap: anywhere; }
 /* The Library's search stays in view: a solid, page-wide head with a
-   hairline only while stuck, drawn by the title (N-253). */
+   hairline only while stuck, drawn by the title (N-253). Stuck, it
+   compacts: the title to the Headline size, the padding tighter (owner,
+   N-284). The bar's bottom margin gives back exactly the height it loses
+   (the sums are linear, so on every frame of the transition too): the page
+   never gets shorter, nothing under the head moves, and the stuck state
+   cannot feed back on itself. The margin belongs to the sticky head, so
+   the head lets clicks through and only its bar takes them. */
 .page-head:has(.search) {
-  position: sticky; top: 0; z-index: 4; container-type: scroll-state;
-  margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); background: var(--paper);
+  position: sticky; top: 0; z-index: 4; container-type: scroll-state; overflow-anchor: none;
+  display: grid; margin-inline: calc(-1 * var(--gutter)); pointer-events: none;
 }
+.page-head:has(.search) .head-bar {
+  position: relative; flex-wrap: nowrap; padding-inline: var(--gutter); background: var(--paper); pointer-events: auto;
+  transition: padding var(--quick) var(--ease), margin var(--quick) var(--ease), row-gap var(--quick) var(--ease);
+}
+.page-head:has(.search) .page-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  transition: font-size var(--quick) var(--ease), line-height var(--quick) var(--ease), font-weight var(--quick) var(--ease), letter-spacing var(--quick) var(--ease);
+}
+/* Full: 32 + 41 + 24 = 97px; compact: 12 + 34 (the search) + 12 = 58px. */
 @container scroll-state(stuck: top) {
   .page-title::after { content: ""; position: absolute; inset: auto 0 0; border-bottom: 1px solid var(--hairline); }
+  .page-head:has(.search) .head-bar { padding-block: var(--s3); margin-bottom: 2.4375rem; }
+  .page-head:has(.search) .page-title { font: 600 1.0625rem/2.125rem var(--family); letter-spacing: 0; }
 }
+/* Browsers without scroll-state queries: library.js sets .is-stuck. */
+.page-head.is-stuck .page-title::after { content: ""; position: absolute; inset: auto 0 0; border-bottom: 1px solid var(--hairline); }
+.page-head.is-stuck .head-bar { padding-block: var(--s3); margin-bottom: 2.4375rem; }
+.page-head.is-stuck .page-title { font: 600 1.0625rem/2.125rem var(--family); letter-spacing: 0; }
 html:has(.page-head .search) { scroll-padding-top: 8.5rem; }
-.page-title { font: var(--type-large); letter-spacing: -.022em; overflow-wrap: anywhere; }
 .backlink { display: inline-flex; align-items: center; gap: var(--s1); margin-top: var(--s5); font-weight: 500; }
 .backlink::before { content: ""; width: .45rem; height: .45rem; border: solid currentcolor; border-width: 0 0 2px 2px; transform: rotate(45deg); }
-.backlink + .page-head { padding-top: var(--s2); }
+.backlink + .page-head .head-bar { padding-top: var(--s2); }
 
 /* 5. Status: an 8px dot next to a plain word, never a badge. Queued
    graphite, Processing orange and pulsing, Error red (N-248). */
 
 .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--graphite); }
-[data-status="Error"] .dot { background: var(--error); }
-.dot-busy, [data-status="Processing"] .dot { background: var(--busy); animation: pulse 2.4s var(--ease) infinite; }
+:is([data-status="Error"], [data-state="failed"]) .dot { background: var(--error); }
+.dot-busy, :is([data-status="Processing"], [data-state="running"]) .dot { background: var(--busy); animation: pulse 2.4s var(--ease) infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
-
-/* Queue badges: dot and word too, until round 21. */
-.badge { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink); font: var(--type-note); }
-.badge::before { content: ""; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--graphite); }
-.badge[data-state="done"]::before { background: var(--ok); }
-.badge[data-state="running"]::before { background: var(--busy); animation: pulse 2.4s var(--ease) infinite; }
-.badge[data-state="failed"]::before { background: var(--error); }
 
 /* 6. Controls. At most one filled button per view: .btn-primary. */
 
@@ -232,7 +246,6 @@ html:has(.page-head .search) { scroll-padding-top: 8.5rem; }
 .btn:disabled { opacity: .5; cursor: default; filter: none; }
 .btn-primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn-primary:hover { filter: brightness(1.08); }
-.btn-sm { min-height: 1.75rem; padding: 2px var(--s3); font: var(--type-note); font-weight: 500; }
 
 input, textarea {
   min-height: 2rem; max-width: 100%; padding: var(--s1) var(--s2);
@@ -243,27 +256,11 @@ input::placeholder { color: var(--graphite); }
 input[type="number"] { text-align: right; }
 input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; accent-color: var(--accent); }
 
-.field { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
-.field > label, .field > span { color: var(--graphite); font: var(--type-note); }
-.field > input { width: 100%; }
-.field-grow { flex: 1 1 16rem; }
-
-.help { max-width: 66ch; margin-top: var(--s2); color: var(--graphite); font: var(--type-note); }
-.page > .help { margin: 0 0 var(--s5); }
-.statusline { color: var(--graphite); font: var(--type-note); }
-.statusline:empty { display: none; }
 
 .notice {
   display: grid; gap: var(--s2); margin: 0 0 var(--s5); padding: var(--s4);
   border-radius: var(--r-panel); background: color-mix(in srgb, var(--error) 9%, var(--paper));
 }
-.notice-title { color: var(--error); font-weight: 600; overflow-wrap: anywhere; }
-.notice-info { background: var(--canvas); }
-
-/* Sections of the views not yet redesigned: space and a hairline, no box. */
-.panel { margin: 0; padding: var(--s5) 0; border-top: 1px solid var(--hairline); }
-.panel > h2, .panel-head { margin-bottom: var(--s4); }
-.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); }
 .empty-row { padding: var(--s3) 0; color: var(--graphite); }
 
 /* 7. Library. */
@@ -448,40 +445,84 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
   .t-artist, .t-genre { font: var(--type-note); }
 }
 
-/* 9. Import and Activity (round 21 redesigns them). */
+/* 9. Import and Activity (N-286 to N-291): rows of folders and albums on
+   hairlines, one progress row, tabs, quiet actions. */
 
-.row-main { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: .8125rem; }
-.actionrow, .toolbar-actions { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s3); }
+.crumbs ol { display: flex; flex-wrap: wrap; margin: 0 0 var(--s4); padding: 0; list-style: none; color: var(--graphite); }
+.crumbs li + li::before { content: "/"; margin: 0 var(--s2); }
+.crumbs [aria-current] { color: var(--ink); font-weight: 600; }
+.folders, .rows { margin: 0; padding: 0; list-style: none; }
+.folder { border-bottom: 1px solid var(--hairline); }
+.folder-row, .folder-files {
+  display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; align-items: center; gap: var(--s3);
+  min-height: 2.75rem; padding: var(--s2); border-top: 1px solid var(--hairline);
+}
+a.folder-row { color: var(--ink); }
+a.folder-row:hover { background: var(--fill); text-decoration: none; }
+.folder-row .icon { color: var(--accent); }
+.is-skipped, .folder-files, .folder-sum { color: var(--graphite); }
+.is-skipped .icon, .folder-files .icon { color: inherit; }
+.folder-name { overflow-wrap: anywhere; font-weight: 500; }
+.folder-sum { font: var(--type-note); text-align: right; }
+.start { display: grid; justify-items: start; gap: var(--s3); margin-top: var(--s5); }
+.start-note, .status-note { color: var(--graphite); font: var(--type-note); }
+.status-note:empty { display: none; }
+.start .notice, .row .notice { margin: 0; }
+.recent, .advanced { margin-top: var(--s7); }
+.recent h2 { margin-bottom: var(--s3); }
 
-.pathcrumb { font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
-.browser { max-height: 22rem; margin: 0 0 var(--s4); padding: 0; overflow-y: auto; list-style: none; }
-.browser-entry + .browser-entry { border-top: 1px solid var(--hairline); }
-.entry-link, .entry-inert { display: flex; align-items: center; gap: var(--s2); padding: 6px var(--s2); font-family: var(--mono); font-size: .8125rem; overflow-wrap: anywhere; }
-.entry-link { color: var(--ink); }
-.entry-inert { color: var(--graphite); }
-/* The CSP blocks data: images (N-237): glyphs are clip-path shapes. */
-.entry-link::before, .entry-inert::before { content: ""; flex: none; width: 1rem; height: .85rem; background: var(--accent); clip-path: polygon(0 6%, 42% 6%, 54% 26%, 100% 26%, 100% 100%, 0 100%); }
-.entry-inert::before { width: .75rem; height: 1rem; background: var(--graphite); clip-path: polygon(0 0, 66% 0, 100% 26%, 100% 100%, 0 100%); }
-.entry-kind { color: var(--graphite); }
-.report-section { margin-top: var(--s5); }
-.report-section h3 { margin-bottom: var(--s2); }
-.warnings, .candidates, .joblist { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
-.warnings li { display: flex; flex-wrap: wrap; gap: var(--s2); font: var(--type-note); }
-.warning-path { font-family: var(--mono); overflow-wrap: anywhere; }
-.warning-code { color: var(--busy); font-weight: 600; }
-.candidate, .job { padding: var(--s3) 0; border-bottom: 1px solid var(--hairline); }
-.job { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s2) var(--s3); }
-.job > .row-error { grid-column: 1 / -1; }
-.row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
-.row-head .row-main { flex: 0 1 auto; font-family: inherit; font-size: inherit; font-weight: 600; }
-.row-times { margin-left: auto; color: var(--graphite); font: var(--type-note); }
-.row-error { margin-top: var(--s2); color: var(--error); font: var(--type-note); overflow-wrap: anywhere; }
-.row-actions { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s2) var(--s3); font: var(--type-note); }
-.row-actions:empty { display: none; }
-.candidate .row-actions, .candidate .warnings { margin-top: var(--s2); }
-.retry-form { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s2); }
-.retry-form .field { flex: 1 1 15rem; }
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s4); }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 var(--s4); padding: var(--s3) 0; border-top: 1px solid var(--hairline); }
+.recent .row { grid-template-columns: minmax(0, 1fr) auto auto; }
+.row > :not(.row-link, .row-meta, .row-time) { grid-column: 1 / -1; margin-top: var(--s2); margin-left: calc(40px + var(--s3)); }
+.recent .row > .row-link { margin-left: 0; }
+.row-link { display: flex; align-items: center; gap: var(--s3); min-width: 0; color: var(--ink); }
+a.row-link:hover { text-decoration: none; }
+a.row-link:hover .row-title { text-decoration: underline; }
+.thumb { display: grid; flex: none; place-items: center; width: 40px; height: 40px; overflow: hidden; border-radius: var(--r-cover); background: var(--canvas); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb-none { background: var(--graphite); color: var(--paper); font: 600 .875rem/1 var(--family); letter-spacing: -.02em; }
+.row-text { display: grid; min-width: 0; }
+.row-title, .row-note { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.row-title { font: var(--type-head); }
+.row-note, .row-meta, .row-time, .details { color: var(--graphite); font: var(--type-note); }
+.row-meta { display: flex; align-items: center; gap: var(--s2); }
+.row-time { position: relative; white-space: nowrap; }
+/* The full date: the title on hover, and above the time on keyboard focus. */
+.row:has(:focus-visible) time::after {
+  content: attr(title); position: absolute; right: 0; bottom: calc(100% + var(--s2)); z-index: 2;
+  padding: var(--s1) var(--s2); border-radius: var(--r-control); background: var(--ink); color: var(--paper); font: var(--type-note); white-space: nowrap;
+}
+.row-actions, .fix { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s2) var(--s4); }
+.row-actions .link { display: inline-flex; align-items: center; min-height: 2rem; }
+.fix { gap: var(--s2); }
+.fix-field { display: grid; gap: var(--s1); }
+.fix-field span { color: var(--graphite); font: var(--type-note); }
+.fix-field input { width: min(18rem, 60vw); }
+.details summary { width: fit-content; cursor: pointer; }
+.details :is(pre, ul) { margin: var(--s2) 0 0; padding: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; list-style: none; }
+
+.results-head { margin-bottom: var(--s4); }
+.results-title { font: var(--type-title); overflow-wrap: anywhere; }
+.progress { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); padding: var(--s3) 0; }
+.progress progress { flex: 0 1 16rem; height: 4px; border: 0; border-radius: var(--r-pill); background: var(--fill-strong); overflow: hidden; appearance: none; }
+.progress progress::-webkit-progress-bar { background: var(--fill-strong); }
+.progress progress::-webkit-progress-value { background: var(--graphite); }
+.progress progress::-moz-progress-bar { background: var(--graphite); }
+.tablist { display: flex; gap: var(--s5); margin-bottom: var(--s2); overflow-x: auto; border-bottom: 1px solid var(--hairline); }
+.tab { display: inline-flex; align-items: baseline; gap: var(--s2); margin-bottom: -1px; padding: var(--s2) 0; border-bottom: 2px solid transparent; color: var(--graphite); font-weight: 500; white-space: nowrap; }
+.tab:hover { color: var(--ink); text-decoration: none; }
+.tab:is([aria-current], [aria-selected="true"]) { border-bottom-color: var(--ink); color: var(--ink); font-weight: 600; }
+.tab .count, .group-title .count { color: var(--graphite); font: var(--type-note); }
+.tabpanel .empty-note { padding: var(--s4) 0; }
+.tabpanel .row:first-child { border-top: 0; }
+.skipped { margin-top: var(--s5); }
+
+.group { margin-bottom: var(--s6); }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); min-height: 2.5rem; margin-bottom: var(--s1); }
+.group-title { display: flex; align-items: center; gap: var(--s2); }
+.advanced { padding-top: var(--s4); border-top: 1px solid var(--hairline); }
+.advanced summary { width: fit-content; font: var(--type-head); cursor: pointer; }
+.advanced > p:not(:empty) { max-width: 60ch; margin: var(--s2) 0 var(--s3); color: var(--graphite); }
 
 /* 10. Motion answers the user; pages change by view transition. */
 
@@ -512,14 +553,21 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
   .fix-filter .count { color: var(--ink); }
   .fix-filter[data-count="0"] { display: none; }
   .page { --gutter: var(--s4); padding-bottom: var(--s7); }
-  .page-head { padding: var(--s5) 0 var(--s4); }
+  .head-bar { padding: var(--s5) 0 var(--s4); }
+  .page-head:has(.search) .head-bar { flex-wrap: wrap; }
   .search { flex-basis: 100%; }
+  /* Full: 24 + 41 + 12 + 34 + 16 = 127px; compact: 8 + 22 + 8 + 34 + 8 = 80px. */
+  @container scroll-state(stuck: top) {
+    .page-head:has(.search) .head-bar { padding-block: var(--s2); row-gap: var(--s2); margin-bottom: 2.9375rem; }
+    .page-head:has(.search) .page-title { line-height: 1.375rem; }
+  }
+  .page-head.is-stuck .head-bar { padding-block: var(--s2); row-gap: var(--s2); margin-bottom: 2.9375rem; }
+  .page-head.is-stuck .page-title { line-height: 1.375rem; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: var(--s5) var(--s4); }
   .album-panel { margin-top: calc(-1 * var(--s5)); }
   .panel-body { grid-template-columns: minmax(0, 1fr); gap: var(--s4); padding: var(--s5) var(--s4); }
   .panel-cover { width: min(100%, 15rem); }
   .panel-title { font: var(--type-title); }
-  .job { grid-template-columns: minmax(0, 1fr); }
   .savebar { left: 0; padding-inline: var(--s4); }
 }
 

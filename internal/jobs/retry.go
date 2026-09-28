@@ -27,7 +27,42 @@ const (
 	// CodeOverridesNotAllowed: overrides for a job that is not an import
 	// (§7.3: they are the import's only overrides; 422).
 	CodeOverridesNotAllowed = "job_overrides_not_allowed"
+	// CodeNotDismissable: only a failed scan or import can be dismissed; a
+	// failed render is the album's own state (409, NOTES.md N-285).
+	CodeNotDismissable = "job_not_dismissable"
 )
+
+// Dismiss is POST /api/jobs/{id}/dismiss (owner, NOTES.md N-285), in the
+// caller's catalog transaction: a failed scan or import stops needing
+// attention. It changes nothing else of the job: not its state, outcome,
+// ticket or updated_at, so the retention of §6.4 (N-200) counts from the
+// outcome as before, and a retry clears the dismissal (RetryFailedJob).
+// Dismissing a dismissed job changes nothing (changed false); anything but
+// a failed scan or import is CodeNotDismissable.
+func Dismiss(ctx context.Context, tx *store.CatalogTx, id uuid.UUID) (changed bool, err error) {
+	j, err := tx.GetJobForUpdate(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, errorf(CodeNotFound, "job %s does not exist", id)
+	}
+	if err != nil {
+		return false, dbErr("locking job "+id.String(), err)
+	}
+	if State(j.State) != StateFailed || Kind(j.Kind) == KindRender {
+		return false, errorf(CodeNotDismissable, "job %s is a %s %s: only a failed scan or import can be dismissed", id, j.State, j.Kind)
+	}
+	if j.DismissedAt != nil {
+		return false, nil
+	}
+	n, err := tx.DismissFailedJob(ctx, id)
+	if err != nil {
+		return false, dbErr("dismissing job "+id.String(), err)
+	}
+	if n != 1 {
+		// The row is locked and a failed scan or import: none here is a bug.
+		return false, errorf(CodeInvalidResult, "job %s could not be dismissed", id)
+	}
+	return true, nil
+}
 
 // Retry is §10.2 POST /api/jobs/{id}/retry, in the caller's catalog
 // transaction:

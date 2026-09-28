@@ -398,7 +398,8 @@ curl -s "$B/imports/$ID"                            # the report: scanning, impo
 curl -s "$B/jobs?state=failed"                      # pending, running, failed jobs (state=, kind=, limit=, after=)
 curl -s -X POST $M -d '{"artist":null,"title":"Kind of Blue"}' "$B/jobs/<job>/retry"   # a failed import, with §7.3 overrides
 curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/retry"                          # any failed job, overrides kept
-curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/retry-failed"
+curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/dismiss"                        # a failed scan or import: no longer needs attention
+curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/retry-failed"                          # every failed job that still needs attention
 curl -s -X POST -H X-Musiclib-Request:1 "$B/render-all"
 curl -s "$B/albums?q=miles&limit=50"                # search by title or artist; trash=true, artist=<id>, after=<next>
 ```
@@ -408,6 +409,10 @@ curl -s "$B/albums?q=miles&limit=50"                # search by title or artist;
   outside every album are the scan's `unassigned_file` warnings.
 - A retry needs no `If-Match` (it changes no album); it is idempotent while
   the job is pending or running; a done or skipped job is 409.
+- A failed scan or import stops needing attention once dismissed, or once
+  a later import of its folder succeeds (NOTES.md N-285): the job shows
+  `dismissed_at`, `superseded` and `needs_attention`, and retry-failed
+  leaves it alone. A retry of it clears the dismissal.
 - The import reports are kept 90 days, then deleted at boot or by the daily
   run of the server; batches with a job still to run are never deleted.
 - At most two uploads (cover, attachment, LRC) copy at once; a third waits

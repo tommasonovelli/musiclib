@@ -41,6 +41,19 @@ function enhance(tile) {
   return tile;
 }
 
+// ---- The head compacts while stuck (owner, NOTES.md N-284) -----------------
+// CSS does it with a scroll-state query where the browser has one. Elsewhere
+// an empty sentinel just above the head says when the head is stuck: its
+// place does not depend on the head's size, so compacting cannot move it.
+const head = document.querySelector('.page-head:has(.search)');
+if (head && !CSS.supports('container-type: scroll-state')) {
+  const sentinel = element('div');
+  head.before(sentinel);
+  new IntersectionObserver(([entry]) => {
+    head.classList.toggle('is-stuck', !entry.isIntersecting && entry.boundingClientRect.top < 0);
+  }).observe(sentinel);
+}
+
 // ---- Live search ----------------------------------------------------------
 
 let searchTimer, searchController;

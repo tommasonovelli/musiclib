@@ -3,10 +3,13 @@ package importer
 import (
 	"errors"
 	"fmt"
+	"path"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"musiclib/internal/fsops"
+	"musiclib/internal/media"
 	"musiclib/internal/names"
 )
 
@@ -95,4 +98,56 @@ func browseError(rel string, err error) error {
 		return &Error{Code: CodeSourceNotReadable, Message: fmt.Sprintf("%s cannot be read by the server", label(rel, "")), Path: rel, Err: err}
 	}
 	return sourceError(rel, err)
+}
+
+// Summary is what a directory under /import holds, from the names and
+// types of its entries alone (§7.1: no file is opened; NOTES.md N-286):
+// the Import view's «14 tracks, 2 images». Tracks are the files with an
+// audio extension of §7.2 and Images those with an image extension of the
+// scan (noProbeExtensions): an estimate for the eye, since the import
+// recognises audio by content (§7.2). Skipped are the entries the scan
+// never follows or opens: symlinks, special files, invalid names.
+type Summary struct {
+	Folders, Tracks, Images, Others, Skipped int
+}
+
+// imageExtensions are the image extensions of noProbeExtensions, lowercase,
+// without the dot.
+var imageExtensions = [...]string{"jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp"}
+
+// Tally sums up the entries of one directory.
+func Tally(ents []SourceEntry) Summary {
+	var s Summary
+	for _, e := range ents {
+		switch e.Type {
+		case EntryDirectory:
+			s.Folders++
+		case EntryFile:
+			ext := path.Ext(e.Name)
+			switch {
+			case media.HasKnownAudioExtension(e.Name):
+				s.Tracks++
+			case ext != "" && slices.Contains(imageExtensions[:], asciiLower(ext[1:])):
+				s.Images++
+			default:
+				s.Others++
+			}
+		default:
+			s.Skipped++
+		}
+	}
+	return s
+}
+
+// SortForDisplay orders entries as the Import view lists them: by the
+// natural order of §7.3 on their comparison keys (§5.2), so that "disc 2"
+// comes before "Disc 10" whatever the case, then by the bytes of the
+// names, so the order is total.
+func SortForDisplay(ents []SourceEntry) {
+	slices.SortStableFunc(ents, func(a, b SourceEntry) int {
+		if c := naturalCompare(names.Key(a.Name), names.Key(b.Name)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
 }

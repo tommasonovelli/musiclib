@@ -39,6 +39,12 @@ type queueJobJSON struct {
 	Warnings      []warningJSON  `json:"warnings"`
 	QueuedAt      time.Time      `json:"queued_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
+	// DismissedAt, Superseded and NeedsAttention say whether a failed job
+	// still needs attention (NOTES.md N-285): a dismissed or superseded
+	// failed scan or import does not, and «Retry all» leaves it alone.
+	DismissedAt    *time.Time `json:"dismissed_at"`
+	Superseded     bool       `json:"superseded"`
+	NeedsAttention bool       `json:"needs_attention"`
 }
 
 // overridesJSON are the §7.3 overrides of an import; null values are
@@ -72,6 +78,11 @@ func queueJobRep(v catalog.JobView) queueJobJSON {
 		ErrorMessage: jobMessage(v.ErrorCode, v.ErrorMessage),
 		Warnings:     make([]warningJSON, len(v.Warnings)),
 		QueuedAt:     v.QueuedAt.UTC(), UpdatedAt: v.UpdatedAt.UTC(),
+		Superseded: v.Superseded, NeedsAttention: v.Attention,
+	}
+	if v.DismissedAt != nil {
+		t := v.DismissedAt.UTC()
+		out.DismissedAt = &t
 	}
 	if v.Kind == jobs.KindImport {
 		out.Overrides = &overridesJSON{Artist: v.Overrides.Artist, Title: v.Overrides.Title}
@@ -351,9 +362,32 @@ func readOverrides(w nethttp.ResponseWriter, r *nethttp.Request) (*jobs.Override
 	return &ov, nil
 }
 
+// dismissJob is POST /api/jobs/{id}/dismiss (owner, NOTES.md N-285): a
+// failed scan or import stops needing attention, without any other change.
+// No body, no If-Match (a job has no revision, N-196). Dismissing it again
+// is the same answer; a render or a job that is not failed is 409
+// job_not_dismissable. 200 with the job.
+func (h *handlers) dismissJob(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id, ok := h.subID(w, r, "id", catalog.CodeJobNotFound)
+	if !ok {
+		return
+	}
+	if e := refuseBody(w, r); e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	v, err := h.catalog.DismissJob(r.Context(), id)
+	if err != nil {
+		h.api.fail(w, r, err)
+		return
+	}
+	h.api.writeJSON(w, nethttp.StatusOK, queueJobRep(v))
+}
+
 // retryFailed is POST /api/jobs/retry-failed (§10.2): every failed job
-// gets a new ticket, running ones are never duplicated. 202 with the
-// count.
+// that still needs attention gets a new ticket (a dismissed or superseded
+// scan or import is left alone, N-285), running ones are never duplicated.
+// 202 with the count.
 func (h *handlers) retryFailed(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if e := refuseBody(w, r); e != nil {
 		h.api.writeError(w, e)

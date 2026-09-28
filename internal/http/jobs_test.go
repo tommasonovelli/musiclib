@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"fmt"
 	nethttp "net/http"
 	"testing"
 
@@ -80,7 +81,8 @@ func TestJobsList(t *testing.T) {
 	if j["kind"] != "import" || j["state"] != "failed" || j["source_rel"] != "in/A" || j["batch_id"] != batch.String() ||
 		j["error_code"] != "mixed_album" || j["error_message"] != "two album tags: A, B" || ov == nil ||
 		ov["artist"] != nil || ov["title"] != nil || len(ov) != 2 || len(ws) != 1 || j["album_id"] != nil ||
-		ws[0].(map[string]any)["path"] != nil || j["ticket"].(float64) <= 0 || len(j) != 14 {
+		ws[0].(map[string]any)["path"] != nil || j["ticket"].(float64) <= 0 || len(j) != 17 ||
+		j["dismissed_at"] != nil || j["superseded"] != false || j["needs_attention"] != true {
 		t.Fatalf("a failed import: %v", j)
 	}
 	if !bytes.Contains(f.raw, []byte(`{"id":"`+failed.String()+`","kind":"import","state":"failed","ticket":`)) {
@@ -257,6 +259,74 @@ func TestRetryFailedAndRenderAllAPI(t *testing.T) {
 	e.wantError(req{method: "GET", path: "/api/render-all"}, nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed)
 	e.wantError(req{method: "POST", path: "/api/render-all", headers: map[string][]string{RequestHeader: {""}}},
 		nethttp.StatusForbidden, CodeRequestHeaderRequired)
+}
+
+// POST /api/jobs/{id}/dismiss (owner, NOTES.md N-285): a failed scan or
+// import stops needing attention, and «Retry all» leaves it alone; a
+// retry clears it. Nothing else of the job changes.
+func TestDismissAPI(t *testing.T) {
+	e := newEnv(t)
+	album := e.seed("Miles Davis", "Kind of Blue")
+	batch := e.newBatch()
+	failed := e.importJob(batch, "in/A", "failed")
+	other := e.importJob(batch, "in/B", "failed")
+	pending := e.importJob(batch, "in/C", "pending")
+	path := func(id uuid.UUID) string { return "/api/jobs/" + id.String() + "/dismiss" }
+	before := e.must(req{method: "GET", path: "/api/jobs?state=failed"}, ok)
+
+	e.wantError(req{method: "POST", path: path(failed), headers: map[string][]string{RequestHeader: {""}}},
+		nethttp.StatusForbidden, CodeRequestHeaderRequired)
+	e.wantError(req{method: "POST", path: path(failed), body: `{}`}, nethttp.StatusBadRequest, CodeBodyNotAllowed)
+	e.wantError(req{method: "GET", path: path(failed)}, nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed)
+	r := e.must(req{method: "POST", path: path(failed)}, ok)
+	if r.body["state"] != "failed" || r.body["dismissed_at"] == nil || r.body["needs_attention"] != false ||
+		r.body["error_code"] != "mixed_album" || r.body["superseded"] != false {
+		t.Fatalf("dismissed: %s", r.raw)
+	}
+	var was map[string]any
+	for _, j := range before.body["jobs"].([]any) {
+		if j.(map[string]any)["id"] == failed.String() {
+			was = j.(map[string]any)
+		}
+	}
+	for _, k := range []string{"ticket", "updated_at", "queued_at", "error_message", "overrides"} {
+		if fmt.Sprint(r.body[k]) != fmt.Sprint(was[k]) {
+			t.Errorf("the dismissal changed %s: %v, was %v", k, r.body[k], was[k])
+		}
+	}
+	// Again: the same answer.
+	if again := e.must(req{method: "POST", path: path(failed)}, ok); !bytes.Equal(again.raw, r.raw) {
+		t.Fatalf("a second dismissal changed the job:\n%s\n%s", r.raw, again.raw)
+	}
+	// The report and the list say so; retry-failed retries only the other.
+	rep := e.must(req{method: "GET", path: "/api/imports/" + batch.String()}, ok)
+	for _, c := range rep.body["candidates"].([]any) {
+		c := c.(map[string]any)
+		if want := c["id"] != failed.String() && c["state"] == "failed"; c["needs_attention"] != want {
+			t.Errorf("report: %v needs attention %v, want %v", c["source_rel"], c["needs_attention"], want)
+		}
+	}
+	if r := e.must(req{method: "POST", path: "/api/jobs/retry-failed"}, nethttp.StatusAccepted); r.body["retried"] != float64(1) {
+		t.Fatalf("retry-failed: %s", r.raw)
+	}
+	if e.count(`SELECT count(*) FROM jobs WHERE id = $1 AND state = 'failed'`, failed) != 1 ||
+		e.count(`SELECT count(*) FROM jobs WHERE id = $1 AND state = 'pending'`, other) != 1 {
+		t.Fatal("retry-failed retried the dismissed job or missed the other")
+	}
+	// Refusals: not failed, a failed render, an unknown job.
+	var render uuid.UUID
+	if err := e.db.QueryRow(t.Context(), `SELECT id FROM jobs WHERE kind = 'render' AND album_id = $1`, album).Scan(&render); err != nil {
+		t.Fatal(err)
+	}
+	e.exec(`UPDATE jobs SET state = 'failed', error_code = 'render_io', error_message = 'disk' WHERE id = $1`, render)
+	for _, id := range []uuid.UUID{pending, render} {
+		e.wantError(req{method: "POST", path: path(id)}, nethttp.StatusConflict, jobs.CodeNotDismissable)
+	}
+	e.wantError(req{method: "POST", path: path(store.NewID())}, nethttp.StatusNotFound, catalog.CodeJobNotFound)
+	// A retry is a new attempt: no longer dismissed.
+	if r := e.must(req{method: "POST", path: retryPath(failed)}, nethttp.StatusAccepted); r.body["dismissed_at"] != nil || r.body["state"] != "pending" {
+		t.Fatalf("retried: %s", r.raw)
+	}
 }
 
 // §6.4 at the API: the answer to a retry's COMMIT is lost, so the process

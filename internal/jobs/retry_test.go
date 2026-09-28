@@ -202,7 +202,9 @@ func TestRetryFailed(t *testing.T) {
 	runningRender := f.enqueue(f.album("B")).JobID
 	f.run(runningRender)
 	pending := f.importJob(batch, "incoming/C", time.Now())
-	done := f.importJob(batch, "incoming/D", time.Now())
+	// Outside the batch root: a success under it would supersede the
+	// failed scan (NOTES.md N-285).
+	done := f.importJob(batch, "elsewhere/D", time.Now())
 	f.exec(`UPDATE jobs SET state = 'done', result_album_id = $2 WHERE id = $1`, done, f.album("D"))
 
 	untouched := map[uuid.UUID]store.Job{}

@@ -108,6 +108,7 @@ var statusOf = map[string]int{
 	catalog.CodeJobNotFound:         nethttp.StatusNotFound,
 	catalog.CodeImportBatchConflict: nethttp.StatusConflict,
 	jobs.CodeNotRetryable:           nethttp.StatusConflict,
+	jobs.CodeNotDismissable:         nethttp.StatusConflict,
 	jobs.CodeInProgress:             nethttp.StatusConflict,
 	jobs.CodeOverridesNotAllowed:    nethttp.StatusUnprocessableEntity,
 	jobs.CodeInvalidOverrides:       nethttp.StatusUnprocessableEntity,

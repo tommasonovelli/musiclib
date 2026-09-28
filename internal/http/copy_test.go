@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"musiclib/internal/jobs"
 	"musiclib/web"
 )
 
@@ -84,7 +85,19 @@ func TestPagesSpeakEnglish(t *testing.T) {
 	gone := e.seed("Bill Evans", "Portrait")
 	_, etag := e.album(gone)
 	e.must(req{method: "DELETE", path: "/api/albums/" + gone.String(), ifMatch: etag}, 200)
+	// The Import results and Activity with failures: their sentences come
+	// from queuepages.go, not from a template (N-295).
+	batch := e.newImport("Jazz")
+	e.batchJob(batch, "Jazz/A", "failed", "mixed_album", "two album tags", uuid.Nil)
+	e.batchJob(batch, "Jazz/B", "failed", "corrupt_audio", "damaged", uuid.Nil)
+	e.batchJob(batch, "Jazz/C", "failed", "media_timeout", "slow", uuid.Nil)
+	e.batchJob(batch, "Jazz/D", "done", "", "", failed)
+	e.batchJob(batch, "Jazz/E", "skipped", "", "", running)
+	e.files("Jazz/Kind of Blue/01.flac", "Jazz/Kind of Blue/cover.jpg")
+	results := "/import?batch=" + batch.String()
 	for _, path := range []string{"/", "/?q=miles", "/?q=zzz", "/?artist=" + e.artistOf(failed).String(), "/?artist=" + uuid.New().String(), "/?fix=true", "/?trash=true", "/import", "/activity",
+		"/import?path=Jazz", "/import?path=Jazz%2FKind+of+Blue", "/import?path=Gone", "/import?batch=" + uuid.New().String(),
+		results, results + "&tab=imported", results + "&tab=present",
 		"/albums/" + failed.String(), "/albums/" + running.String(), "/albums/" + gone.String()} {
 		status, _, body := pageRequest(t, e, path, testHost)
 		if status != 200 {
@@ -92,6 +105,18 @@ func TestPagesSpeakEnglish(t *testing.T) {
 		}
 		if found := italianIn(body); len(found) != 0 {
 			t.Errorf("%s: Italian copy %q", path, found)
+		}
+	}
+	// Every sentence of the code table and its fallbacks, whether or not a
+	// page above showed it.
+	for c, p := range problems {
+		if found := italianIn(p.Sentence); len(found) != 0 {
+			t.Errorf("%s: Italian copy %q", c, found)
+		}
+	}
+	for _, s := range []string{jobProblem(jobs.KindScan, nil).Sentence, jobProblem(jobs.KindImport, nil).Sentence, renderProblem(nil)} {
+		if found := italianIn(s); len(found) != 0 {
+			t.Errorf("%q: Italian copy %q", s, found)
 		}
 	}
 	empty := pageEnv(t)

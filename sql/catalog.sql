@@ -184,6 +184,15 @@ JOIN artists ar ON ar.id = al.artist_id
 LEFT JOIN blobs cb ON cb.hash = al.cover_hash
 WHERE al.id = $1;
 
+-- Albums as the queue views show them (NOTES.md N-286): the title, the
+-- artist, whether there is a cover and whether the album is in the trash.
+-- name: ListAlbumCards :many
+SELECT al.id, al.title, ar.name AS artist_name,
+       (al.cover_hash IS NOT NULL)::boolean AS has_cover, (al.deleted_at IS NOT NULL)::boolean AS trashed
+FROM albums al
+JOIN artists ar ON ar.id = al.artist_id
+WHERE al.id = ANY(@ids::uuid[]);
+
 -- name: ListAlbumTrackViews :many
 SELECT t.id, t.disc, t.no, t.title, t.artist, t.genre, t.source_path,
        t.blob_hash, b.size AS blob_size, b.format AS blob_format, t.lyrics_hash

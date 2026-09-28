@@ -7,9 +7,24 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+const countRenderAllAlbums = `-- name: CountRenderAllAlbums :one
+SELECT count(*)::bigint AS albums FROM albums
+WHERE deleted_at IS NULL OR published_path IS NOT NULL
+`
+
+// How many albums POST /api/render-all enqueues (ListRenderAllAlbums): the
+// confirmation of «Rebuild the library folder» says it (NOTES.md N-289).
+func (q *Queries) CountRenderAllAlbums(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countRenderAllAlbums)
+	var albums int64
+	err := row.Scan(&albums)
+	return albums, err
+}
 
 const deleteBatchJobs = `-- name: DeleteBatchJobs :execrows
 DELETE FROM jobs WHERE batch_id = ANY($1::uuid[])
@@ -48,6 +63,23 @@ DELETE FROM import_batches WHERE id = ANY($1::uuid[])
 
 func (q *Queries) DeleteImportBatches(ctx context.Context, ids []uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteImportBatches, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const dismissFailedJob = `-- name: DismissFailedJob :execrows
+UPDATE jobs SET dismissed_at = coalesce(dismissed_at, now())
+WHERE id = $1 AND kind IN ('scan', 'import') AND state = 'failed'
+`
+
+// The user dismisses a failed scan or import (NOTES.md N-285): it stops
+// needing attention. Its state, outcome, ticket and updated_at stay, so
+// the retention of §6.4 is unchanged. A second dismissal keeps the first
+// time.
+func (q *Queries) DismissFailedJob(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, dismissFailedJob, id)
 	if err != nil {
 		return 0, err
 	}
@@ -172,7 +204,7 @@ func (q *Queries) FinishAttempt(ctx context.Context, arg FinishAttemptParams) (i
 }
 
 const getBatchScanJob = `-- name: GetBatchScanJob :one
-SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE kind = 'scan' AND batch_id = $1
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at, dismissed_at FROM jobs WHERE kind = 'scan' AND batch_id = $1
 `
 
 func (q *Queries) GetBatchScanJob(ctx context.Context, batchID *uuid.UUID) (Job, error) {
@@ -194,6 +226,7 @@ func (q *Queries) GetBatchScanJob(ctx context.Context, batchID *uuid.UUID) (Job,
 		&i.Warnings,
 		&i.QueuedAt,
 		&i.UpdatedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }
@@ -210,7 +243,7 @@ func (q *Queries) GetImportBatch(ctx context.Context, id uuid.UUID) (ImportBatch
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE id = $1
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at, dismissed_at FROM jobs WHERE id = $1
 `
 
 func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Job, error) {
@@ -232,12 +265,13 @@ func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Job, error) {
 		&i.Warnings,
 		&i.QueuedAt,
 		&i.UpdatedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }
 
 const getJobForUpdate = `-- name: GetJobForUpdate :one
-SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE id = $1 FOR UPDATE
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at, dismissed_at FROM jobs WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetJobForUpdate(ctx context.Context, id uuid.UUID) (Job, error) {
@@ -259,6 +293,7 @@ func (q *Queries) GetJobForUpdate(ctx context.Context, id uuid.UUID) (Job, error
 		&i.Warnings,
 		&i.QueuedAt,
 		&i.UpdatedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }
@@ -346,8 +381,131 @@ func (q *Queries) InsertScanJob(ctx context.Context, arg InsertScanJobParams) er
 	return err
 }
 
+const jobAttention = `-- name: JobAttention :many
+SELECT id, job_superseded(id)::boolean AS superseded, job_needs_attention(id)::boolean AS attention
+FROM jobs WHERE id = ANY($1::uuid[])
+`
+
+type JobAttentionRow struct {
+	ID         uuid.UUID
+	Superseded bool
+	Attention  bool
+}
+
+// Whether each job is superseded and whether it needs attention (the
+// functions of migration 00002, NOTES.md N-285), for the API's job
+// representation.
+func (q *Queries) JobAttention(ctx context.Context, ids []uuid.UUID) ([]JobAttentionRow, error) {
+	rows, err := q.db.Query(ctx, jobAttention, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JobAttentionRow
+	for rows.Next() {
+		var i JobAttentionRow
+		if err := rows.Scan(&i.ID, &i.Superseded, &i.Attention); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActivity = `-- name: ListActivity :many
+WITH listed AS (
+    SELECT j.id, j.kind, j.state, j.requested, j.album_id, j.batch_id,
+           coalesce(j.source_rel, b.root_rel, '') AS folder,
+           j.error_code, j.error_message, j.queued_at, j.updated_at,
+           al.title AS album_title, ar.name AS artist_name,
+           (al.cover_hash IS NOT NULL) AS has_cover, (al.deleted_at IS NOT NULL) AS trashed
+    FROM jobs j
+    LEFT JOIN import_batches b ON b.id = j.batch_id
+    LEFT JOIN albums al ON al.id = j.album_id
+    LEFT JOIN artists ar ON ar.id = al.artist_id
+    WHERE j.state IN ('pending', 'running') OR (j.state = 'failed' AND job_needs_attention(j.id))
+), ranked AS (
+    SELECT listed.id, listed.kind, listed.state, listed.requested, listed.album_id, listed.batch_id, listed.folder, listed.error_code, listed.error_message, listed.queued_at, listed.updated_at, listed.album_title, listed.artist_name, listed.has_cover, listed.trashed,
+           count(*) OVER (PARTITION BY state) AS state_total,
+           row_number() OVER (PARTITION BY state
+               ORDER BY CASE WHEN state = 'failed' THEN updated_at END DESC, queued_at, id) AS state_rank
+    FROM listed
+)
+SELECT id, kind, state, requested, album_id, batch_id, folder, error_code, error_message,
+       queued_at, updated_at, album_title, artist_name,
+       coalesce(has_cover, false)::boolean AS has_cover, coalesce(trashed, false)::boolean AS trashed,
+       state_total::bigint AS state_total
+FROM ranked
+WHERE state_rank <= $1::bigint
+ORDER BY state, state_rank
+`
+
+type ListActivityRow struct {
+	ID           uuid.UUID
+	Kind         string
+	State        string
+	Requested    int64
+	AlbumID      *uuid.UUID
+	BatchID      *uuid.UUID
+	Folder       string
+	ErrorCode    *string
+	ErrorMessage *string
+	QueuedAt     time.Time
+	UpdatedAt    time.Time
+	AlbumTitle   *string
+	ArtistName   *string
+	HasCover     bool
+	Trashed      bool
+	StateTotal   int64
+}
+
+// The Activity view (NOTES.md N-289): the jobs in progress, waiting and
+// needing attention, at most @per_state of each with each state's total;
+// in progress and waiting in queue order, needing attention newest first.
+// A scan or an import names its folder (the candidate, or the batch root),
+// a render its album.
+func (q *Queries) ListActivity(ctx context.Context, perState int64) ([]ListActivityRow, error) {
+	rows, err := q.db.Query(ctx, listActivity, perState)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActivityRow
+	for rows.Next() {
+		var i ListActivityRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.State,
+			&i.Requested,
+			&i.AlbumID,
+			&i.BatchID,
+			&i.Folder,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.QueuedAt,
+			&i.UpdatedAt,
+			&i.AlbumTitle,
+			&i.ArtistName,
+			&i.HasCover,
+			&i.Trashed,
+			&i.StateTotal,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBatchImportJobs = `-- name: ListBatchImportJobs :many
-SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE kind = 'import' AND batch_id = $1
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at, dismissed_at FROM jobs WHERE kind = 'import' AND batch_id = $1
 ORDER BY source_rel COLLATE "C", id
 `
 
@@ -377,6 +535,7 @@ func (q *Queries) ListBatchImportJobs(ctx context.Context, batchID *uuid.UUID) (
 			&i.Warnings,
 			&i.QueuedAt,
 			&i.UpdatedAt,
+			&i.DismissedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -452,7 +611,7 @@ func (q *Queries) ListFailedRenderAlbums(ctx context.Context) ([]uuid.UUID, erro
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at, dismissed_at FROM jobs
 WHERE state = ANY($1::text[]) AND kind = ANY($2::text[]) AND id > $3::uuid
 ORDER BY id
 LIMIT $4::int
@@ -499,6 +658,60 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 			&i.Warnings,
 			&i.QueuedAt,
 			&i.UpdatedAt,
+			&i.DismissedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentImports = `-- name: ListRecentImports :many
+SELECT b.id, b.root_rel, b.created_at,
+       count(*) FILTER (WHERE j.state IN ('pending', 'running'))::bigint AS active,
+       count(*) FILTER (WHERE j.kind = 'import' AND j.state = 'done')::bigint AS imported,
+       count(*) FILTER (WHERE j.kind = 'import' AND j.state = 'skipped')::bigint AS present,
+       count(*) FILTER (WHERE j.state = 'failed' AND job_needs_attention(j.id))::bigint AS attention
+FROM import_batches b
+JOIN jobs j ON j.batch_id = b.id
+GROUP BY b.id
+ORDER BY b.created_at DESC, b.id DESC
+`
+
+type ListRecentImportsRow struct {
+	ID        uuid.UUID
+	RootRel   string
+	CreatedAt time.Time
+	Active    int64
+	Imported  int64
+	Present   int64
+	Attention int64
+}
+
+// The import batches for «Recent imports» (NOTES.md N-288), newest first,
+// with how many of their jobs are in progress, imported, already there and
+// needing attention. Every batch is kept 90 days (§6.4).
+func (q *Queries) ListRecentImports(ctx context.Context) ([]ListRecentImportsRow, error) {
+	rows, err := q.db.Query(ctx, listRecentImports)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRecentImportsRow
+	for rows.Next() {
+		var i ListRecentImportsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RootRel,
+			&i.CreatedAt,
+			&i.Active,
+			&i.Imported,
+			&i.Present,
+			&i.Attention,
 		); err != nil {
 			return nil, err
 		}
@@ -664,12 +877,13 @@ UPDATE jobs SET
     warnings = '[]',
     queued_at = now(),
     updated_at = now()
-WHERE kind IN ('scan', 'import') AND state = 'failed'
+WHERE kind IN ('scan', 'import') AND state = 'failed' AND job_needs_attention(id)
 `
 
 // §10.2 POST /api/jobs/retry-failed, the scans and imports: every failed
-// one gets a new ticket and keeps its overrides; nothing else is touched,
-// a running job least of all.
+// one that still needs attention gets a new ticket and keeps its
+// overrides; a dismissed or superseded one is left as it is (NOTES.md
+// N-285), and nothing else is touched, a running job least of all.
 func (q *Queries) RetryAllFailedJobs(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, retryAllFailedJobs)
 	if err != nil {
@@ -688,6 +902,7 @@ UPDATE jobs SET
     error_code = NULL,
     error_message = NULL,
     warnings = '[]',
+    dismissed_at = NULL,
     queued_at = now(),
     updated_at = now()
 WHERE id = $2 AND kind IN ('scan', 'import') AND state = 'failed'
@@ -701,7 +916,8 @@ type RetryFailedJobParams struct {
 
 // §10.2 retry of a failed scan or import: a new ticket, back to pending,
 // the outcome of the failed attempt cleared; the overrides are the
-// caller's (the stored ones, or new ones for an import, §7.3).
+// caller's (the stored ones, or new ones for an import, §7.3). A new
+// attempt is no longer dismissed (NOTES.md N-285).
 func (q *Queries) RetryFailedJob(ctx context.Context, arg RetryFailedJobParams) (int64, error) {
 	row := q.db.QueryRow(ctx, retryFailedJob, arg.Overrides, arg.ID)
 	var requested int64

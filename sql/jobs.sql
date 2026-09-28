@@ -166,7 +166,8 @@ ORDER BY source_rel COLLATE "C", id;
 
 -- §10.2 retry of a failed scan or import: a new ticket, back to pending,
 -- the outcome of the failed attempt cleared; the overrides are the
--- caller's (the stored ones, or new ones for an import, §7.3).
+-- caller's (the stored ones, or new ones for an import, §7.3). A new
+-- attempt is no longer dismissed (NOTES.md N-285).
 -- name: RetryFailedJob :one
 UPDATE jobs SET
     state = 'pending',
@@ -177,14 +178,16 @@ UPDATE jobs SET
     error_code = NULL,
     error_message = NULL,
     warnings = '[]',
+    dismissed_at = NULL,
     queued_at = now(),
     updated_at = now()
 WHERE id = @id AND kind IN ('scan', 'import') AND state = 'failed'
 RETURNING requested;
 
 -- §10.2 POST /api/jobs/retry-failed, the scans and imports: every failed
--- one gets a new ticket and keeps its overrides; nothing else is touched,
--- a running job least of all.
+-- one that still needs attention gets a new ticket and keeps its
+-- overrides; a dismissed or superseded one is left as it is (NOTES.md
+-- N-285), and nothing else is touched, a running job least of all.
 -- name: RetryAllFailedJobs :execrows
 UPDATE jobs SET
     state = 'pending',
@@ -196,7 +199,74 @@ UPDATE jobs SET
     warnings = '[]',
     queued_at = now(),
     updated_at = now()
-WHERE kind IN ('scan', 'import') AND state = 'failed';
+WHERE kind IN ('scan', 'import') AND state = 'failed' AND job_needs_attention(id);
+
+-- The user dismisses a failed scan or import (NOTES.md N-285): it stops
+-- needing attention. Its state, outcome, ticket and updated_at stay, so
+-- the retention of §6.4 is unchanged. A second dismissal keeps the first
+-- time.
+-- name: DismissFailedJob :execrows
+UPDATE jobs SET dismissed_at = coalesce(dismissed_at, now())
+WHERE id = @id AND kind IN ('scan', 'import') AND state = 'failed';
+
+-- Whether each job is superseded and whether it needs attention (the
+-- functions of migration 00002, NOTES.md N-285), for the API's job
+-- representation.
+-- name: JobAttention :many
+SELECT id, job_superseded(id)::boolean AS superseded, job_needs_attention(id)::boolean AS attention
+FROM jobs WHERE id = ANY(@ids::uuid[]);
+
+-- The Activity view (NOTES.md N-289): the jobs in progress, waiting and
+-- needing attention, at most @per_state of each with each state's total;
+-- in progress and waiting in queue order, needing attention newest first.
+-- A scan or an import names its folder (the candidate, or the batch root),
+-- a render its album.
+-- name: ListActivity :many
+WITH listed AS (
+    SELECT j.id, j.kind, j.state, j.requested, j.album_id, j.batch_id,
+           coalesce(j.source_rel, b.root_rel, '') AS folder,
+           j.error_code, j.error_message, j.queued_at, j.updated_at,
+           al.title AS album_title, ar.name AS artist_name,
+           (al.cover_hash IS NOT NULL) AS has_cover, (al.deleted_at IS NOT NULL) AS trashed
+    FROM jobs j
+    LEFT JOIN import_batches b ON b.id = j.batch_id
+    LEFT JOIN albums al ON al.id = j.album_id
+    LEFT JOIN artists ar ON ar.id = al.artist_id
+    WHERE j.state IN ('pending', 'running') OR (j.state = 'failed' AND job_needs_attention(j.id))
+), ranked AS (
+    SELECT listed.*,
+           count(*) OVER (PARTITION BY state) AS state_total,
+           row_number() OVER (PARTITION BY state
+               ORDER BY CASE WHEN state = 'failed' THEN updated_at END DESC, queued_at, id) AS state_rank
+    FROM listed
+)
+SELECT id, kind, state, requested, album_id, batch_id, folder, error_code, error_message,
+       queued_at, updated_at, album_title, artist_name,
+       coalesce(has_cover, false)::boolean AS has_cover, coalesce(trashed, false)::boolean AS trashed,
+       state_total::bigint AS state_total
+FROM ranked
+WHERE state_rank <= @per_state::bigint
+ORDER BY state, state_rank;
+
+-- The import batches for «Recent imports» (NOTES.md N-288), newest first,
+-- with how many of their jobs are in progress, imported, already there and
+-- needing attention. Every batch is kept 90 days (§6.4).
+-- name: ListRecentImports :many
+SELECT b.id, b.root_rel, b.created_at,
+       count(*) FILTER (WHERE j.state IN ('pending', 'running'))::bigint AS active,
+       count(*) FILTER (WHERE j.kind = 'import' AND j.state = 'done')::bigint AS imported,
+       count(*) FILTER (WHERE j.kind = 'import' AND j.state = 'skipped')::bigint AS present,
+       count(*) FILTER (WHERE j.state = 'failed' AND job_needs_attention(j.id))::bigint AS attention
+FROM import_batches b
+JOIN jobs j ON j.batch_id = b.id
+GROUP BY b.id
+ORDER BY b.created_at DESC, b.id DESC;
+
+-- How many albums POST /api/render-all enqueues (ListRenderAllAlbums): the
+-- confirmation of «Rebuild the library folder» says it (NOTES.md N-289).
+-- name: CountRenderAllAlbums :one
+SELECT count(*)::bigint AS albums FROM albums
+WHERE deleted_at IS NULL OR published_path IS NOT NULL;
 
 -- The albums of the failed renders, for retry-failed: each is enqueued
 -- again through the single enqueue (§6.3).

@@ -37,6 +37,11 @@ func (e *env) setState(id uuid.UUID, state string) {
 		e.exec(`UPDATE jobs SET state = 'failed', error_code = 'mixed_album', error_message = 'two album tags' WHERE id = $1`, id)
 	case "done":
 		e.exec(`UPDATE jobs SET state = 'done', result_album_id = $2 WHERE id = $1`, id, e.importAlbum("R", "done "+id.String()))
+	case "dismissed":
+		e.setState(id, "failed")
+		if _, err := e.svc.DismissJob(context.Background(), id); err != nil {
+			e.t.Fatal(err)
+		}
 	case "skipped":
 		e.exec(`UPDATE jobs SET state = 'skipped', result_album_id = $2, error_code = 'duplicate_import', error_message = 'x'
 			WHERE id = $1`, id, e.importAlbum("R", "skipped "+id.String()))
@@ -309,6 +314,9 @@ func TestPurgeImportReports(t *testing.T) {
 		// The batch's own age alone keeps it: outcomes older than the
 		// batch cannot happen, but the two conditions are independent.
 		{"recent batch, old outcomes", 89, []string{"done", "failed"}, []int{100, 100}, false},
+		// A dismissal changes no outcome (N-285): the retention is the same.
+		{"old, a dismissed failure", 100, []string{"done", "dismissed"}, []int{100, 95}, true},
+		{"old, a recent dismissed failure", 100, []string{"dismissed"}, []int{80}, false},
 	}
 	ids := map[string]uuid.UUID{}
 	jobIDs := map[string][]uuid.UUID{}
@@ -328,8 +336,8 @@ func TestPurgeImportReports(t *testing.T) {
 	}
 	albums := e.count(`SELECT count(*) FROM albums`)
 	n, err := e.svc.PurgeImportReports(ctx)
-	if err != nil || n != 2 {
-		t.Fatalf("PurgeImportReports = %d, %v; want 2", n, err)
+	if err != nil || n != 3 {
+		t.Fatalf("PurgeImportReports = %d, %v; want 3", n, err)
 	}
 	for _, c := range cases {
 		kept := e.count(`SELECT count(*) FROM import_batches WHERE id = $1`, ids[c.name]) == 1

@@ -72,9 +72,9 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/":
 		a.libraryPage(w, r, b.Catalog)
 	case r.URL.Path == "/import":
-		a.renderPage(w, r, b.Catalog, "import.html", pageData{Title: "Import", Nav: "import", Queue: true})
+		a.importPage(w, r, b)
 	case r.URL.Path == "/activity":
-		a.renderPage(w, r, b.Catalog, "activity.html", pageData{Title: "Activity", Nav: "activity", Queue: true})
+		a.activityPage(w, r, b.Catalog)
 	case strings.HasPrefix(r.URL.Path, "/albums/"):
 		id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/albums/"))
 		if err != nil || id == uuid.Nil || id.String() != strings.TrimPrefix(r.URL.Path, "/albums/") {
@@ -120,10 +120,16 @@ type pageData struct {
 	// Back shows the link back above the title: to the Trash when Nav is
 	// "trash" (a trashed album), to the Library otherwise (N-281).
 	Back, Queue bool
-	Library     *libraryData
+	// Active shows the sidebar's activity dot: work of the page is in
+	// progress, and queue.js polls (Import and Activity).
+	Active  bool
+	Library *libraryData
 	// Editor is the album page; it draws its own head (the title is a
 	// field), so the layout's page head is left out.
 	Editor *editorData
+	// Import and Activity are the queue views (round 21, N-286 to N-289).
+	Import   *importView
+	Activity *activityView
 }
 
 type pageArtist struct {

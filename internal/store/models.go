@@ -73,6 +73,7 @@ type Job struct {
 	Warnings      []byte
 	QueuedAt      time.Time
 	UpdatedAt     time.Time
+	DismissedAt   *time.Time
 }
 
 type PathClaim struct {

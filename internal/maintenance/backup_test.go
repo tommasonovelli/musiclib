@@ -86,7 +86,12 @@ func TestBackupManifestAndRefusals(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.StoreID != v.StoreID() || m.SchemaVersion != 1 || m.AppVersion == "" || len(m.Blobs) != 1 {
+	latest, err := store.LatestSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The schema of this binary: 2 since the dismissal of failed jobs (N-285).
+	if m.StoreID != v.StoreID() || m.SchemaVersion != latest || latest != 2 || m.AppVersion == "" || len(m.Blobs) != 1 {
 		t.Fatalf("bad manifest: %+v", m)
 	}
 	dump, err := os.ReadFile(filepath.Join(dest, backupDump))

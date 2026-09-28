@@ -79,7 +79,7 @@ func (q *Queries) GetJournalForUpdate(ctx context.Context) (Publication, error) 
 }
 
 const getRenderJobForUpdate = `-- name: GetRenderJobForUpdate :one
-SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at FROM jobs WHERE kind = 'render' AND album_id = $1 FOR UPDATE
+SELECT id, kind, album_id, batch_id, source_rel, overrides, requested, claimed, state, result_album_id, error_code, error_message, warnings, queued_at, updated_at, dismissed_at FROM jobs WHERE kind = 'render' AND album_id = $1 FOR UPDATE
 `
 
 // The album's single render row (§4.2), locked: FINALIZE completes the
@@ -103,6 +103,7 @@ func (q *Queries) GetRenderJobForUpdate(ctx context.Context, albumID *uuid.UUID)
 		&i.Warnings,
 		&i.QueuedAt,
 		&i.UpdatedAt,
+		&i.DismissedAt,
 	)
 	return i, err
 }

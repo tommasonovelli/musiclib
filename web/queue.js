@@ -1,243 +1,324 @@
-// Queue views transport JSON; only the server validates paths and overrides.
-const errorBox = document.querySelector('#error');
-// Plain words for the API's states and kinds (N-271); data-state keeps the
-// API's value for CSS and tests.
-const words = { pending: 'Waiting', running: 'In progress', failed: 'Needs attention', done: 'Imported', skipped: 'Already there', scanning: 'Looking for albums', importing: 'Importing', completed: 'Finished', scan: 'Album search', import: 'Import', render: 'Library update', file: 'File', symlink: 'Link, not followed', special: 'Special file, skipped', invalid_name: 'Unreadable name, skipped' };
-const word = value => words[value] || value;
-const offline = 'The library isn’t responding. Try again in a moment.';
-function text(parent, tag, value) {
-  const node = document.createElement(tag);
-  node.textContent = value;
-  parent.append(node);
-  return node;
+// Import and Activity (round 21, NOTES.md N-286 to N-291). The server
+// renders both pages, so they read, browse and switch tabs without this
+// module. It adds the actions, and keeps the page current while work runs:
+// every two seconds it fetches the page itself and adopts what changed. A
+// row is replaced only when its version changed, so focus, an open
+// «Details», a half-typed title and the scroll survive a poll. Catalog text
+// is escaped once, by html/template; this module writes only textContent.
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// ---- Errors: one sentence where it happened, the answer in «Details» -------
+
+const sentences = {
+  network: 'The library isn’t responding. Try again in a moment.',
+  job_in_progress: 'This album is already being imported again.',
+  job_not_retryable: 'This album was imported in the meantime: reload the page.',
+  job_not_dismissable: 'This was retried in the meantime: reload the page.',
+  text_empty: 'The name is empty: fill it in.',
+  text_control_char: 'The name has a line break or an invisible character: remove it.',
+  text_too_long: 'The name is too long.'
+};
+// A notice exists only while there is an error (N-296): it is made right
+// after the control or line where it happened, whole before it goes in, so
+// the alert is announced once with its words; it goes when that place
+// next succeeds.
+const noticeAfter = at => (at.nextElementSibling?.classList.contains('notice') ? at.nextElementSibling : null);
+const clear = at => noticeAfter(at)?.remove();
+function fail(at, e, fallback, focus = true) {
+  let box = noticeAfter(at);
+  const fresh = !box;
+  if (fresh) {
+    box = document.createElement('div');
+    box.className = 'notice';
+    box.setAttribute('role', 'alert');
+    box.tabIndex = -1;
+    const details = document.createElement('details'), summary = document.createElement('summary');
+    summary.textContent = 'Details';
+    details.append(summary, document.createElement('pre'));
+    box.append(document.createElement('p'), details);
+  }
+  const [p, details] = box.children;
+  p.textContent = sentences[e.code] || fallback;
+  details.hidden = !e.status;
+  details.open = false;
+  $('pre', box).textContent = JSON.stringify(e, null, 2);
+  if (fresh) at.after(box);
+  if (focus) box.focus();
 }
-function error(value, background = false) {
-  errorBox.replaceChildren();
-  text(errorBox, 'strong', `${value.status ? value.status + ' ' : ''}${value.code || 'network_error'}: ${value.message || offline}`).className = 'notice-title';
-  errorBox.hidden = false;
-  if (!background) errorBox.focus();
-}
-async function request(url, method = 'GET', payload, background = false) {
+async function send(url, body) {
+  const headers = { 'X-Musiclib-Request': '1' };
+  if (body) headers['Content-Type'] = 'application/json';
   try {
-    const headers = method === 'GET' ? {} : { 'X-Musiclib-Request': '1' };
-    if (payload !== undefined) headers['Content-Type'] = 'application/json';
-    const response = await fetch(url, { method, headers, body: payload === undefined ? undefined : JSON.stringify(payload), cache: 'no-store' });
-    const result = await response.json();
-    if (!response.ok) { error({ ...result, status: response.status }, background); return null; }
-    errorBox.hidden = true;
-    return result;
-  } catch { error({ code: 'network_error', message: offline }, background); return null; }
+    const r = await fetch(url, { method: 'POST', headers, body: body && JSON.stringify(body), cache: 'no-store' });
+    const data = await r.json().catch(() => ({}));
+    return r.ok ? { data } : { error: { status: r.status, ...data, url } };
+  } catch { return { error: { code: 'network', url } }; }
 }
-function badge(parent, state) {
-  const node = text(parent, 'span', word(state));
-  node.className = 'badge';
-  node.dataset.state = state;
-  return node;
+
+// ---- Relative times, rewritten in place (N-290) ----------------------------
+
+const full = new Intl.DateTimeFormat('en-GB', { dateStyle: 'long', timeStyle: 'short' });
+const date = new Intl.DateTimeFormat('en-GB', { dateStyle: 'long' });
+function relative(d) {
+  const s = (Date.now() - d) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${plural(Math.floor(s / 60), 'minute')} ago`;
+  if (s < 86400) return `${plural(Math.floor(s / 3600), 'hour')} ago`;
+  if (s < 2592000) return `${plural(Math.floor(s / 86400), 'day')} ago`;
+  return date.format(d);
 }
-function link(parent, href, label) {
-  const anchor = text(parent, 'a', label);
-  anchor.href = href;
-  return anchor;
-}
-function warnings(parent, values) {
-  parent.replaceChildren();
-  for (const w of values || []) {
-    const item = text(parent, 'li', '');
-    if (w.path) text(item, 'span', w.path).className = 'warning-path';
-    text(item, 'span', w.code).className = 'warning-code';
-    text(item, 'span', w.message).className = 'warning-message';
+function times() {
+  for (const t of $$('time[datetime]')) {
+    const d = new Date(t.dateTime);
+    t.title = full.format(d);
+    const words = relative(d);
+    if (t.textContent !== words) t.textContent = words;
   }
-  parent.hidden = !parent.childElementCount;
 }
-function jobLinks(parent, job) {
-  if (job.batch_id) link(parent, `/import?batch=${encodeURIComponent(job.batch_id)}`, 'Import results');
-  if (job.result_album_id || job.album_id) link(parent, `/albums/${encodeURIComponent(job.result_album_id || job.album_id)}`, 'Open album');
+
+// ---- Keeping the page current (N-291) --------------------------------------
+
+const served = new Map(); // id of a [data-live] element -> the server's HTML
+const remember = () => { for (const el of $$('[data-live]')) served.set(el.id, el.outerHTML); };
+function enable(root) {
+  for (const el of $$('[data-js]', root)) el.hidden = false;
+  return root;
 }
-function retry(parent, job, refresh, overrides = false) {
-  if (job.state !== 'failed') return;
-  const form = text(parent, 'form', '');
-  form.className = 'retry-form';
-  if (overrides && job.kind === 'import') {
-    for (const field of ['artist', 'title']) {
-      const label = text(form, 'label', '');
-      label.className = 'field';
-      text(label, 'span', `Use this ${field} (empty = use the tags)`);
-      const input = text(label, 'input', '');
-      input.name = field;
-      input.value = job.overrides?.[field] || '';
-    }
+const focusable = row => $('a, button:not([disabled]), input:not([type=hidden]), summary', row);
+
+// Parts ([data-part]: a group of Activity, its «And N more», an empty
+// state) are rendered only while they have something to say (N-296): one
+// the server no longer sends goes, a new one goes in beside its server
+// neighbour that is already here.
+function spot(f) { // where f goes: after the nearest server sibling that is here
+  for (let s = f.previousElementSibling; s; s = s.previousElementSibling) {
+    const here = s.id && document.getElementById(s.id);
+    if (here) return node => here.after(node);
   }
-  const button = text(form, 'button', 'Retry');
-  button.className = 'btn btn-sm btn-primary';
-  button.type = 'submit';
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    button.disabled = true;
-    // Empty body preserves stored overrides; complete replacement clears blanks.
-    const body = overrides && job.kind === 'import' ? {
-      artist: form.elements.namedItem('artist').value || null,
-      title: form.elements.namedItem('title').value || null
-    } : undefined;
-    const result = await request(`/api/jobs/${encodeURIComponent(job.id)}/retry`, 'POST', body);
-    if (result) await refresh();
-    else button.disabled = false;
-  });
+  for (let s = f.nextElementSibling; s; s = s.nextElementSibling) {
+    const here = s.id && document.getElementById(s.id);
+    if (here) return node => here.before(node);
+  }
+  const parent = document.getElementById(f.parentElement.id);
+  return node => parent?.append(node);
 }
-const source = document.querySelector('#source');
-if (source) {
-  const input = document.querySelector('#import-path');
-  const entries = document.querySelector('#source-entries');
-  const report = document.querySelector('#report');
-  let active = false;
-  let reportGeneration = 0;
-  const invalidatedDrafts = new Set();
-  const requestID = crypto.randomUUID(); // Retained for the same submission after lost answers.
-  async function browse(path) {
-    const data = await request(`/api/import-source?path=${encodeURIComponent(path)}`);
-    if (!data) return;
-    input.value = data.path;
-    document.querySelector('#source-path').textContent = `Music folder${data.path ? '/' + data.path : ''}`;
-    entries.replaceChildren();
-    if (data.path) {
-      const up = data.path.split('/').slice(0, -1).join('/');
-      const item = text(entries, 'li', '');
-      item.className = 'browser-entry entry-up';
-      const anchor = link(item, '#', '..');
-      anchor.className = 'entry-link';
-      anchor.setAttribute('aria-label', 'Parent folder');
-      anchor.addEventListener('click', event => { event.preventDefault(); browse(up); });
-    }
-    for (const entry of data.entries) {
-      const li = text(entries, 'li', '');
-      li.className = 'browser-entry';
-      if (entry.type === 'directory') {
-        const anchor = link(li, '#', entry.name + '/');
-        anchor.className = 'entry-link entry-directory';
-        anchor.addEventListener('click', event => {
-          event.preventDefault(); browse(data.path ? `${data.path}/${entry.name}` : entry.name);
-        });
-      } else {
-        li.classList.add('entry-inert');
-        li.dataset.type = entry.type;
-        text(li, 'span', entry.name).className = 'entry-name';
-        text(li, 'span', word(entry.type)).className = 'entry-kind';
+
+function patch(doc) {
+  let lost = null; // the neighbour of a focused row or part that went away
+  for (const el of $$('[data-part]')) {
+    if (doc.getElementById(el.id)) continue;
+    if (el.contains(document.activeElement)) lost = el.nextElementSibling || $('main');
+    el.remove();
+  }
+  for (const f of [...doc.querySelectorAll('[data-part]')]) {
+    if (document.getElementById(f.id)) continue;
+    const node = document.importNode(f, true); // a copy: the server's page keeps its order for the next part
+    spot(f)(node);
+    enable(node);
+    for (const el of $$('[data-live]', node)) served.set(el.id, el.outerHTML);
+  }
+  for (const el of $$('[data-live]')) {
+    const fresh = doc.getElementById(el.id);
+    if (!fresh || fresh.outerHTML === served.get(el.id)) continue;
+    served.set(el.id, fresh.outerHTML);
+    el.replaceWith(document.adoptNode(fresh));
+  }
+  for (const el of $$('[data-hide]')) {
+    const fresh = doc.getElementById(el.id);
+    if (fresh) el.hidden = fresh.hidden;
+  }
+  for (const list of $$('[data-rows]')) {
+    const fresh = doc.getElementById(list.id);
+    if (!fresh) continue;
+    const old = new Map($$(':scope > [data-key]', list).map(row => [row.dataset.key, row]));
+    let prev = null;
+    for (const f of [...fresh.children]) {
+      let row = old.get(f.dataset.key);
+      old.delete(f.dataset.key);
+      if (!row || row.dataset.version !== f.dataset.version) {
+        const next = enable(document.adoptNode(f));
+        if (row) {
+          if (row.contains(document.activeElement)) lost = next;
+          row.replaceWith(next);
+        } else if (prev) prev.after(next);
+        else list.prepend(next);
+        row = next;
       }
+      prev = row;
     }
-    if (!entries.childElementCount) text(entries, 'li', 'This folder is empty.').className = 'empty-row';
+    for (const row of old.values()) {
+      if (row.contains(document.activeElement)) lost = row.nextElementSibling || row.previousElementSibling || list;
+      row.remove();
+    }
   }
-  async function loadReport(id, background = false) {
-    const generation = reportGeneration;
-    const data = await request(`/api/imports/${encodeURIComponent(id)}`, 'GET', undefined, background);
-    if (!data || generation !== reportGeneration) return;
-    // Read drafts after the fetch: users may have typed while it was in flight.
-    const drafts = new Map();
-    let focused;
-    for (const li of document.querySelectorAll('#candidates > li[data-job-id]')) {
-      const form = li.querySelector('form');
-      if (!form) continue;
-      const values = {};
-      for (const field of ['artist', 'title']) {
-        const input = form.elements.namedItem(field);
-        values[field] = input.value;
-        if (input === document.activeElement) {
-          focused = { id: li.dataset.jobId, field, start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection };
-        }
-      }
-      drafts.set(li.dataset.jobId, values);
-    }
-    source.hidden = true; report.hidden = false;
-    document.querySelector('#batch-state').textContent = `${data.path || 'Music folder'}: ${word(data.state)}, started ${data.created_at}`;
-    document.querySelector('#scan').textContent = `${data.scan.state === 'done' ? 'Finished' : word(data.scan.state)}${data.scan.error_code ? ': ' + data.scan.error_code + ' — ' + data.scan.error_message : ''}`;
-    const scanWarnings = document.querySelector('#scan-warnings');
-    warnings(scanWarnings, data.scan.warnings);
-    document.querySelector('#warnings-section').hidden = scanWarnings.hidden;
-    const list = document.querySelector('#candidates'); list.replaceChildren();
-    if (!data.candidates.length) text(list, 'li', data.state === 'completed' ? 'No albums found. The album search above says why.' : 'Looking for albums…').className = 'empty-row';
-    for (const job of data.candidates) {
-      const li = text(list, 'li', '');
-      li.className = 'candidate';
-      li.dataset.jobId = job.id;
-      const head = text(li, 'div', '');
-      head.className = 'row-head';
-      text(head, 'span', job.source_rel).className = 'row-main';
-      badge(head, job.state);
-      if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`).className = 'row-error';
-      const warningList = text(li, 'ul', ''); warningList.className = 'warnings'; warnings(warningList, job.warnings);
-      const actions = text(li, 'div', '');
-      actions.className = 'row-actions';
-      jobLinks(actions, job);
-      retry(actions, job, () => {
-        // A successful retry starts a new attempt: never carry its old form forward.
-        invalidatedDrafts.add(job.id);
-        reportGeneration++;
-        return loadReport(id);
-      }, true);
-      const form = li.querySelector('form');
-      if (form && drafts.has(job.id) && !invalidatedDrafts.has(job.id)) {
-        for (const field of ['artist', 'title']) form.elements.namedItem(field).value = drafts.get(job.id)[field];
-        if (focused?.id === job.id) {
-          const input = form.elements.namedItem(focused.field);
-          input.focus();
-          input.setSelectionRange(focused.start, focused.end, focused.direction);
-        }
-      }
-      invalidatedDrafts.delete(job.id);
-    }
-    active = data.state === 'scanning' || data.state === 'importing';
-    document.querySelector('#nav-active').hidden = !active;
+  if (lost && !document.activeElement?.closest('main')) (focusable(lost) || $('[aria-selected=true]') || $('main')).focus();
+  times();
+  if (!chosen) {
+    const open = tabs.find(t => t.getAttribute('aria-selected') === 'true');
+    const first = tabs.find(t => $(`#rows-${t.dataset.tab}`).children.length);
+    if (open && first && !$(`#rows-${open.dataset.tab}`).children.length) select(first);
   }
-  document.querySelector('#import-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const button = event.currentTarget.querySelector('button');
-    button.disabled = true;
-    const data = await request('/api/imports', 'POST', { id: requestID, path: input.value });
-    button.disabled = false;
-    if (!data) return;
-    history.replaceState(null, '', `/import?batch=${encodeURIComponent(data.id)}`);
-    await loadReport(data.id);
-  });
-  const batch = new URLSearchParams(location.search).get('batch');
-  if (batch) loadReport(batch);
-  else browse('');
-  setInterval(() => { if (active && !document.hidden) loadReport(new URLSearchParams(location.search).get('batch'), true); }, 2000);
 }
-const activity = document.querySelector('#jobs');
-if (activity) {
-  let active = false;
-  async function refresh() {
-    const all = []; let after = null;
-    do {
-      const page = await request(`/api/jobs?limit=200${after ? '&after=' + encodeURIComponent(after) : ''}`);
-      if (!page) return;
-      all.push(...page.jobs); after = page.next;
-    } while (after);
-    activity.replaceChildren();
-    for (const job of all) {
-      const li = text(activity, 'li', '');
-      li.className = 'job';
-      const head = text(li, 'div', '');
-      head.className = 'row-head';
-      badge(head, job.state);
-      text(head, 'span', `${word(job.kind)}${job.source_rel ? ' — ' + job.source_rel : ''}`).className = 'row-main';
-      text(head, 'span', `Added ${job.queued_at}, updated ${job.updated_at}`).className = 'row-times';
-      if (job.error_code) text(li, 'p', `${job.error_code}: ${job.error_message}`).className = 'row-error';
-      const actions = text(li, 'div', '');
-      actions.className = 'row-actions';
-      jobLinks(actions, job);
-      retry(actions, job, refresh);
-    }
-    if (!all.length) text(activity, 'li', 'Your library is up to date.').className = 'empty-row';
-    active = all.some(job => job.state === 'pending' || job.state === 'running');
-    document.querySelector('#nav-active').hidden = !active;
-    document.querySelector('#activity-state').textContent = active ? 'Updating your library.' : 'Nothing in progress.';
+
+// Answers are applied in the order they were requested: one older than the
+// last applied is dropped, so a report requested before an accepted change
+// never overwrites one requested after it (N-210, N-291).
+let requested = 0, applied = 0;
+let kicked = false; // Work was just queued: poll once more even if the dot is off.
+
+async function refresh(background = false) {
+  const seq = ++requested;
+  let doc;
+  try {
+    const r = await fetch(location.pathname + location.search, { cache: 'no-store', headers: { Accept: 'text/html' } });
+    if (!r.ok) throw { status: r.status, url: r.url };
+    doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+  } catch (e) {
+    const at = $('#progress') || $('#activity-note');
+    if (seq > applied && at) fail(at, e.status ? e : { code: 'network' }, sentences.network, !background);
+    return;
   }
-  document.querySelector('#retry-failed').addEventListener('click', async () => {
-    if (await request('/api/jobs/retry-failed', 'POST')) await refresh();
-  });
-  document.querySelector('#render-all').addEventListener('click', async () => {
-    if (!confirm('Rebuild the library folder? Every album is written again, which takes time and disk space.')) return;
-    if (await request('/api/render-all', 'POST')) await refresh();
-  });
-  refresh();
-  setInterval(() => { if (active && !document.hidden) refresh(); }, 2000);
+  if (seq < applied) return;
+  applied = seq;
+  kicked = false;
+  const at = $('#progress') || $('#activity-note');
+  if (at) clear(at);
+  patch(doc);
 }
+function accepted() {
+  kicked = true; // Work was queued: poll until the page says it is done.
+  return refresh();
+}
+
+// ---- Tabs: the ARIA tabs pattern over links that work without JS ------------
+
+const tabs = $$('.tab');
+let chosen = false;
+function select(tab, focus = false) {
+  for (const t of tabs) {
+    const on = t === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(`#panel-${t.dataset.tab}`).hidden = !on;
+  }
+  if (!focus) return;
+  tab.focus();
+  const url = new URL(location);
+  url.searchParams.set('tab', tab.dataset.tab);
+  history.replaceState(null, '', url);
+}
+if (tabs.length) {
+  const list = $('.tablist');
+  list.setAttribute('role', 'tablist');
+  for (const t of tabs) {
+    t.setAttribute('role', 'tab');
+    t.setAttribute('aria-controls', `panel-${t.dataset.tab}`);
+    $(`#panel-${t.dataset.tab}`).setAttribute('role', 'tabpanel');
+  }
+  select(tabs.find(t => t.hasAttribute('aria-current')) || tabs[0]);
+  for (const t of tabs) t.removeAttribute('aria-current');
+  list.addEventListener('click', e => {
+    const t = e.target.closest('.tab');
+    if (!t || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;
+    e.preventDefault();
+    chosen = true;
+    select(t, true);
+  });
+  list.addEventListener('keydown', e => {
+    const i = tabs.indexOf(document.activeElement);
+    const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1, ' ': i }[e.key];
+    if (i < 0 || to === undefined) return;
+    e.preventDefault();
+    chosen = true;
+    select(tabs[(to + tabs.length) % tabs.length], true);
+  });
+}
+
+// ---- Import --------------------------------------------------------------------
+
+const start = $('#import-start');
+if (start) {
+  const id = crypto.randomUUID(); // One per page: a lost answer is sent again with it (N-210).
+  start.addEventListener('click', async () => {
+    start.disabled = true;
+    const { data, error } = await send('/api/imports', { id, path: start.dataset.path });
+    start.disabled = false;
+    if (error) return fail($('.start-note'), error, 'The import didn’t start. Try again.');
+    location.assign(`/import?batch=${encodeURIComponent(data.id)}`);
+  });
+}
+$('.folders')?.addEventListener('keydown', e => {
+  const links = $$('a.folder-row');
+  const i = links.indexOf(document.activeElement);
+  if (i < 0 || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+  e.preventDefault();
+  links[Math.min(links.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1)))].focus();
+});
+
+// A row's one fix, and «Dismiss».
+async function act(control, url, body, fallback, starts) {
+  chosen = true; // The user is working in this tab: it stays open.
+  const row = control.closest('.row');
+  const buttons = $$('button', row);
+  for (const b of buttons) b.disabled = true;
+  const { error } = await send(url, body);
+  for (const b of buttons) b.disabled = false;
+  const at = $('.row-actions', row);
+  if (error) return fail(at, error, fallback);
+  clear(at);
+  return starts ? accepted() : refresh();
+}
+document.addEventListener('submit', e => {
+  const form = e.target.closest('form.fix');
+  if (!form) return;
+  e.preventDefault();
+  // Exactly the two overrides of §7.3; an empty one goes back to the tags.
+  const body = { artist: form.elements.namedItem('artist').value || null, title: form.elements.namedItem('title').value || null };
+  act(form, `/api/jobs/${encodeURIComponent(form.dataset.job)}/retry`, body, 'The import didn’t start again. Try again.', true);
+});
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-retry], [data-dismiss]');
+  if (!b) return;
+  if (b.dataset.retry) act(b, `/api/jobs/${encodeURIComponent(b.dataset.retry)}/retry`, undefined, 'It didn’t start again. Try again.', true);
+  else act(b, `/api/jobs/${encodeURIComponent(b.dataset.dismiss)}/dismiss`, undefined, 'It wasn’t dismissed. Try again.', false);
+});
+
+// ---- Activity ------------------------------------------------------------------
+
+document.addEventListener('click', async e => { // Delegated: the group comes and goes (N-296).
+  const b = e.target.closest('#retry-all');
+  if (!b) return;
+  b.disabled = true;
+  const { data, error } = await send('/api/jobs/retry-failed');
+  b.disabled = false;
+  if (error) return fail(b.closest('.group-head'), error, 'Nothing was queued again. Try again.');
+  clear(b.closest('.group-head'));
+  $('#activity-note').textContent = `${plural(data.retried, 'album')} queued again`;
+  accepted();
+});
+const ask = $('#rebuild-ask');
+$('#rebuild')?.addEventListener('click', () => {
+  ask.returnValue = '';
+  ask.showModal();
+});
+ask?.addEventListener('close', async () => {
+  if (ask.returnValue !== 'ok') return;
+  const { data, error } = await send('/api/render-all');
+  if (error) return fail($('#rebuild-note'), error, 'The library folder wasn’t rebuilt. Try again.');
+  clear($('#rebuild-note'));
+  $('#rebuild-note').textContent = `${plural(data.enqueued, 'album')} queued`;
+  accepted();
+});
+
+enable(document);
+remember();
+times();
+setInterval(times, 30000);
+(function poll() {
+  setTimeout(async () => {
+    if ((kicked || !$('#nav-active').hidden) && !document.hidden) await refresh(true);
+    poll();
+  }, 2000);
+})();

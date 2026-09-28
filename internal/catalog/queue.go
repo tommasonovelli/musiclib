@@ -55,6 +55,13 @@ type JobView struct {
 	Warnings     []jobs.Warning
 	QueuedAt     time.Time
 	UpdatedAt    time.Time
+	// DismissedAt is when the user dismissed a failed scan or import;
+	// Superseded is true when a later import of its source succeeded;
+	// Attention is true for a failed job that still needs attention: not
+	// dismissed, not superseded (NOTES.md N-285).
+	DismissedAt *time.Time
+	Superseded  bool
+	Attention   bool
 }
 
 func jobView(j store.Job) (JobView, error) {
@@ -62,6 +69,7 @@ func jobView(j store.Job) (JobView, error) {
 		ID: j.ID, Kind: jobs.Kind(j.Kind), State: jobs.State(j.State), Ticket: j.Requested,
 		AlbumID: j.AlbumID, BatchID: j.BatchID, SourceRel: j.SourceRel, ResultAlbumID: j.ResultAlbumID,
 		ErrorCode: j.ErrorCode, ErrorMessage: j.ErrorMessage, QueuedAt: j.QueuedAt, UpdatedAt: j.UpdatedAt,
+		DismissedAt: j.DismissedAt,
 	}
 	var err error
 	if v.Overrides, err = jobs.DecodeOverrides(j.Overrides); err != nil {
@@ -73,13 +81,28 @@ func jobView(j store.Job) (JobView, error) {
 	return v, nil
 }
 
-func jobViews(rows []store.Job) ([]JobView, error) {
+// jobViews builds the views of rows read by q, with whether each is
+// superseded and needs attention, read in the same snapshot.
+func jobViews(ctx context.Context, q *store.Queries, rows []store.Job) ([]JobView, error) {
 	out := make([]JobView, len(rows))
+	ids := make([]uuid.UUID, len(rows))
+	at := make(map[uuid.UUID]int, len(rows))
 	for i, r := range rows {
 		var err error
 		if out[i], err = jobView(r); err != nil {
 			return nil, err
 		}
+		ids[i], at[r.ID] = r.ID, i
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	flags, err := q.JobAttention(ctx, ids)
+	if err != nil {
+		return nil, dbErr("reading whether the jobs need attention", err)
+	}
+	for _, f := range flags {
+		out[at[f.ID]].Superseded, out[at[f.ID]].Attention = f.Superseded, f.Attention
 	}
 	return out, nil
 }
@@ -135,7 +158,7 @@ func (s *Service) ListJobs(ctx context.Context, f JobFilter) (JobPage, error) {
 			rows = rows[:f.Limit]
 			page.Next = rows[f.Limit-1].ID
 		}
-		page.Jobs, err = jobViews(rows)
+		page.Jobs, err = jobViews(ctx, q, rows)
 		return err
 	})
 	return page, err
@@ -155,8 +178,12 @@ func (s *Service) GetJob(ctx context.Context, id uuid.UUID) (JobView, error) {
 		if err != nil {
 			return dbErr("reading job "+id.String(), err)
 		}
-		v, err = jobView(j)
-		return err
+		views, err := jobViews(ctx, q, []store.Job{j})
+		if err != nil {
+			return err
+		}
+		v = views[0]
+		return nil
 	})
 	return v, err
 }
@@ -221,11 +248,12 @@ func (s *Service) GetImportReport(ctx context.Context, id uuid.UUID) (ImportRepo
 			return dbErr("listing the import jobs of batch "+id.String(), err)
 		}
 		r = ImportReport{Batch: ImportBatch{ID: b.ID, RootRel: b.RootRel, CreatedAt: b.CreatedAt, ScanJobID: scan.ID}}
-		if r.Scan, err = jobView(scan); err != nil {
+		views, err := jobViews(ctx, q, append([]store.Job{scan}, imports...))
+		if err != nil {
 			return err
 		}
-		r.Imports, err = jobViews(imports)
-		return err
+		r.Scan, r.Imports = views[0], views[1:]
+		return nil
 	})
 	return r, err
 }

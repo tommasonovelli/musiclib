@@ -5273,7 +5273,7 @@ that every attachment is a valid cover; failed choices display the typed
 error without losing edits. A real-browser test uploads an image attachment,
 selects it, removes the cover and uploads a replacement.
 
-### N-210 · Import and Activity browser state — DECIDED
+### N-210 · Import and Activity browser state — DECIDED (round 21 keeps the retained UUID, the generation check and the draft guarantees; the rest is N-286 to N-292)
 DESIGN.md §6.4, §7.1–§7.3, §10.3: `/import?batch=<UUID>` is a bookmarkable
 report; there is no batch-list API. The browser generates one UUID per loaded
 import form and retains it after a failed/lost response. It disables submit
@@ -5600,7 +5600,7 @@ viewport until `.table-wrap` was made the containing block (measured in
 Chromium, not guessed); and the numeric inputs need a fixed `width`, not
 `100%`, or the auto table layout squeezes the disc column to a few pixels.
 
-### N-242 · The queue views' generated DOM is a test contract — DECIDED
+### N-242 · The queue views' generated DOM is a test contract — DECIDED (superseded by N-292: the pages are server-rendered since round 21)
 `web/queue.js` now builds rows instead of single text nodes (a `.row-head`
 first child, a `.row-error` paragraph, a `.warnings` list, a `.row-actions`
 container holding the links and the retry form). The chromedp tests read
@@ -6104,7 +6104,7 @@ History (uncompressed bytes):
   one is named by a template or a script); its fixes (N-278) added a few
   dozen bytes of CSS and 154 of JS.
 Round 21 rewrites `queue.js` and the Import/Activity CSS and reports
-against the 90 KB.
+against the 90 KB (done: N-294).
 
 ### N-268 · Visual decisions of the editor — DECIDED
 - Header: the 240px cover (the one shadow, `view-transition-name:
@@ -6210,7 +6210,7 @@ The words where the glossary has no English entry: «Needs attention» for
 «Waiting» for «in attesa», «Up to date» for «aggiornato» (not shown in the
 Library), «In the trash» for «nel cestino» (not shown either).
 
-### N-271 · Import and Activity: the copy only, as far as the strings go — DECIDED
+### N-271 · Import and Activity: the copy only, as far as the strings go — RESOLVED (round 21: N-286 to N-289)
 Round 21 redesigns these pages, so only their existing strings changed; no
 section, list, polling rule or request did. Template copy: «Choose a folder
 to import. The originals are never changed; don’t move them until the import
@@ -6399,7 +6399,7 @@ centre hole; the tooltip sat 3px from the focus ring and moved to 12px from
 the row; the Import panel was titled «Music folder» next to the crumb
 «Music folder» and is now «Folders», and the help sentence lost its second
 «music folder». Still visible and left to round 21: Activity's ISO times,
-job kinds and two filled buttons (N-271).
+job kinds and two filled buttons (N-271; all three gone since N-289, N-290).
 
 ## UI redesign: merge of rounds 20 and 20b (2026-09-28)
 
@@ -6541,3 +6541,499 @@ now use `text-overflow: ellipsis` (shown while the field is not focused).
 Budget after the review (N-267): 70,973 bytes of CSS + JS (`app.css`
 30,229, `app.js` 14,089, `library.js` 13,412, `queue.js` 12,022,
 `sidebar.js` 1,221).
+
+## UI redesign, round 21: Import and Activity (2026-09-28)
+
+### N-284 · The Library head compacts while it is stuck — DECIDED (owner, 2026-09-28)
+**Owner decision:** the Library/Trash head (large title and search, sticky
+since N-253) stays sticky but becomes smaller while scrolling, as iOS large
+titles do: the title from Large title (34/41) to Headline (17), the vertical
+padding tighter, the search usable and in place, the hairline as it was;
+200 ms on the system curve, nothing under reduced motion.
+- **The pitfall, designed out.** Shrinking a sticky head shortens the page:
+  with scroll anchoring (or the clamp of a short page) the scroll position
+  moves back over the threshold, the head grows again, and so on. Here the
+  page never gets shorter: `.head-bar` (a new wrapper in `layout.html`, the
+  flex row of the title and the tools) takes, as its own bottom margin,
+  exactly the height it gives up: 97 → 58 px + 39 on a laptop (32 + 41 + 24
+  against 12 + 34 + 12: the search sets the compact row), 127 → 80 px + 47
+  on a phone (the search on its own line). Every term is linear in the
+  transition, and the compact title's line height on a laptop is 34 px (the
+  search's height, so the row is no taller) rather than 22, so the sum holds
+  on every frame, not only at the ends. The margin belongs to the sticky
+  head, which lets clicks through (`pointer-events: none`; the bar takes them
+  again), and `overflow-anchor: none` keeps the head out of anchor
+  selection. The stuck threshold (the head's place in the flow) and the page
+  height are therefore independent of the head's size: no hysteresis needed.
+- **Mechanism, chosen:** CSS `@container scroll-state(stuck: top)` where the
+  browser has it (Chromium; the rules set the bar and the title, which are
+  descendants of the container), and in `library.js` a small
+  IntersectionObserver fallback when `CSS.supports('container-type:
+  scroll-state')` is false: an empty sentinel inserted just above the head
+  (its place does not depend on the head's size) toggles `.is-stuck` on the
+  head, which the same declarations follow (the hairline too). No scroll
+  listener.
+- The title no longer wraps in that head: it ends in an ellipsis (a long
+  artist's name is also in «Albums by …» under it).
+- Import and Activity have no sticky head, so nothing applies there.
+- Test: `TestBrowserLibraryHeadCompacts` at 1280 and 390 px, with reduced
+  motion, and with the fallback forced (`CSS.supports` answering false for
+  scroll-state), at both widths: full at the top (34 px, 97/127 px of flow,
+  no hairline), compact exactly when stuck, one pixel at a time across the
+  threshold down and up with the page height, the scroll position and the
+  search's x unchanged at every step, a second of samples just past the
+  threshold in which the title only ever shrinks, transitions of 0.2 s (0 s
+  with reduced motion), and clicks under the given-back margin reaching the
+  grid.
+
+### N-285 · Stale failures stop needing attention: dismissed, or superseded by a later import — DECIDED (owner, 2026-09-28)
+**Owner decision:** failed imports the owner has fixed outside the app must
+not pile up until the 90-day purge (N-200). A refinement of DESIGN.md §6.4
+(«errore visibile, pulsanti Riprova e Riprova falliti»): a failure stays
+visible, with its fix, until it is fixed, dismissed or made moot.
+- **Schema (migration `00002_job_attention.sql`; a deviation from the
+  normative §4.2, by owner decision):** `jobs.dismissed_at timestamptz`, only
+  on a failed scan or import (`jobs_dismissed_check`); a retry clears it
+  (`RetryFailedJob`). Two SQL functions hold the rule in one place,
+  `job_superseded(id)` and `job_needs_attention(id)`. Neither a dismissal
+  nor a supersession changes a job's state, outcome, ticket or `updated_at`,
+  so §6.4's retention is exactly N-200's (tested: an old batch with a
+  dismissed failure is purged, a recent dismissal is kept), and a dismissal
+  runs in a catalog transaction like every other change of an outcome.
+- **The supersede rule.** A failed scan or import F is superseded when an
+  import requested after F's last attempt (a larger ticket, whatever the
+  clocks) is done or skipped (the album is in the library, or already was)
+  and its candidate path is:
+
+  | F | code of F | superseded by a later success of |
+  |---|---|---|
+  | import of P | `not_a_candidate`, `ambiguous_candidate`, `no_valid_candidate` (the remedy is to import the subfolders) | P, or any path under P |
+  | import of P | any other code, `mixed_album` included | P itself only |
+  | scan of the batch root R | any code (a scan covers its whole folder) | R, or any path under R |
+
+  "Under" is byte-wise `P/…`, so `Álvaro Soler Live/…` is not under
+  `Álvaro Soler`; `''` (/import itself) has everything under it. A
+  fingerprint cannot be matched: a failed job never recorded one (§7.6
+  computes it during the import). A folder renamed before its new import is
+  not matched: the user dismisses the old failure.
+- **One problem, one row:** a scan that failed `no_valid_candidate` is not
+  listed while its batch has import jobs, whose own rows say what went wrong
+  (the owner saw both «Album search» and its branch).
+- **Dismiss** (`POST /api/jobs/{id}/dismiss`, a new §10.2 endpoint by owner
+  decision): `X-Musiclib-Request: 1`, no body, no If-Match (N-196); 200 with
+  the job; a second one is the same answer; a render, or a job that is not
+  failed, is 409 `job_not_dismissable` (a failed render is the album's own
+  state, mended by «Update in library» or «Retry all»). In the UI it is a
+  quiet text button on every row needing attention, on the import's results
+  and on Activity, with **no confirmation** and no undo: it hides a
+  sentence, deletes nothing, and importing the folder again brings the
+  failure back if it is still there. The row leaves in place (N-291).
+- **Where it is hidden:** Needs attention on the results and on Activity,
+  their counts, «Recent imports», and «Retry all» (`RetryAllFailedJobs`
+  retries only the jobs that `job_needs_attention`). In their own import's
+  results they are **hidden** too, not shown in a fourth state: that would be
+  a row that is neither a problem nor a result, not «cheap and clear». The
+  job JSON (N-193) gains `dismissed_at`, `superseded` and `needs_attention`,
+  so an API client sees why «Retry all» skipped a failed job; `GET
+  /api/jobs` still lists every failed job.
+- **«Dismiss all»: not added.** Supersession clears the stale failures by
+  itself, the ones left deserve a look, and a bulk dismissal would be a
+  second button beside the group's filled «Retry all».
+- **«Retry all» still retries content failures** (a damaged file, an
+  ambiguous folder) that need attention: DESIGN.md §6.4's «Riprova falliti»
+  means all failures; only the settled ones are left out.
+- Tests: `jobs.TestDismiss`, `TestSuperseded` (every row of the table, the
+  sibling with the same prefix, an earlier success, a later failure),
+  `TestNoValidCandidateAttention`, `TestRetryFailedSkipsSettled`;
+  `catalog.TestListActivity` (a failure superseded mid-test, and the scan
+  above it), `TestDismissJob`, `TestPurgeImportReports` (two dismissed
+  cases); `http.TestDismissAPI`; `TestBrowserStaleFailures` with the owner's
+  own rows (the root that is not an album, «Álvaro Soler» ambiguous, the
+  search that found nothing, the mixed «A Contracorriente»), superseded by
+  later imports of subfolders and by «already there», the last one dismissed
+  from Activity and still gone after a reload, «Retry all» retrying none;
+  the dismissal mid-poll in `TestBrowserImportDraftSurvivesPolling`.
+  `jobs.TestRetryFailed`'s done job moved outside the failed scan's root,
+  which it now supersedes; `maintenance.TestBackup` expects schema 2.
+
+### N-286 · Import: the music folder, then the import's results, rendered by the server — DECIDED
+- `/import` (`queuepages.go`) is one page with two views, both rendered by
+  `html/template`, so browsing and switching tabs work without JavaScript.
+  - `?path=<rel>` (none: the music folder): a breadcrumb (`nav.crumbs`, the
+    open folder `aria-current`), the folder's folders as rows (a link each)
+    with what each holds in words («2 folders, 1 other file», «3 tracks,
+    1 image», «Empty», «Can't be read»), the entries never followed as inert
+    rows («Link, not followed», «Special file, skipped», «Unreadable name,
+    skipped»), the folder's own files summed up on one line (audio files are
+    never rows), the filled «Import everything in Kind of Blue» («… in the
+    music folder» at the top) with the fixed sentence under it, then
+    «Recent imports» (N-288).
+  - `?batch=<id>[&tab=attention|imported|present]`: the folder's name and
+    when the import started; while it runs one progress row («Looking for
+    albums in Rock…», then «Importing album 4 of 12» and a `<progress>`);
+    the results in three tabs with their counts (Needs attention, Imported,
+    Already there); the files no album took in a closed list under them.
+- **Counts from names only** (`importer.Tally`, `SortForDisplay`): each
+  folder of the open one is listed one level down with the same confined
+  `importer.Browse` (`openat2`, no symlink followed, nothing opened, no
+  absolute path: §7.1, §10.4, N-197). Tracks are the §7.2 audio extensions,
+  images the scan's image extensions: an estimate for the eye; the import
+  decides by content. The order is §7.3's natural order on the §5.2 key, then
+  bytes. One `ReadDir` per listed folder: a music folder of a few hundred
+  artists is a few hundred `getdents`.
+- **The button** maps onto `POST /api/imports {id, path}` exactly (N-201):
+  `path` is the open folder, `id` one `crypto.randomUUID()` per loaded page,
+  sent again after a lost answer (N-210); then the page goes to
+  `?batch=<id>`. There is no path field any more, so the UI cannot send one
+  id with two paths; a 409 is still shown if it comes (its sentence, the
+  code in «Details»). Without JavaScript the button is not shown and a
+  `<noscript>` line says that importing needs it.
+- **The open tab** is `?tab`, else the first of the three that is not
+  empty, else Needs attention; while the scan runs the tabs are hidden. With
+  JavaScript the links become the ARIA tabs pattern (`tablist`, `tab`,
+  `tabpanel`, `aria-selected`, roving `tabindex`, arrows with wrap-around,
+  Home, End, Space); `history.replaceState` keeps `?tab` for a reload; a tab
+  still empty on a poll switches to the first non-empty one until the user
+  chooses a tab or acts on a row.
+- **Rows:** an imported or already-there album is its cover thumbnail (or
+  the Library's initials), title and artist, linking to the editor (in the
+  trash: «It's in the trash: open it to restore it.», §7.6); a row needing
+  attention is its folder (initials), its sentence, its one fix and Dismiss
+  (N-285, N-287), its code in a closed «Details». An album's import
+  warnings are in its own closed «Details».
+- **Empty and missing:** «Your music folder is empty.» with how to fill it;
+  «This folder is empty.»; a folder that cannot be listed is one sentence
+  with the code in «Details» («This folder isn't there any more.», «Your
+  music folder isn't connected. …», «This is a link, and links aren't
+  followed.», «This is a file, not a folder.»); an import that is not there
+  (past the 90 days) says so. A bad `tab` or `batch` is 422, like the
+  Library's parameters.
+
+### N-287 · One sentence and one fix per error code; Retry only where it can work — DECIDED (the content codes: owner, 2026-09-28)
+`problems` in `queuepages.go` is the one table, code → sentence + fix, with
+a fallback for any other code (a failure of the machine, not of the files:
+a tool, the disk, the database): «The import didn't finish. Try again.» with
+Retry. The fixes, decided from DESIGN.md:
+
+| fix | codes | why |
+|---|---|---|
+| the title override (a required field, «Import with this title») | `mixed_album`, `album_title_missing`, `album_folder_conflict`, `path_reserved` | §7.3 «il titolo esplicito permette anche di risolvere mixed_album»; §7.6 «richiesta di titolo diverso»; §5.3 a reserved path wants another name |
+| the artist override («Import with this artist») | `ambiguous_album_artist`, `artist_folder_conflict` | §7.3 «l'artista esplicito risolve gli album artist discordanti»; §7.6 |
+| Retry | `source_not_found`, `source_not_readable`, `source_changed`, `insufficient_space`, and any code not in the table | the same files import once the mount, the permissions, the space or the moment is right (§6.4; §11.4 «rimontare la sorgente e riprovare») |
+| none: the sentence says what to change in the folder, «then import the folder again» | `ambiguous_candidate`, `not_a_candidate`, `no_valid_candidate`, `duplicate_disc`, `corrupt_audio`, `unsupported_audio`, `unrenderable_tag`, `invalid_tag`, `too_many_files`, `invalid_disc`, `invalid_track_number`, `lyrics_association`, `source_rejected_entry`, `source_not_directory` | the same files fail the same way (§7.2: a retry revalidates the same candidate) |
+
+- An override retry sends exactly `{artist, title}` (N-195): the field shown
+  and the other override as stored (a hidden input), so a new title keeps
+  an artist given before; an empty stored one is `null`. This replaces round
+  18's two free fields where blank cleared both (N-210): clearing an
+  override fixes nothing, so the UI no longer offers it (the API still does).
+- A failed render (Activity only) says «The album couldn't be written to the
+  library folder. Try again.» (or the disk-space sentence); its actions are
+  «Retry all» and the album page's «Update in library».
+- **DECIDED (owner, 2026-09-28): option A, exactly as implemented.** For
+  the content codes (last row) no Retry is offered: the row shows its
+  sentence and Dismiss, and no link to the folder. A user who fixed the
+  files imports the folder again (or uses «Retry all»), and supersession
+  (N-285) then clears the old row. Why: the principles ask for it («Riprova
+  compare solo se riprovare può funzionare»), and pressed without a change
+  to the files a retry fails the same way. The alternative, Retry on those
+  rows too with the sentence asking to fix the files first, was not taken.
+
+### N-288 · «Recent imports»: page data, no new JSON endpoint — DECIDED
+The principles list «un elenco degli import recenti» as a backend change
+and N-193 had none. It is page data only (`catalog.ListRecentImports`, sqlc
+`ListRecentImports`): every batch, newest first, with its counts of work in
+progress, imported, already there and needing attention (N-285), at the
+bottom of the music-folder view, as rows linking to `?batch=`. No cap:
+§6.4's retention bounds it. It is not on the results view, which polls, so
+that page stays light.
+
+### N-289 · Activity: three groups, the album not the work, one filled button — DECIDED
+- `/activity` is rendered by the server from one snapshot
+  (`catalog.ListActivity`, sqlc `ListActivity`, with the album's card and the
+  batch root joined in): In progress, Waiting, Needs attention (N-285), each
+  a heading with its dot (N-248: orange pulsing, graphite, red) and its
+  total, then its rows; at most 100 per group, then «And N more.»: a rebuild
+  of a large library waits in thousands, and the page is polled.
+- **A row is the album, not the work:** a render is its cover thumbnail
+  (`/api/albums/{id}/cover`, `loading="lazy"`, 40×40) or the Library's
+  initials, its title and artist, linking to the editor. A scan or an import
+  has no album yet: its folder's name (initials) and where it is, linking to
+  its import's results, where its fix is. The time says «Started …», «Added
+  …», or just when it failed.
+- **One filled button:** «Retry all», in the Needs attention heading (this
+  resolves N-271's two). Its confirmation is the answer's own count: «5
+  albums queued again» (`{"retried": n}`; «album» for every job, as the
+  principles word it). Round 18's per-row Retry is gone from Activity: an
+  import's fix is on its results, a render's is «Retry all» or «Update in
+  library».
+- **Advanced**, a `<details>` closed by default: one sentence («Rebuild the
+  library folder if files in it were changed or deleted outside musiclib.»)
+  and a quiet «Rebuild the library folder» that calls `POST /api/render-all`
+  (N-198), not the offline `rebuild` (§11.3, which deletes `library/` with
+  the app stopped): the glossary maps «Render all» to «ricostruisci la
+  cartella della libreria (in Avanzate)». It confirms in a sheet (the album
+  page's `<dialog>` pattern) that says how many albums it writes, counted by
+  the server (`CountRenderAllAlbums`, the enqueue's own predicate), then says
+  the answer's real count («124 albums queued»).
+- Empty: «Nothing in progress.» and «Your library is up to date.».
+
+### N-290 · Relative times — DECIDED
+Every time is `<time datetime="…Z" title="full date">2 minutes ago</time>`.
+The server writes the words («just now» under a minute, then minutes, hours,
+days up to 30, then the date) and the full date in UTC, saying so, since it
+does not know the reader's zone; `queue.js` rewrites both in the browser's
+zone (`Intl.DateTimeFormat('en-GB')`: «28 September 2026 at 14:03») at load,
+after every poll and every 30 s, changing only `textContent` and `title`. The
+full date shows on hover (the title) and, for the keyboard, above the time
+while anything in its row has `:focus-visible` (a CSS tooltip from
+`attr(title)`), so no row gets an extra Tab stop.
+
+### N-291 · Rows update in place: the page adopts its own rows by version — DECIDED (groups, the dot and notices since N-296)
+While work runs (the sidebar's activity dot, now rendered by the server, is
+visible) `queue.js` fetches the page's own URL every two seconds, one request
+at a time, and adopts from it (the N-246/N-265 pattern: `DOMParser`,
+`adoptNode`, no `innerHTML`):
+- **rows** (`[data-rows]` lists of `[data-key]` rows with a server
+  `data-version`: ticket, state, `updated_at`): a row whose version is
+  unchanged is never touched, so its focus, caret, half-typed value and open
+  «Details» survive; a changed row is replaced alone; new rows go in at
+  their place, rows gone are removed (the focus goes to a neighbour if it was
+  in them). The server's order is stable, so a kept row never moves.
+- **small parts** (`[data-live]`: counts, progress, empty notes, the rebuild
+  sentence) are replaced when their server HTML changed, compared with the
+  last HTML the server sent rather than with the live node, so a user's open
+  state never counts as a change; `[data-hide]` sections and the activity dot
+  follow the server's `hidden`.
+- N-210's guarantees hold: answers are applied in the order they were
+  requested (one older than the last applied is dropped), so a report
+  requested before an accepted change never overwrites one requested after
+  it; round 18's generation counter proved redundant and was removed
+  (N-293); an accepted retry replaces its row with the server's (its stored
+  override), a refused one leaves the draft; a failed poll shows «The library
+  isn't responding. …» without taking the focus, and the next one hides it.
+- An action (retry, override, Dismiss, «Retry all», rebuild) is one request
+  with `X-Musiclib-Request: 1`; its error is one sentence where it happened
+  (the row, the button, the section), the answer in a closed «Details»
+  (N-261's markup, `{{template "notice"}}` in the layout).
+
+### N-292 · Test contracts changed deliberately — DECIDED
+- The pages are server-rendered: N-242's generated-DOM contract and N-274's
+  `.badge[data-state]` hooks went with the markup. The tests read the
+  server's ids: `#import-start` (`data-path`), `.folders`, `.crumbs`,
+  `#progress`, `#tabs`, `#tab-*`, `#count-*`, `#rows-*` (`li[data-key]`),
+  `.row-sentence`, `.row-actions`, `form.fix`, `[data-retry]`,
+  `[data-dismiss]`, `#group-*`, `#total-*`, `#retry-all`, `#activity-note`,
+  `#rebuild`, `#rebuild-ask`, `#rebuild-note`, `#poll-notice`.
+- The import form's path field is gone: `TestBrowserImportLostAnswerAndConflict`
+  keeps the retained id and the single batch; the 409 is an answer of the
+  test's fetch wrapper (its sentence, the code only in «Details»).
+- `TestBrowserImportOverridesReplaceAndClear` (and its file) is replaced by
+  `TestBrowserImportRetryOnlyWhenItCanWork` (a new title keeps a stored
+  artist); `idempotent_browser_test.go` moved into `import_browser_test.go`.
+  Blank-clears-both is no longer offered by the UI (N-287).
+- `TestBrowserActivityActionsAndIdle` uses «Retry all» (no per-row Retry,
+  N-289), with the running render untouched, and the rebuild's sheet instead
+  of `window.confirm`.
+- `layout.html` wraps the page head's title and tools in `.head-bar`; the
+  Library's hairline check is unchanged.
+- The job JSON has 17 keys (`TestJobsList`, N-285).
+
+### N-293 · Round-21 mutation checks — DECIDED
+Each mutant was applied alone to the tree by a script that restores the file
+whatever happens, the named tests run in Docker against real PostgreSQL,
+ext4 and Chromium, and the file restored; none is left (`git diff` checked).
+Killed, with the test that failed:
+- rows replaced on every poll (the version ignored): `TestBrowserImportDraftSurvivesPolling`
+  (the draft, the caret, the open «Details» and the row identity lost);
+- a failed poll takes the focus: `TestBrowserImportDraftSurvivesPolling`;
+- Retry on every row needing attention: `TestBrowserImportAndOverride` (the
+  ambiguous folder offered Retry) and `TestBrowserImportRetryOnlyWhenItCanWork`;
+- no first non-empty tab: `TestImportPageTabsAndStates`, `TestBrowserImportTabs`;
+- «Retry all» saying the page's rows instead of the answer's count:
+  `TestBrowserActivityActionsAndIdle` (a failure arrives while the polls are
+  held: the page shows 5, 6 are retried). The first version of the test had
+  as many rows as retried jobs and could not have told them apart; the held
+  poll was added before the run;
+- the rebuild saying the sheet's count instead of the answer's: the same
+  test (an album arrives while the page is idle);
+- no height given back by the stuck head: `TestBrowserLibraryHeadCompacts`
+  (at 1 px the page scrolled back to 0 and the head was full again: the
+  oscillation, observed);
+- the fallback's sentinel after the head instead of before it: the same test;
+- dismissed failures still needing attention (`job_needs_attention`):
+  `jobs.TestDismiss`, `http.TestDismissAPI`;
+- no supersession from subfolders: `jobs.TestSuperseded`, `TestBrowserStaleFailures`;
+- an earlier success superseding a later failure: `jobs.TestSuperseded`;
+- the empty search listed beside its branches: `jobs.TestNoValidCandidateAttention`;
+- «Retry all» retrying settled failures (the generated query edited):
+  `jobs.TestRetryFailedSkipsSettled`, `http.TestDismissAPI`; both through
+  `jobs_dismissed_check`, which refuses a pending job still dismissed: the
+  schema is a second guard;
+- a retry keeping the dismissal: `jobs.TestDismiss`, `http.TestDismissAPI`
+  (the same check);
+- renders dismissable: `jobs.TestDismiss`;
+- answers applied out of order: `TestBrowserImportRetryInvalidatesPreviousAttempt`
+  (the report requested before the retry, delivered last, overwrote the new
+  attempt);
+- `html/template` → `text/template`: `TestQueuePagesEscaping`.
+**Survived, and removed:** round 18's generation counter (answers requested
+before an accepted change dropped). With rows adopted by version, answers
+applied in the order they were requested already give N-210's guarantee: a
+report requested before the retry can only arrive before the new one (and
+then changes nothing, the row's version being the same) or after it (and is
+dropped). No test can tell the counter's absence, because nothing observable
+depends on it, so `queue.js` keeps the one mechanism (N-291).
+Three mutants were first run with a `-run 'A|B'` pattern that `cmd.exe`
+split at the `|`, so their "kill" was a broken command; they were run again
+with the pattern quoted properly and are killed as listed.
+
+### N-294 · Budget, screenshots, and what looking at them changed — DECIDED
+- **Budget (N-267), uncompressed, fonts not counted:** 74,119 bytes of CSS
+  + JS, from 70,973: `app.css` 33,724 (+3,495: the Import and Activity
+  section and the head, net of the deleted queue, badge, panel, help,
+  statusline, field and small-button rules), `queue.js` 11,014 (from 12,022,
+  rewritten), `library.js` 14,071 (+659: the fallback), `app.js` 14,089 and
+  `sidebar.js` 1,221 unchanged. Per page: Import and Activity 45,959, the
+  Library 49,016, the album 49,034. The icons (folder, file, skipped) are
+  inline SVG symbols in the layout and count nothing here.
+- **Screenshots** (`TestBrowserQueueScreenshots`, new, and
+  `TestBrowserLibraryScreenshots`; light and dark, 1280 and 390 px, reduced
+  motion, plus the sidebar collapsed at 1280): the music folder, a folder of
+  folders, an album folder, an import in progress, the results on each tab,
+  a problem with «Details» open, an empty music folder; Activity with all
+  three groups, Advanced open, empty; the Library with the compact stuck
+  head (`scrolled`). Looked at against the principles; fixed after looking:
+  a double hairline under the tabs (the tab row's and the first row's), the
+  «Dismiss» text button sitting below the baseline of the buttons beside it,
+  and the music-note icon on a line of files that holds no music (now a
+  plain file icon). Left as it is: the phone indents a row's sentence and
+  actions under the title, as on the laptop, which costs 52 px of width but
+  keeps each row one block; the phone's progress bar wraps under its words.
+- In the fixture the compact head is seen on a page barely taller than the
+  window: the scroll ends at a few pixels and the head stays compact and
+  still, which is the case that oscillated before the margin was given back.
+
+### N-295 · Review of round 21 — DECIDED (review)
+Independent review of the uncommitted round 21 (Import, Activity, the
+compacting head, stale failures). The gate, the browser tests with
+`-race -count=3`, the jobs, catalog and importer tests with `-race`, and the
+review screenshots all pass; no blocking defect was found.
+- **The owner's live instance** (idle, 5 failed jobs, all superseded):
+  - Its five rows were checked against the rule of N-285 on the live
+    database (read-only): the two root searches (`no_valid_candidate`, a
+    scan, path `''`) and the root that is not an album (`not_a_candidate`)
+    are superseded by any later import (everything is under `''`);
+    «Álvaro Soler» (`ambiguous_candidate`) by its subfolders imported later
+    (tickets 16–18, 102–105 against 13); «Álvaro Soler/A Contracorriente»
+    (`mixed_album`) by a later import of the same folder that found it
+    already there (skipped, ticket 102 against 15). All five are right.
+  - «Activity , in progress», «And 0 more.», the two «Details» and the three
+    group headings were markup the server rendered `hidden` (the global
+    `[hidden] { display: none !important }`): neither shown nor in the
+    accessibility tree, but present in the page's text for anything that
+    ignores CSS. The screen showed only «Nothing in progress. Your library
+    is up to date.» and Advanced. They are no longer rendered at all
+    (N-296).
+- **Fixed: two guards no test held** (mutation-checked, see below):
+  - `queue.js` handing the focus to a neighbour when a poll takes away the
+    row that holds it: `TestBrowserImportDraftSurvivesPolling` now focuses a
+    row's Retry, lets the job end elsewhere, and requires the focus on the
+    next row; and after the retry of the edited row, the same.
+  - A failed render offering Dismiss on Activity (the API would refuse it,
+    409): `TestBrowserActivityActionsAndIdle` now requires Dismiss on every
+    import row that needs attention and on no album row.
+- **Fixed: the Italian guard did not reach the new sentences**, which live in
+  `queuepages.go`, not in a template: `TestPagesSpeakEnglish` now renders a
+  folder, an album folder, a missing folder, a missing import and the
+  results on each tab with failures of a title fix, a content code and an
+  unknown code, and checks every sentence of the `problems` table and its
+  fallbacks directly.
+- **Mutation checks of the review** (each applied alone, the file restored
+  by a trap, run in Docker with real PostgreSQL, ext4 and Chromium):
+  - `job_superseded` without the `/` of "under" (a sibling `P Live` would
+    supersede `P`): killed by `jobs.TestSuperseded`;
+  - `job_superseded` counting only `done`, not `skipped` («already there»):
+    killed by `jobs.TestSuperseded` and `TestBrowserStaleFailures`;
+  - the ARIA tabs without wrap-around: killed by `TestBrowserImportTabs`;
+  - no focus hand-over when a focused row leaves: **survived**, now killed by
+    `TestBrowserImportDraftSurvivesPolling` (focus on `BODY`);
+  - Dismiss on failed renders in Activity: **survived**, now killed by
+    `TestBrowserActivityActionsAndIdle`;
+  - an Italian fallback sentence («Riprova.») in `queuepages.go`: killed
+    only by the extended `TestPagesSpeakEnglish`.
+- **Left, minor:** a kept row whose version changes is replaced where it is,
+  so a row whose place in the server's order changed (a render queued again
+  while waiting) stays at its old place until the next load; that is the
+  «never rebuilt under the fingers» rule working as meant. The sidebar's
+  «Needs attention» (albums) and Activity's (albums and imports) count
+  different things under one name, as since round 19 (N-245).
+- **N-287, the reviewer's opinion:** agree with no Retry on the content
+  codes: pressed on unchanged files it fails the same way, and a button that
+  cannot work breaks «Riprova compare solo se riprovare può funzionare».
+  Supersession already clears the row once the folder imports. (A link from
+  the row to its folder was suggested; the owner kept option A as it is,
+  with no such link: N-287.)
+
+### N-296 · The queue pages render only what has something to say — DECIDED (owner, 2026-09-28)
+**Owner decision**, from the four things seen on the idle live Activity
+(N-295): hidden markup is still in the page for anything that reads it
+without CSS, and «Stati vuoti» wants the empty page to be one sentence.
+- **The sidebar's activity dot** (`#nav-active`, every page) carries
+  «, in progress» only while work is waiting or running; idle it is an empty
+  hidden span, so nothing is announced and nothing is in the text. It is
+  `data-live`: a poll adopts it whole (N-291).
+- **«And N more.»** exists only when a group lists fewer rows than it has.
+- **No notice before an error.** The layout's `notice` template, the
+  `#poll-notice`, `#start-notice`, `#activity-notice` and `#rebuild-notice`
+  containers and the empty notice in each row are gone. `queue.js` makes the
+  notice when an error happens (N-261's markup: `role="alert"`, the
+  sentence, a closed «Details» with the answer), whole before it goes in so
+  the alert is read once with its words, right after where it happened: the
+  row's actions, the button's sentence («Import everything in …»), the
+  group's heading («Retry all»), the rebuild's note, and for a failed poll
+  the progress row (Import) or the status line (Activity). It goes when that
+  place next succeeds. A folder that cannot be opened keeps its server-side
+  notice: that one is an error already.
+- **Groups only with rows.** Activity renders In progress, Waiting and Needs
+  attention only when they have rows (so never a heading with 0), and the
+  empty sentence only when all three are empty. An empty tab's sentence
+  («Nothing needs attention.») likewise exists only while its tab is empty.
+- **Polling keeps working across empty and back.** These are `data-part`
+  elements: on a poll, one the server no longer sends is removed (the focus,
+  if it was inside, goes to what follows it), and a new one is copied in
+  (`importNode`, so the server page keeps its order for the next one) right
+  after its nearest server sibling that is already on the page, its `[data-js]`
+  controls enabled; the rows inside are then kept by version as before.
+  «Retry all» is a delegated click, since its group can arrive after load.
+  Work queued by an action (`accepted()`) is polled through a flag rather
+  than by showing the dot before the server says so; the dot follows the
+  server.
+- Kept: the tabs of an import stay rendered and `hidden` while its albums
+  are being looked for (`data-hide`), because their ARIA wiring is set up
+  once at load; `#progress` is an empty hidden element once the import is
+  over.
+- Test contracts changed: the poll notice is `#progress + .notice`, the
+  start notice `.start .notice`; `#group-*`, `#activity-empty`, `#more-*` and
+  `#empty-*` are tested by presence, not `hidden`.
+- Tests: `TestQueuePagesRenderOnlyWhatIsThere` (the owner's idle case with a
+  dismissed failure: the sentence alone, no group, count of 0, «more», notice,
+  alert, «Details» or «in progress»; busy with 101 waiting: two groups,
+  «And 1 more.», the label); `TestBrowserActivityActionsAndIdle` (idle:
+  nothing behind the sentence and an empty dot; from idle, a rebuild brings
+  Waiting in; a failure arriving by poll brings Needs attention in after
+  Waiting with a working «Retry all», which then takes it away);
+  `TestBrowserImportAndOverride` (no empty-tab sentence beside rows; the
+  last problem dismissed brings it in); `TestImportPageTabsAndStates` (the
+  label while an import runs).
+- Mutation checks, each killed: parts never inserted
+  (`TestBrowserActivityActionsAndIdle`); new parts appended at the end
+  (the same: «advanced,group-pending,group-failed»); «Retry all» bound at
+  load instead of delegated (the same: the arrived group's button does
+  nothing); «And N more» always rendered, the label always rendered, the
+  groups always rendered (`TestQueuePagesRenderOnlyWhatIsThere`, the last
+  also by the browser test). The `accepted()` flag is a safety net for a
+  refresh that fails right after an action (the refresh that follows every
+  action already adopts the dot); removing it is not observable in a test.
+- Budget (N-267): CSS + JS 76,612 bytes, from 74,119 (`queue.js` 13,507,
+  +2,493: the notices it now makes and the parts it adds and removes).
