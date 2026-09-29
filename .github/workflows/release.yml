@@ -79,7 +79,7 @@ jobs:
 
           # compose.yaml runs exactly the image this release publishes.
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/musiclib"
-          model="$(POSTGRES_PASSWORD=release-guard docker compose -f compose.yaml config --format json)" \
+          model="$(docker compose -f compose.yaml config --format json)" \
             || fail "compose.yaml does not load (docker compose config)"
           app_image="$(jq -r '.services.app.image' <<<"${model}")"
           [[ "${app_image}" == "${image}:${version}" ]] \

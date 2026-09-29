@@ -18,3 +18,6 @@ coverage.html
 
 # UI review screenshots taken by the browser tests (MUSICLIB_UI_SHOTS)
 /tmp/
+
+# Local agent worktrees: never staged
+/.claude/worktrees/
