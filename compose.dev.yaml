@@ -189,6 +189,8 @@ services:
       # ... and the full-disk tests (internal/faulttest.FullFS).
       MUSICLIB_FULLFS: /fullfs
       MUSICLIB_REQUIRE_FULLFS: "1"
+      # go test -timeout of docker/gate.sh (per package).
+      GATE_TEST_TIMEOUT: ${GATE_TEST_TIMEOUT:-5m}
     volumes:
       - go-build-cache:/home/dev/.cache/go-build
       - testdata:/testdata

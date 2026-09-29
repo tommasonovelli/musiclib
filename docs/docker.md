@@ -20,6 +20,7 @@ gcc, CMake, TagLib, PostgreSQL or ffmpeg on the host.
 | `scripts/dev.sh` | shell or single command in the toolchain container |
 | `.gitattributes` | forces LF line endings on every checkout: the scripts run in Linux containers |
 | `scripts/lint-shell.sh` | shellcheck on every script |
+| `.github/workflows/release.yml` | on a tag `vX.Y.Z`: gate, image push to GHCR, GitHub Release ([Releasing](#releasing)) |
 
 ## Running the checks
 
@@ -51,6 +52,8 @@ tree** taken at build time, and runs `docker/gate.sh` in it:
 ```text
 go build ./...  &&  go vet ./...  &&  test -z "$(gofmt -l .)"  &&  go test -race -count=1 ./...
 ```
+
+`go test` runs with `-timeout` `GATE_TEST_TIMEOUT` per package (default `5m`; the release workflow sets `20m`).
 
 The `test` container has no internet (its only network is the internal
 `testdb` one, shared with `postgres-test`), a read-only root filesystem, no
@@ -590,6 +593,9 @@ published (NOTES.md N-332).
 | Vibrance MusicLib (the app) | `compose.yaml` (`app`) | `ghcr.io/tommasonovelli/musiclib:1.0.0`: the release version, without a digest (NOTES.md N-332) |
 | shellcheck 0.11.0 | `scripts/lint-shell.sh` | `koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d` |
 | sqlc 1.31.1 | `scripts/lib/common.sh` | `sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537` |
+| BuildKit 0.32.2 | `.github/workflows/release.yml` (`BUILDKIT_IMAGE`) | `moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8` |
+| SBOM scanner 1.12.0 | `.github/workflows/release.yml` (`SBOM_GENERATOR`) | `docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9` |
+| actionlint 1.7.12 | [Releasing](#releasing) (lint of the workflow) | `rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667` |
 
 Toolchain and runtime share the same Debian release (13, glibc 2.41). The
 native tools do not depend on it: ffmpeg, ffprobe and the TagLib helper are
@@ -711,3 +717,131 @@ Rules:
 - A **PostgreSQL major** bump (17 → 18) is a dump and restore, not a tag change.
 - The Go, TagLib and ffmpeg versions are inputs of `render_version` (§2.1), so
   bumping them changes `render_version`.
+
+## Releasing
+
+`.github/workflows/release.yml` publishes a release when a tag `vX.Y.Z` is
+pushed. It runs on GitHub-hosted `ubuntu-24.04` runners and builds for
+linux/amd64 only. Its three jobs run in order, and each one stops the release
+if it fails:
+
+1. **guard**: the tag is `vMAJOR.MINOR.PATCH` (no leading zeros, no
+   suffix), it still names the pushed commit, and that commit is on `main`.
+   The `app` image of `compose.yaml` is exactly
+   `ghcr.io/<owner>/musiclib:X.Y.Z`, `.env.example` exists, and
+   `CHANGELOG.md` has exactly one non-empty `## [X.Y.Z]` section.
+2. **publish**: first the gate, `scripts/check.sh` unchanged, with the
+   Dockerfile's default uid 10001 and `GATE_TEST_TIMEOUT=20m`, in a Buildx
+   builder with the pinned BuildKit. Then it logs in to GHCR, refuses if
+   `ghcr.io/<owner>/musiclib:X.Y.Z` already exists, and builds the `runtime`
+   target in the same builder (reusing the FFmpeg, TagLib and toolchain
+   layers of the gate) with `MUSICLIB_VERSION=X.Y.Z`, `MUSICLIB_REVISION`
+   (the commit) and `MUSICLIB_SOURCE` (the repository URL). It pushes
+   `:X.Y.Z`, plus `:X.Y` and `:X` when this release is the newest of its
+   series, and `:latest` when it is the newest of all (by `sort -V` of the
+   `vX.Y.Z` tags, fetched by this job): a patch of an
+   older series, or a re-run of an older release, never moves them back.
+   `compose.yaml` keeps the explicit version. The image carries an SBOM and a
+   `mode=max` provenance attestation.
+3. **release**: pulls the image by digest, and checks that `version` prints
+   `version: X.Y.Z` and that the revision label is the commit. It then creates
+   the GitHub Release «Vibrance MusicLib X.Y.Z». The release body is the
+   `CHANGELOG.md` section, followed by the image with its digest and an
+   install snippet. Its assets are `compose.yaml` and `env.example` (the
+   repository's `.env.example`: GitHub renames asset names that start with a
+   dot). The release is marked **Latest** on GitHub with the same rule as
+   `:latest`, checked again on the tags this job fetched: only when it is the
+   newest version (`--latest=false` otherwise).
+
+Release one version at a time. All runs share one concurrency group, so a
+run waits for the one before it and the floating tags and the Latest release
+only move forward. GitHub keeps only one *pending* run per group: pushing a
+third tag while one run is in progress and another is waiting cancels the
+waiting one. That is safe, nothing of it was published: when the others have
+finished, open the cancelled run and use **Re-run all jobs**.
+
+To release, on `main` with a clean tree and after the
+[release check on a native host](operations.md#release-check-on-a-native-host):
+
+```sh
+# compose.yaml: the app's image line becomes ghcr.io/tommasonovelli/musiclib:X.Y.Z
+# CHANGELOG.md: a new section "## [X.Y.Z] - YYYY-MM-DD" above the previous one
+git add compose.yaml CHANGELOG.md
+git commit -m "Release X.Y.Z"
+git push origin main
+git tag -a vX.Y.Z -m "Vibrance MusicLib X.Y.Z"
+git push origin vX.Y.Z
+```
+
+Push the tag on its own: GitHub starts no workflow for tags pushed more than
+three at a time. Do not create the GitHub Release by hand: the release job
+creates it, and fails, after the image is published, if the tag already has
+one (delete that release and re-run the job).
+
+The `CHANGELOG.md` section of a version is its heading, `## [X.Y.Z]`,
+optionally followed by ` - YYYY-MM-DD`. The section runs up to the next `## `
+heading or the first link reference definition (`[X.Y.Z]: https://…`), so
+keep those definitions at the end of the file. The release body is the
+section's lines without the heading and without leading or trailing blank
+lines.
+
+**First release only**, once the workflow has run:
+
+- A new GHCR package is private. On GitHub, open the account's
+  **Packages → musiclib → Package settings → Change visibility**, and make it
+  **Public**. Until then nobody else can pull the image, although the
+  release is already visible.
+- In the same settings, check that the package is connected to the
+  repository (the package page shows it; otherwise use **Connect
+  repository**). Also check that **Manage Actions access** gives the
+  repository the **Write** role: every later release pushes with the
+  repository's `GITHUB_TOKEN`. If a package named `musiclib` already existed
+  without that access, the first push fails with 403: grant it and run the
+  workflow again.
+
+**When a run fails:**
+
+- In **guard**, or in **publish** before its push (the gate included):
+  nothing is published. Fix the problem on `main`, move the tag to the new
+  commit (`git tag -d vX.Y.Z`, `git push origin :refs/tags/vX.Y.Z`, tag and
+  push again).
+- In **release**, the image is already published. Use **Re-run failed jobs**:
+  the release job runs again on the same digest, and decides **Latest** again
+  from the tags it fetches then. A job that pushed is never re-run to push
+  again: the version check refuses it. If the image itself is wrong, do not
+  publish it under the same version. Release a new patch version instead.
+- In **publish** after the push succeeded: a re-run is refused by the version
+  check, so check the image (below) and create the release by hand, with the
+  `CHANGELOG.md` section in `notes.md` followed by the line
+  ``- Digest: `sha256:…` `` (from `imagetools inspect`), and
+  `cp .env.example env.example`:
+  `gh release create vX.Y.Z --verify-tag --title "Vibrance MusicLib X.Y.Z" --notes-file notes.md compose.yaml env.example`
+  (add `--latest=false` if it is not the newest version). If the push stopped
+  after `:X.Y.Z`, move each floating tag it should have moved by hand, only
+  when this is the newest version of that series (`:latest`: of all), e.g.
+  `docker buildx imagetools create -t ghcr.io/tommasonovelli/musiclib:latest ghcr.io/tommasonovelli/musiclib:X.Y.Z`.
+  Or release a new patch version.
+
+Check a published release (the digest must be the one in the release notes):
+
+```sh
+docker buildx imagetools inspect ghcr.io/tommasonovelli/musiclib:X.Y.Z
+docker buildx imagetools inspect ghcr.io/tommasonovelli/musiclib:X.Y.Z --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/tommasonovelli/musiclib:X.Y.Z --format '{{ json .Provenance }}'
+docker run --rm ghcr.io/tommasonovelli/musiclib:X.Y.Z version
+```
+
+Changing the workflow: every third-party action is pinned by commit SHA,
+with its version in a comment. To bump one, resolve the tag with
+`gh api repos/OWNER/ACTION/git/ref/tags/vX.Y.Z` (for an annotated tag,
+follow its object with `gh api repos/OWNER/ACTION/git/tags/SHA`). The
+BuildKit and SBOM scanner images are pinned like every other image
+([Pinned images](#pinned-images)). Then lint:
+
+```sh
+docker run --rm -v "$PWD:/repo:ro" -w /repo \
+  rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+```
+
+On Git Bash, prefix it with `MSYS_NO_PATHCONV=1` and use `$(pwd -W)`.
+actionlint also runs shellcheck on every `run:` script.
