@@ -52,7 +52,7 @@ if [[ -n "${unformatted}" ]]; then
   die "the files above are not gofmt-formatted (run: gofmt -w <file>)"
 fi
 
-step "go test -race -count=1 -timeout=${GATE_TEST_TIMEOUT:-5m} ${pkgs[*]}"
-go test -race -count=1 -timeout="${GATE_TEST_TIMEOUT:-5m}" "${pkgs[@]}"
+step "go test -race -count=1 -timeout=${GATE_TEST_TIMEOUT:-15m} ${pkgs[*]}"
+go test -race -count=1 -timeout="${GATE_TEST_TIMEOUT:-15m}" "${pkgs[@]}"
 
 step "gate passed"

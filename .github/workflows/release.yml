@@ -143,7 +143,7 @@ jobs:
       # layers built here are reused there. No token is in this step's
       # environment (the GHCR login comes after it), and the test container
       # has no network but postgres-test's. The hosted runner is slower than
-      # a workstation: a longer per-package test timeout than the local 5m.
+      # a workstation: a longer per-package test timeout than the local 15m.
       - name: Run the test gate
         env:
           MUSICLIB_DEV_UID: "10001"

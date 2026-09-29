@@ -175,7 +175,7 @@ func (r *Root) SubRoot(rel string) (*Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRootFD(fd, r.name+"/"+rel), nil
+	return newRootFD(fd, location(r.name, rel)), nil
 }
 
 // Name is the root's label used in error messages. It is not a filesystem

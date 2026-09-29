@@ -329,9 +329,10 @@ RUN install -d -o "${APP_UID}" -g "${APP_GID}" -m 0755 /data /backup \
 
 # MusicLib's license and the notices of the third-party software in this
 # image, with the license texts they refer to (THIRD_PARTY_NOTICES.md).
-COPY LICENSE LOGO.md THIRD_PARTY_NOTICES.md /usr/share/doc/musiclib/
-COPY licenses/ /usr/share/doc/musiclib/licenses/
-COPY web/OFL.txt /usr/share/doc/musiclib/web/OFL.txt
+# Files 0644 and directories 0755, whatever the umask of the checkout.
+COPY --chmod=u=rwX,go=rX LICENSE LOGO.md THIRD_PARTY_NOTICES.md /usr/share/doc/musiclib/
+COPY --chmod=u=rwX,go=rX licenses/ /usr/share/doc/musiclib/licenses/
+COPY --chmod=u=rwX,go=rX web/OFL.txt /usr/share/doc/musiclib/web/OFL.txt
 
 COPY --from=build-app /home/dev/out/musiclibd /usr/local/bin/musiclibd
 

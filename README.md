@@ -50,8 +50,8 @@ Each edit regenerates only the album it affects, and your original copies are ke
 
 MusicLib is designed to run inside Docker. The supported setup is:
 
-- **Ubuntu 24.04 or later** on an **amd64** (x86-64) machine;
-- **Docker Engine** with the **Compose v2** plugin (`docker compose`), installed from Docker's own packages, and a user that can run `docker` without `sudo`;
+- **Ubuntu 24.04 or later** on an **amd64** (x86-64) machine (verified on Ubuntu 26.04);
+- **Docker Engine** with the **Compose v2** plugin (`docker compose`), installed either from Docker's own packages or from Ubuntu's (`sudo apt install docker.io docker-compose-v2`), and a user that can run `docker` without `sudo`;
 - **local ext4 storage** for MusicLib's data: Docker's own storage (`/var/lib/docker`, where named volumes live), or the host folder you choose for it;
 - `curl` and `openssl` (`sudo apt install curl openssl` if they are missing).
 
@@ -108,6 +108,8 @@ By default MusicLib keeps its data in Docker named volumes. You can put it in fo
    ```
 
 4. Start: `docker compose up -d --wait`.
+
+The data folder must be a **new, empty folder used only by MusicLib**, not your music collection: MusicLib creates `originals/`, `library/`, `work/` and a few marker files (`.lock`, `.musiclib-store`) there and never touches anything else, but it doesn't refuse a folder that already holds other files.
 
 The import folder is mounted **read-only**: it must exist before MusicLib starts, and its files must be readable by uid 1000 (files readable by everyone are fine). The backup folder must not be inside the data folder. With `MUSICLIB_DATA` set, the generated library is at `/srv/musiclib/data/library`, ready for your player.
 
@@ -222,7 +224,7 @@ docker compose start app
 - The generated library isn't saved (it is regenerated after a restore), and neither is your import folder.
 - The default backup volume is on the same disk as your data: it protects against mistakes, not against a disk failure. Set `MUSICLIB_BACKUP` to a folder on another disk, keep several backups, and try a restore now and then.
 - To copy a backup elsewhere, use `sudo cp -a`: some of its files are readable only by uid 1000.
-- If a backup fails, it leaves a `.musiclib-backup-*.tmp` folder, which you can delete.
+- If a backup fails after it has started writing, it leaves a `.musiclib-backup-*.tmp` folder, which you can delete. A backup folder that MusicLib can't write is refused (`fs_permission`) before anything is written.
 
 **Check** the library: every original, and every file of the library, against its recorded hash (without `--deep`, a quicker check of sizes and presence):
 
@@ -246,7 +248,22 @@ Doctor only reads and never repairs. It exits with 0 when nothing is damaged, 1 
    docker compose up -d --wait
    ```
 
-Start only the database before the restore, as above: the first start of MusicLib would initialize the empty data folder, and the restore would then refuse it. After the restore, MusicLib regenerates the library folder by itself; Activity shows the progress. If a restore fails, start again with a new, empty database and data folder. To restore on a machine that still has an installation, and for every error code, see [docs/operations.md](docs/operations.md#restore-use-new-empty-destinations).
+Start only the database before the restore, as above: the first start of MusicLib would initialize the empty data folder, and the restore would then refuse it. After the restore, MusicLib regenerates the library folder by itself; Activity shows the progress. If a restore fails, start again with a new, empty database and data folder. More details, and every error code, are in [docs/operations.md](docs/operations.md#restore-use-new-empty-destinations).
+
+**On the same machine as an existing installation**, for example to try a backup, restore into a second folder such as `~/musiclib-restore`. `compose.yaml` names its Compose project `musiclib`, so the second folder needs a project name of its own, or its commands would act on your existing installation. Paste the install block without its last line, with `~/musiclib` replaced by `~/musiclib-restore`, then, in that folder:
+
+1. Give it its own project name: `echo 'COMPOSE_PROJECT_NAME=musiclib-restore' >> .env`, and check that `docker compose config | head -1` prints `name: musiclib-restore`.
+2. Give it another port, changing `MUSICLIB_PORT` and `PUBLIC_ORIGIN` together: `echo 'MUSICLIB_PORT=8081' >> .env` and `sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=http://127.0.0.1:8081|' .env`.
+3. Copy the backup out of the existing installation's backup volume into a host folder, and use that folder as the backup folder:
+
+   ```sh
+   sudo mkdir -p /srv/musiclib-restore/backup
+   sudo cp -a /var/lib/docker/volumes/musiclib_musiclib-backup/_data/2026-09-29-2130 /srv/musiclib-restore/backup/
+   sudo chown 1000:1000 /srv/musiclib-restore/backup
+   echo 'MUSICLIB_BACKUP=/srv/musiclib-restore/backup' >> .env
+   ```
+
+Then run the three restore commands above in `~/musiclib-restore`, and open `http://127.0.0.1:8081`. If your backups are in a host folder already (`MUSICLIB_BACKUP`), copy from there instead.
 
 > **Never run `docker compose down -v`: it deletes your library, its database and its backup volume.** To stop MusicLib, use `docker compose stop`.
 

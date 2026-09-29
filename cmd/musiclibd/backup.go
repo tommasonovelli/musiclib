@@ -14,7 +14,8 @@ import (
 
 // runBackup writes a new, verified backup directory outside /data (DESIGN.md
 // §11.4). Exit 0: the final directory exists; 1: failed, at most a
-// .musiclib-backup-*.tmp directory is left for the operator; 2: refused.
+// .musiclib-backup-*.tmp directory is left for the operator; 2: refused,
+// nothing written (a destination that cannot be written included).
 func runBackup(getenv func(string) string, p paths, dest string, stdout io.Writer, log *slog.Logger) int {
 	cfg, v, err := startOffline(getenv, p)
 	if err != nil {

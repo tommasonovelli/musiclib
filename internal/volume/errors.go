@@ -11,7 +11,9 @@ import (
 // report the same ones. Every one of them is fatal at boot; none is retried
 // or repaired automatically.
 const (
-	// CodeUnavailable: /data or its lock file cannot be opened.
+	// CodeUnavailable: /data or its lock file cannot be opened for a reason
+	// other than permissions (see CodePermission): /data is missing or not a
+	// directory, .lock is not a regular file, or an I/O error.
 	CodeUnavailable = "volume_unavailable"
 	// CodeLocked: another process holds /data/.lock (§2.2): a second
 	// instance, or a maintenance command, is running on this volume.

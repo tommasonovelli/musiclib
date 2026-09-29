@@ -98,12 +98,17 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
+// location joins a root label and a relative path for messages and for the
+// labels of sub-roots. The label of the filesystem root is "/" itself, so its
+// entries read "/backup", not "//backup".
 func location(root, path string) string {
 	switch {
 	case root == "":
 		return path
 	case path == "":
 		return root
+	case root == "/":
+		return root + path
 	default:
 		return root + "/" + path
 	}

@@ -53,7 +53,7 @@ tree** taken at build time, and runs `docker/gate.sh` in it:
 go build ./...  &&  go vet ./...  &&  test -z "$(gofmt -l .)"  &&  go test -race -count=1 ./...
 ```
 
-`go test` runs with `-timeout` `GATE_TEST_TIMEOUT` per package (default `5m`; the release workflow sets `20m`).
+`go test` runs with `-timeout` `GATE_TEST_TIMEOUT` per package (default `15m`, enough for the slowest package on a 4-CPU host; the release workflow sets `20m`).
 
 The `test` container has no internet (its only network is the internal
 `testdb` one, shared with `postgres-test`), a read-only root filesystem, no
@@ -543,6 +543,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 |---|---|---|
 | `config_invalid` (exit 2) | an environment variable is missing or invalid; the message lists all of them | fix `.env` / `compose.yaml` |
 | `run_as_root` (exit 2) | uid 0 | set `MUSICLIB_UID`/`MUSICLIB_GID` |
+| `volume_unavailable` | `/data` cannot be opened for a reason other than permissions: it is missing or not a directory, `/data/.lock` is not a regular file, or an I/O error | check the `/data` mount (`MUSICLIB_DATA`) and the disk; `.lock` must be a regular file and is never removed |
 | `volume_locked` | another process holds `/data/.lock` | stop the other instance or maintenance command |
 | `volume_maintenance_pending` / `_malformed` | a rebuild or restore did not finish | repeat a rebuild using the same store id; do not manually clear a restore marker |
 | `volume_store_mismatch` | the volume belongs to another database | mount the right volume, or point `DATABASE_URL` at the right database |
@@ -550,8 +551,9 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `volume_marker_missing` / `volume_not_empty` | `/data/.musiclib-store` is missing, and either the media storage is not empty or the database already has catalog content | check the `/data` mount (`MUSICLIB_DATA`): the marker is completed automatically only on an empty volume with a database that has no catalog yet |
 | `volume_marker_malformed` | `/data/.musiclib-store` is not in the expected format | inspect it; it is never rewritten |
 | `volume_cross_device` / `volume_nested_mount` | a mount inside `/data` | mount one ext4 filesystem on `/data`, nothing below it |
-| `volume_permission` | `/data` or a media directory is not writable by `MUSICLIB_UID`, or read-only | `chown -R` the host path, or recreate the volume |
+| `volume_permission` | `/data`, its `.lock` or a media directory is not readable and writable by `MUSICLIB_UID`/`MUSICLIB_GID` (for example a host folder owned by another uid, or mode 555), or `/data` is mounted read-only | `sudo chown -R` the host path to `MUSICLIB_UID:MUSICLIB_GID` (1000:1000 by default) with write permission for its owner, or recreate the volume |
 | `volume_rename_exchange_unsupported` | the filesystem lacks `renameat2(RENAME_EXCHANGE)` | use ext4 |
+| `fs_permission` / `fs_read_only` (backup, restore) | an offline command cannot read or write a path it needs outside `/data`, such as a `/backup` that `MUSICLIB_UID` cannot write (a host folder owned by another uid, or mode 555); a backup refuses it with exit 2 before writing anything | `sudo chown` the `MUSICLIB_BACKUP` host folder to `MUSICLIB_UID:MUSICLIB_GID` (1000:1000 by default) with write permission for its owner, or mount a writable one |
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
 | `import_is_data` | `/import` is the data volume or one of its directories | point `MUSICLIB_IMPORT` at the collection to import, never at the data volume |
 | `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | pull the published image again (`docker compose pull app`), or rebuild it from source (`docker compose -f compose.dev.yaml build app`); never replace the binaries by hand |

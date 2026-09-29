@@ -401,8 +401,20 @@ func TestAcquireUnavailable(t *testing.T) {
 			}
 		})
 		_, err = Acquire(dir) // cannot create .lock
-		wantCode(t, err, CodeUnavailable)
+		wantCode(t, err, CodePermission)
+		if err := os.Chmod(dir, 0o311); err != nil {
+			t.Fatal(err)
+		}
+		_, err = Acquire(dir) // cannot open /data itself
+		wantCode(t, err, CodePermission)
 	}
+	// A .lock that is not a regular file is not a permission problem.
+	dir = t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, LockFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Acquire(dir)
+	wantCode(t, err, CodeUnavailable)
 }
 
 // Close closes every root and releases the lock; the roots handed out are

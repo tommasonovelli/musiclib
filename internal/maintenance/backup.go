@@ -54,8 +54,10 @@ const (
 
 // Backup creates a new final directory only after a durable, verified dump
 // and every original have been copied. The caller holds the volume flock and
-// has identified and opened the existing layout. A failed run leaves a
-// uniquely named .tmp directory for the operator; it never removes data.
+// has identified and opened the existing layout. A destination that cannot
+// be used, unwritable included, is refused before anything is written; a
+// run that fails later leaves a uniquely named .tmp directory for the
+// operator. It never removes data.
 func Backup(ctx context.Context, db *pgxpool.Pool, v *volume.Volume, to, dbURL string, hook failpoint.Hook) (outErr error) {
 	if err := RequireCurrentSchema(ctx, db); err != nil {
 		return err
@@ -66,17 +68,22 @@ func Backup(ctx context.Context, db *pgxpool.Pool, v *volume.Volume, to, dbURL s
 	}
 	parent, name, err := backupDestination(to, v)
 	if err != nil {
-		return err
+		return unusableDestination(err)
 	}
 	defer func() { outErr = errors.Join(outErr, parent.Close()) }()
 	if _, err := parent.Stat(name); err == nil {
 		return refuse("backup_exists", "final backup already exists")
 	} else if fsops.Code(err) != fsops.CodeNotFound {
-		return err
+		return unusableDestination(err)
+	}
+	// A destination this process cannot write is named as such, before a
+	// temporary name exists that the error could mention.
+	if err := parent.CheckAccess(true); err != nil {
+		return unusableDestination(err)
 	}
 	tmp := ".musiclib-backup-" + rand.Text() + ".tmp"
 	if err := parent.Mkdir(tmp, 0o755); err != nil {
-		return err
+		return unusableDestination(err)
 	}
 	if err := parent.SyncDir(""); err != nil {
 		return err
@@ -179,6 +186,23 @@ func Backup(ctx context.Context, db *pgxpool.Pool, v *volume.Volume, to, dbURL s
 		return err
 	}
 	return parent.SyncDir("")
+}
+
+// unusableDestination reports a failure that happens before the temporary
+// directory exists, such as a destination this process cannot write: nothing
+// was written, so it is a refusal (no temporary to remove), and it keeps the
+// cause's own code (fs_permission, fs_read_only, ...). A refusal of this
+// package is returned as it is.
+func unusableDestination(err error) error {
+	var me *Error
+	if errors.As(err, &me) {
+		return err
+	}
+	code := fsops.Code(err)
+	if code == "" {
+		code = "backup_destination"
+	}
+	return &Error{Code: code, Message: "cannot use the backup destination; nothing was written", Refusal: true, Err: err}
 }
 
 // backupDestination validates the absolute path without ever traversing a

@@ -150,6 +150,37 @@ func TestBackupManifestAndRefusals(t *testing.T) {
 	}
 }
 
+// A destination the process cannot write is refused before anything is
+// written: no temporary exists, the message names none, and the path in it
+// is clean.
+func TestBackupUnwritableDestinationRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	v, db, _, _ := doctorFixture(t)
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+	err := Backup(t.Context(), db, v, filepath.Join(parent, "backup"), db.Config().ConnConfig.ConnString(), nil)
+	var me *Error
+	if !errors.As(err, &me) || me.Code != fsops.CodePermission || !me.Refusal {
+		t.Fatalf("unwritable destination: %v", err)
+	}
+	if msg := err.Error(); strings.Contains(msg, ".tmp") || strings.Contains(msg, "//") {
+		t.Fatalf("message names a temporary or an unclean path: %s", msg)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("destination written: %v %v", entries, err)
+	}
+}
+
 func TestBackupCorruptBlobNeverPublishesFinalName(t *testing.T) {
 	v, db, dir, _ := doctorFixture(t)
 	entries, err := v.Originals().ReadDir("")

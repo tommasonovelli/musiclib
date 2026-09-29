@@ -274,7 +274,7 @@ func (r *Root) OpenFile(rel string, flags int, perm os.FileMode) (f *os.File, er
 	}); err != nil {
 		return nil, errnoErr("fcntl", r.name, rel, err)
 	}
-	f = os.NewFile(uintptr(fd), r.name+"/"+rel)
+	f = os.NewFile(uintptr(fd), location(r.name, rel))
 	if f == nil {
 		return nil, errf(CodeIO, "open", r.name, rel, "invalid descriptor %d", fd)
 	}

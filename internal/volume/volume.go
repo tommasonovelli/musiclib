@@ -76,19 +76,30 @@ type Volume struct {
 func Acquire(path string) (*Volume, error) {
 	root, err := fsops.OpenRoot(path)
 	if err != nil {
-		return nil, newErr(CodeUnavailable, "cannot open the data volume", err)
+		return nil, acquireErr("cannot open the data volume", err)
 	}
 	lock, err := root.Lock(LockFile)
 	if err != nil {
-		code, msg := CodeUnavailable, "cannot open the volume lock "+LockFile
-		if fsops.Code(err) == fsops.CodeLockBusy {
-			code = CodeLocked
-			msg = "another musiclib process holds " + LockFile +
-				": stop it first (one instance per volume, DESIGN.md §2.2)"
-		}
-		return nil, errors.Join(newErr(code, msg, err), root.Close())
+		return nil, errors.Join(acquireErr("cannot open the volume lock "+LockFile, err), root.Close())
 	}
 	return &Volume{root: root, lock: lock}, nil
+}
+
+// acquireErr maps a failure to open /data or its lock. A busy lock is
+// [CodeLocked]; a permission problem or a read-only mount is
+// [CodePermission], with what to check; anything else (a missing /data, a
+// .lock that is not a regular file, an I/O error) is [CodeUnavailable].
+func acquireErr(msg string, err error) *Error {
+	switch fsops.Code(err) {
+	case fsops.CodeLockBusy:
+		return newErr(CodeLocked, "another musiclib process holds "+LockFile+
+			": stop it first (one instance per volume)", err)
+	case fsops.CodePermission, fsops.CodeReadOnly:
+		return newErr(CodePermission, msg+": the data volume must be a directory that the uid "+
+			"and gid of this process can read and write, on a read-write mount", err)
+	default:
+		return newErr(CodeUnavailable, msg, err)
+	}
 }
 
 // Root is the /data root itself.

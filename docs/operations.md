@@ -1,6 +1,6 @@
 # Operating Vibrance MusicLib (Ubuntu 24.04+, Docker Engine, local ext4)
 
-See also [Docker and tests](docker.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
+See also [Docker and tests](docker.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin, from Docker's own packages or from Ubuntu's `docker.io` and `docker-compose-v2` (verified on Ubuntu 26.04 with Engine 29.1.3 and Compose 2.40.3), not Docker Desktop; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
 
 ## First start
 
@@ -31,6 +31,8 @@ MUSICLIB_BACKUP=/mnt/backup/musiclib
 MUSICLIB_IMPORT=/srv/music
 EOF
 ```
+
+Use a **new, empty directory dedicated to MusicLib** for `MUSICLIB_DATA`, never your music collection or a directory shared with anything else. MusicLib creates only `originals/`, `library/`, `work/` and its marker files (`.lock`, `.musiclib-store`, and `.maintenance` while a rebuild or restore runs) there, and never changes or deletes any other entry; but it does not refuse a directory that already holds other files, so this check is yours. The music to import goes in `MUSICLIB_IMPORT`, mounted read-only.
 
 The image runs as `1000:1000` and owns `/data` and `/backup`, so a new named volume belongs to `1000:1000`. `MUSICLIB_UID`/`MUSICLIB_GID` in `.env` run the process as another uid (Compose `user:`); the named volumes do not follow, so another uid needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host directories owned by it (and `/import` readable by it). A bind-mounted `MUSICLIB_BACKUP` directory must be writable by `MUSICLIB_UID` (and its group by `MUSICLIB_GID`). The `.env` file contains a password: restrict its permissions (`chmod 600 .env`) and keep it out of backups/shared checkouts.
 
@@ -104,11 +106,11 @@ Doctor is read-only apart from `.lock`: no migration, repair or journal recovery
 
 Rebuild requires the **exact** store UUID from both `.musiclib-store` and DB; it deletes only `library/` and `work/`, resets derived publication/claims/jobs atomically and schedules renders of active albums. Trashed albums stay trashed and their output disappears. It does not roll back edits or repair originals. If killed, `.maintenance` blocks boot: rerun the *same* rebuild UUID until success. Never remove the marker manually.
 
-Backup creates a unique `.musiclib-backup-*.tmp` directory in `/backup`, verifies every original while streaming its copy, creates `catalog.dump` (PostgreSQL custom format) and `manifest.json`, fsyncs them and atomically renames the directory to its final name only on success. It never overwrites. `/import`, `library/`, `work/` are not saved. An interrupted/failed backup leaves only the named temporary; **the operator** inspects and removes obsolete temporary directories, never the app. Retain multiple complete generations and copy them to an external device; do not overwrite the only copy. Verify the backup by restoring to *separate new volumes* periodically. Backups cover completed imports; unfinished scan/import jobs become failed after restore until the source is checked or remounted and explicitly retried.
+Backup creates a unique `.musiclib-backup-*.tmp` directory in `/backup`, verifies every original while streaming its copy, creates `catalog.dump` (PostgreSQL custom format) and `manifest.json`, fsyncs them and atomically renames the directory to its final name only on success. It never overwrites. `/import`, `library/`, `work/` are not saved. A destination the app cannot use, such as a `/backup` that `MUSICLIB_UID` cannot write, is refused with its own code (`fs_permission`, exit 2) before anything is written. An interrupted/failed backup leaves only the named temporary; **the operator** inspects and removes obsolete temporary directories, never the app. Retain multiple complete generations and copy them to an external device; do not overwrite the only copy. Verify the backup by restoring to *separate new volumes* periodically. Backups cover completed imports; unfinished scan/import jobs become failed after restore until the source is checked or remounted and explicitly retried.
 
 ## Restore: use new empty destinations
 
-Restore **never overwrites**. Empty database means no user tables, sequences or views in its schema, including goose metadata; empty data volume means no entries except `.lock` and an empty ext4 `lost+found` directory. A failed restore leaves `.maintenance`; do not start the server or retry into that partially restored destination. Create a **new PostgreSQL volume/database and new data volume**, retaining the old ones for investigation, then repeat from the completed backup. To replace a lost Compose installation safely, provision a separate Compose project (or move the old volumes away), point `MUSICLIB_DATA` at a new empty ext4 directory, and ensure PostgreSQL's `pgdata` is a new empty volume. Confirm `docker compose ps` and the mounts before proceeding; never run `down -v` against the only surviving backup or against a database you need. Mount the completed backup as `/backup` with `MUSICLIB_BACKUP`. Then:
+Restore **never overwrites**. Empty database means no user tables, sequences or views in its schema, including goose metadata; empty data volume means no entries except `.lock` and an empty ext4 `lost+found` directory. A failed restore leaves `.maintenance`; do not start the server or retry into that partially restored destination. Create a **new PostgreSQL volume/database and new data volume**, retaining the old ones for investigation, then repeat from the completed backup. To replace a lost Compose installation safely, provision a separate Compose project ([next to an existing installation](#restoring-next-to-an-existing-installation)) or move the old volumes away, point `MUSICLIB_DATA` at a new empty ext4 directory, and ensure PostgreSQL's `pgdata` is a new empty volume. Confirm `docker compose ps` and the mounts before proceeding; never run `down -v` against the only surviving backup or against a database you need. Mount the completed backup as `/backup` with `MUSICLIB_BACKUP`. Then:
 
 ```sh
 # PostgreSQL only, never the app: its first start would initialize the new destinations.
@@ -124,6 +126,35 @@ scripts/doctor.sh --deep
 `docker compose up -d --wait` creates the app's container if it does not exist yet (from source: with `COMPOSE_FILE=compose.dev.yaml` and `--build`). The restored catalog and originals keep their identities; all published output is regenerated. Wait until Activity is idle before deep doctor. Corrupt dump, manifest or originals are refused. Keep the completed backup read-only and unchanged throughout restore; an external change between verification and pg_restore may leave a marker and require new destinations. Never use a temporary backup directory as restore input.
 
 A backup made before schema 3 restores the same way: the boot adds the track durations' column, and the renders that regenerate the output record the duration of every active album's tracks (trashed albums get theirs when restored). On an installation that stays up, **Rebuild the library folder** (Activity → Advanced) does the same. Such a backup may also hold artists without any album, created before MusicLib began deleting an artist together with its last album; they are kept as they are, and nothing removes them automatically.
+
+### Restoring next to an existing installation
+
+To restore on a machine that still runs an installation (to test a backup, for example), use a second directory with its own `compose.yaml` and `.env`, such as `~/musiclib-restore` created with the install block without its last line. `compose.yaml` fixes the Compose project name, `name: musiclib`: in a second directory the same name would select the **existing** installation's containers and volumes, so every command there would act on it. Three settings in the new directory's `.env` keep the two apart:
+
+1. **Its own project name.** `COMPOSE_PROJECT_NAME` overrides `name:`; the new project gets its own volumes (`musiclib-restore_pgdata`, `musiclib-restore_musiclib-data`, `musiclib-restore_musiclib-backup`). Check it before any other command:
+
+   ```sh
+   echo 'COMPOSE_PROJECT_NAME=musiclib-restore' >> .env
+   docker compose config | head -1          # must print: name: musiclib-restore
+   ```
+
+2. **Another port**, with `MUSICLIB_PORT` and `PUBLIC_ORIGIN` changed together (the app refuses requests for any other origin):
+
+   ```sh
+   echo 'MUSICLIB_PORT=8081' >> .env
+   sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=http://127.0.0.1:8081|' .env
+   ```
+
+3. **The backup in a host directory.** The new directory's `compose.yaml` cannot mount the old project's named volume, so copy the completed backup out of it (with `cp -a`, which keeps its owner, uid 1000, and modes), into a directory writable by the app's uid for the new installation's own later backups:
+
+   ```sh
+   sudo mkdir -p /srv/musiclib-restore/backup
+   sudo cp -a '/var/lib/docker/volumes/musiclib_musiclib-backup/_data/2026-09-26 full' /srv/musiclib-restore/backup/
+   sudo chown 1000:1000 /srv/musiclib-restore/backup
+   echo 'MUSICLIB_BACKUP=/srv/musiclib-restore/backup' >> .env
+   ```
+
+   If the existing installation keeps its backups in a host directory (`MUSICLIB_BACKUP`), copy from there. Then run the restore above in the new directory and open `http://127.0.0.1:8081`. The two installations share nothing and can run side by side.
 
 ## Security and troubleshooting
 
@@ -159,8 +190,8 @@ Command exit codes: 0 = success/no doctor errors, 1 = damage or attempted operat
 A release requires a passing run on a **native** Ubuntu 24.04+ Docker Engine with `/var/lib/docker` (testdata named volume) and `MUSICLIB_DATA` on ext4. Docker Desktop testing is not a substitute. Before a release, run:
 
 ```sh
-findmnt -no FSTYPE /var/lib/docker      # must report ext4
-findmnt -no FSTYPE /srv/musiclib/data   # must report ext4
+findmnt -T /var/lib/docker -no FSTYPE      # must report ext4
+findmnt -T /srv/musiclib/data -no FSTYPE   # must report ext4
 scripts/lint-shell.sh
 docker compose -f compose.dev.yaml build app
 docker compose -f compose.dev.yaml run --rm --no-deps --entrypoint /usr/lib/postgresql/17/bin/pg_dump app --version
