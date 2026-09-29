@@ -1,6 +1,8 @@
 # The whole project is built and run in Linux containers (docs/docker.md):
 # shell scripts, Go sources and Compose files must keep LF line endings on
-# every checkout, whatever core.autocrlf says (NOTES.md N-059).
+# every checkout, whatever core.autocrlf says: the container's shell cannot
+# run a script with CRLF line endings, and the gate's gofmt check fails on
+# a Go source that has them.
 * text=auto eol=lf
-# Fonts are binary: never normalize them (NOTES.md N-244).
+# Fonts are binary: never normalize them, or their bytes change.
 *.woff2 binary

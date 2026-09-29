@@ -41,7 +41,7 @@ whatever the current directory or `COMPOSE_FILE`, and need no `.env`.
 On a Windows host with Docker Desktop, run the scripts from Git Bash. They
 set `MSYS_NO_PATHCONV=1` and pass Docker the native repository path, because
 Git Bash would otherwise rewrite container paths such as `/src` into Windows
-paths (NOTES.md N-059). The checkout must have LF line endings; `.gitattributes`
+paths. The checkout must have LF line endings; `.gitattributes`
 enforces that even with `core.autocrlf=true`.
 
 `check.sh` first runs `sqlc diff` (the pinned sqlc image, no network, sources
@@ -69,7 +69,13 @@ for `go get`. The test/dev image also contains **Chromium 154.0.8037.57-1~deb13u
 contains neither Chromium nor Node. The browser tests use a local listener
 inside the test container on an ephemeral localhost port, with the test
 `PUBLIC_ORIGIN` adjusted to that port; they require no published database or app port.
-The dev/test-only package and its dependency closure come from a fixed, signed Debian snapshot (NOTES.md N-212). UI usage is described in [docs/archive/ui.md](archive/ui.md).
+The dev/test-only package and its dependency closure come from a fixed, signed Debian snapshot.
+To write review screenshots of the pages (both themes, laptop and phone widths) into the
+gitignored `tmp/ui-shots/`:
+
+```sh
+scripts/dev.sh env MUSICLIB_UI_SHOTS=/src/tmp/ui-shots go test -count=1 -run 'TestBrowser(Library|Album|Queue)Screenshots' ./internal/http/
+```
 
 `dev` is also on `testdb`, and `dev.sh` starts `postgres-test`,
 so `scripts/dev.sh go test ./internal/store/...` runs the PostgreSQL tests. `fuzz.sh` needs that, so a failing input is written back to
@@ -82,8 +88,8 @@ test and fuzz cache, shared by `test` and `dev`) and `musiclib_go-mod-cache`
 
 ## Where test data lives, and why
 
-DESIGN.md §3.1 and §12.1 require the filesystem primitives (`openat2`,
-`renameat2(RENAME_EXCHANGE)`, `fsync`, `flock`) to be tested on **real ext4**.
+The filesystem primitives (`openat2`, `renameat2(RENAME_EXCHANGE)`, `fsync`,
+`flock`) must be tested on **real ext4**, the only supported filesystem.
 A container offers three kinds of storage, and only one of them qualifies:
 
 | Storage | What it is | Used for tests? |
@@ -103,7 +109,7 @@ start of every run:
 with-testdata: TMPDIR=/testdata/run.lnkZ8Alq on /dev/vda1[/docker/volumes/musiclib_testdata/_data] ext4 (magic 0xef53), uid=1000 gid=1000
 ```
 
-- **Native Docker Engine (production, DESIGN.md §2.1):** the volume is under
+- **Native Docker Engine (production):** the volume is under
   `/var/lib/docker/volumes`, on the host's filesystem. That must be ext4.
 - **Docker Desktop:** the volume is on the ext4 data disk of Docker Desktop's
   Linux VM (`/dev/vda1`). It is real ext4, but under the VM's kernel, not the
@@ -116,11 +122,11 @@ needs `CAP_SYS_ADMIN` or `--privileged`.
 
 ### The really full filesystem (`/fullfs`)
 
-The full-disk tests (DESIGN.md §12.2 "Disco pieno durante build",
-NOTES.md N-143) need a filesystem that really fills up. The `test` and
-`dev` services mount a **fixed-size tmpfs** at `/fullfs`
-(`size=1088m`: the 1 GiB space margin of §11.2 plus room for the test
-albums), set `MUSICLIB_FULLFS=/fullfs`, and the gate also sets
+The full-disk tests (a disk that fills up during a build must leave the
+published album and the originals intact) need a filesystem that really
+fills up. The `test` and `dev` services mount a **fixed-size tmpfs** at
+`/fullfs` (`size=1088m`: the app's 1 GiB free-space margin plus room for
+the test albums), set `MUSICLIB_FULLFS=/fullfs`, and the gate also sets
 `MUSICLIB_REQUIRE_FULLFS=1`, so these tests fail instead of skipping there.
 
 - The daemon mounts it; the test container gains no privilege.
@@ -150,7 +156,7 @@ docker volume rm musiclib_testdata musiclib_go-build-cache musiclib_go-mod-cache
 ## Services and profiles
 
 Two Compose files, both the project `musiclib` with the same volumes and
-network (NOTES.md N-329):
+network:
 
 - **`compose.yaml`**, production: `postgres` and `app`, the app from the
   published image `ghcr.io/tommasonovelli/musiclib:<version>`. Nothing is
@@ -201,14 +207,14 @@ originals and backups. The tests never use these volumes: they run on
 **postgres**: PostgreSQL 17, volume `musiclib_pgdata`, healthcheck with
 `pg_isready` over TCP. TCP on purpose: the temporary init-time server listens
 only on the socket and must not count as healthy. `fsync`, `full_page_writes`
-and `synchronous_commit` are set to `on` explicitly (§11.1). initdb runs with
-the image defaults. **No port is published** (§10.4). The app reaches it on the Compose network.
+and `synchronous_commit` are set to `on` explicitly. initdb runs with
+the image defaults. **No port is published**. The app reaches it on the Compose network.
 `POSTGRES_PASSWORD` has no default: set it in `.env` before the first `up`
 (`openssl rand -hex 32` gives a URL-safe one, as `DATABASE_URL` needs). It
 is read only when the volume is initialized.
 
 **postgres-test** (`compose.dev.yaml`, profile `tools`): the PostgreSQL of
-the tests (§12.1, NOTES.md N-024). Same image, digest and settings as
+the tests. Same image, digest and settings as
 `postgres`, data on tmpfs, no published port, only on the internal `testdb`
 network. `check.sh` and `dev.sh` start it and wait for it to be healthy; it
 then keeps running. `docker compose -f compose.dev.yaml stop postgres-test`
@@ -226,7 +232,7 @@ knows where PostgreSQL comes from:
   the gate can never pass without running them.
 - `pgtest.NewProxy` puts a TCP proxy between a test and that server, which
   loses a COMMIT's answer, cuts the connection before a COMMIT, or cuts every
-  connection (§6.4, §12.2; NOTES.md N-108). It speaks the protocol without
+  connection. It speaks the protocol without
   TLS, so the URL must keep `sslmode=disable`, as both services set it.
 
 **app**: the server, `musiclibd`. From source, with `COMPOSE_FILE=compose.dev.yaml`
@@ -246,7 +252,7 @@ docker compose run --rm --no-deps app doctor --deep
 docker compose start app
 ```
 
-It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
+The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
 `HTTP_ADDR=:8080` and `WORKERS`. Other settings:
 - `/data` is the named volume `musiclib_musiclib-data`, or an ext4 host path
   through `MUSICLIB_DATA`.
@@ -255,7 +261,7 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
 - `/backup` is `MUSICLIB_BACKUP` (default separate named volume); use an external disk for durable off-device backups.
 - `init: true`, `restart: unless-stopped`, 45 s stop grace.
 - The image runs as 1000:1000, the owner of `/data` and `/backup` in it, so
-  a new named volume belongs to 1000:1000 (NOTES.md N-330). Compose runs it
+  a new named volume belongs to 1000:1000. Compose runs it
   as `MUSICLIB_UID:MUSICLIB_GID` (default 1000:1000): another uid needs
   `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host directories owned by it.
   No capabilities, a read-only root filesystem and tmpfs `/tmp`. `musiclibd`
@@ -270,13 +276,13 @@ It follows §11.1. The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
 ### Version
 
 `musiclibd version` prints the application version and `render_version`
-(§2.1) on two lines, `version: …` and `render_version: …`, and exits 0. It
+(the identity of the renderer, naming rules and pinned tools) on two lines, `version: …` and `render_version: …`, and exits 0. It
 reads no environment and needs neither the database nor the volumes. The
 server also logs the version in its first event, `starting`. The version is
 stamped at build time from the build argument `MUSICLIB_VERSION` (default
 `devel`, a token of `[0-9A-Za-z.+-]`; the build fails on anything else, or
 if the binary does not report it); it is also the backup manifest's
-`app_version` (NOTES.md N-325). The `runtime` image carries the OCI labels
+`app_version`. The `runtime` image carries the OCI labels
 `org.opencontainers.image.{title,description,version,revision,source,licenses}`,
 fed by `MUSICLIB_VERSION`, `MUSICLIB_REVISION` and `MUSICLIB_SOURCE`
 (empty by default):
@@ -296,7 +302,7 @@ its release version. The installation's own:
 docker compose run --rm --no-deps app version
 ```
 
-### Offline inspection and rebuild (Phase 6)
+### Offline inspection and rebuild
 
 Stop the app first, but leave PostgreSQL running. `doctor` is read-only
 apart from taking `/data/.lock`; it never migrates the database, repairs
@@ -331,7 +337,7 @@ separate-volume restore. Do not rely on rebuild as a substitute for backup.
 
 ### What the app does at startup
 
-`musiclibd` with no arguments runs the boot of DESIGN.md §11.1 and logs each
+`musiclibd` with no arguments runs the boot and logs each
 step (`docker compose logs app`):
 
 1. `http listening`: `/health/live` answers 200 from here on,
@@ -357,14 +363,14 @@ step (`docker compose logs app`):
    `taglib`); `/import` readable.
 7. `journal recovered` (or `no pending publication`): a publication that a
    crash, a lost database or an error left half done is completed forward
-   before anything else (§9.4). If the disk matches no legal step of it,
+   before anything else. If the disk matches no legal step of it,
    publishing is **suspended** (`publishing suspended: ...`, code
    `publish_illegal_state`, with `album_id`, `build_id`, the paths and the
    `action` to take): the process stays up with the lock held, runs no
    later step and no worker, deletes nothing, and `/health/ready` answers
    503 `{"code": "publish_illegal_state", "message": ..., "details":
    {"album_id": ..., "build_id": ...}}`, so the Compose healthcheck reports
-   the container unhealthy (NOTES.md N-135). See the next section.
+   the container unhealthy. See the next section.
 8. `work cleaned`: leftovers of an interrupted run removed from `work/`
    (blob temporaries, probe directories, `work/import`, and every build in
    `work/render` and retired directory in `work/retired` that no journal
@@ -382,7 +388,7 @@ the queue every 2 s: when the database is lost, or a commit's outcome is
 unknown, or a publication fails after its journal was written, the workers
 stop, their tool processes are killed, and the process **exits 1**
 (`fatal failure, stopping the workers`, with the `code`). Docker restarts
-it; the new process waits for PostgreSQL and recovers (§6.4).
+it; the new process waits for PostgreSQL and recovers.
 
 SIGTERM (`docker compose stop`) stops the claims and cancels the builds
 (their tools are killed), gives a publication already under way up to 30 s
@@ -393,11 +399,11 @@ closes the database pool and releases the volume lock last
 
 ### The API
 
-`/api` follows DESIGN.md §10 (`internal/http`; NOTES.md N-145 to N-151).
+`/api` is served by `internal/http`: JSON, errors as `{code, message, details}`.
 From the first moment of the boot it answers 503 `not_ready` until
 `ready`. It also answers 503 while publishing is suspended
 (`publish_illegal_state`) and during shutdown (`shutting_down`). The
-§10.4 boundary, for any client:
+browser boundary, for any client:
 - `Host` must be the host and port of `PUBLIC_ORIGIN` (421
   `host_not_allowed` otherwise). With the default
   `PUBLIC_ORIGIN=http://127.0.0.1:8080`, `curl http://127.0.0.1:8080/...`
@@ -417,7 +423,7 @@ From the first moment of the boot it answers 503 `not_ready` until
 `/health/live` and `/health/ready` are outside the Host check, so the
 Compose healthcheck and probes by IP keep working.
 
-Saving an album (`PUT /api/albums/<id>`, NOTES.md N-298) takes every key
+Saving an album (`PUT /api/albums/<id>`) takes every key
 of `{artist_id, new_artist, title, year, genre, compilation, tracks}`. The
 album's artist is exactly one of `artist_id` (an existing artist) and
 `new_artist` (the name of an artist to create with this save, in the same
@@ -426,10 +432,10 @@ creates nothing; a `new_artist` that already exists is 409
 `artist_exists` (or `artist_folder_conflict`) with the existing artist's
 `artist_id` and both names in `details`. An artist left without any album,
 trashed ones included, by a save that moves its last album elsewhere is
-deleted by that save (N-297). `POST /api/artists` still creates an artist
-without an album; it stays until an album arrives and leaves it (N-299).
+deleted by that save. `POST /api/artists` still creates an artist
+without an album; it stays until an album arrives and leaves it.
 Each track of `GET /api/albums/<id>` carries `duration_ms`, its duration
-in milliseconds, or `null` while unknown (N-302): read-only, not a field of
+in milliseconds, or `null` while unknown: read-only, not a field of
 the PUT body.
 
 ```sh
@@ -440,10 +446,10 @@ curl -s -X POST http://127.0.0.1:8080/api/albums/<id>/render   -H 'X-Musiclib-Re
 curl -s http://127.0.0.1:8080/api/albums/<id>/status
 ```
 
-The album editor's files (round 14; NOTES.md N-172 to N-181). An upload's
+The album editor's files. An upload's
 body is the file itself, `Content-Type: application/octet-stream`; its
 format is read from the content. Limits: cover 20 MiB (JPEG or PNG, 40
-Mpixel, embeddable in every audio format of the album, N-091), attachment
+Mpixel, embeddable in every audio format of the album), attachment
 256 MiB, LRC 2 MiB of UTF-8 (413 one byte over; 507
 `insufficient_space` when `/data` has no room for it beyond the 1 GiB
 margin). An attachment's `path` is a percent-encoded query parameter: a
@@ -465,8 +471,8 @@ curl -sOJ http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/original     # al
 ```
 
 A database lost or a commit left without an answer during an API request
-stops the process like one in a worker (exit 1, then Docker restarts it,
-§6.4). The request got 503 `store_connection_lost` or
+stops the process like one in a worker (exit 1, then Docker restarts it).
+The request got 503 `store_connection_lost` or
 `store_commit_uncertain`: reload before retrying.
 
 Verified on Docker Desktop with a separate project (`-p musiclib-e2e`,
@@ -484,8 +490,7 @@ Verified on Docker Desktop with a separate project (`-p musiclib-e2e`,
 ### Importing, the queue and the library list (round 16)
 
 Put the albums under the import mount, then drive the import through the
-API (NOTES.md N-190 to N-201). The SQL path of Phase 2 (N-141) is no
-longer needed.
+API.
 
 ```sh
 B='http://127.0.0.1:8080/api'
@@ -496,7 +501,7 @@ ID=$(cat /proc/sys/kernel/random/uuid)              # the request id: keep it to
 curl -s -X POST $M -d "{\"id\":\"$ID\",\"path\":\"Jazz\"}" "$B/imports"   # 201; the same again: 200; another path: 409
 curl -s "$B/imports/$ID"                            # the report: scanning, importing, completed; each candidate
 curl -s "$B/jobs?state=failed"                      # pending, running, failed jobs (state=, kind=, limit=, after=)
-curl -s -X POST $M -d '{"artist":null,"title":"Kind of Blue"}' "$B/jobs/<job>/retry"   # a failed import, with §7.3 overrides
+curl -s -X POST $M -d '{"artist":null,"title":"Kind of Blue"}' "$B/jobs/<job>/retry"   # a failed import, with artist/title overrides
 curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/retry"                          # any failed job, overrides kept
 curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/dismiss"                        # a failed scan or import: no longer needs attention
 curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/retry-failed"                          # every failed job that still needs attention
@@ -510,7 +515,7 @@ curl -s "$B/albums?q=miles&limit=50"                # search by title or artist;
 - A retry needs no `If-Match` (it changes no album); it is idempotent while
   the job is pending or running; a done or skipped job is 409.
 - A failed scan or import stops needing attention once dismissed, or once
-  a later import of its folder succeeds (NOTES.md N-285): the job shows
+  a later import of its folder succeeds: the job shows
   `dismissed_at`, `superseded` and `needs_attention`, and retry-failed
   leaves it alone. A retry of it clears the dismissal.
 - The import reports are kept 90 days, then deleted at boot or by the daily
@@ -537,26 +542,26 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `volume_locked` | another process holds `/data/.lock` | stop the other instance or maintenance command |
 | `volume_maintenance_pending` / `_malformed` | a rebuild or restore did not finish | repeat a rebuild using the same store id; do not manually clear a restore marker |
 | `volume_store_mismatch` | the volume belongs to another database | mount the right volume, or point `DATABASE_URL` at the right database |
-| `volume_db_uninitialized` | the volume is initialized, the database is new or reset | restore the database from the backup (§11.4) |
+| `volume_db_uninitialized` | the volume is initialized, the database is new or reset | restore the database from the backup ([operations](operations.md#restore-use-new-empty-destinations)) |
 | `volume_marker_missing` / `volume_not_empty` | `/data/.musiclib-store` is missing, and either the media storage is not empty or the database already has catalog content | check the `/data` mount (`MUSICLIB_DATA`): the marker is completed automatically only on an empty volume with a database that has no catalog yet |
 | `volume_marker_malformed` | `/data/.musiclib-store` is not in the expected format | inspect it; it is never rewritten |
 | `volume_cross_device` / `volume_nested_mount` | a mount inside `/data` | mount one ext4 filesystem on `/data`, nothing below it |
 | `volume_permission` | `/data` or a media directory is not writable by `MUSICLIB_UID`, or read-only | `chown -R` the host path, or recreate the volume |
-| `volume_rename_exchange_unsupported` | the filesystem lacks `renameat2(RENAME_EXCHANGE)` | use ext4 (§3.1) |
+| `volume_rename_exchange_unsupported` | the filesystem lacks `renameat2(RENAME_EXCHANGE)` | use ext4 |
 | `import_unavailable` | `/import` is missing or not readable | check `MUSICLIB_IMPORT` |
-| `import_is_data` | `/import` is the data volume or one of its directories (§7.1) | point `MUSICLIB_IMPORT` at the collection to import, never at the data volume |
+| `import_is_data` | `/import` is the data volume or one of its directories | point `MUSICLIB_IMPORT` at the collection to import, never at the data volume |
 | `media_tool_unavailable` / `media_tool_version` | `/usr/local/bin/ffmpeg`, `ffprobe` or `musiclib-tags` is missing, broken, or not the pinned version | pull the published image again (`docker compose pull app`), or rebuild it from source (`docker compose -f compose.dev.yaml build app`); never replace the binaries by hand |
 | `store_migrate` / `store_schema_too_new` | migrations failed, or the database is newer than the binary | see the message; never downgrade |
 | `publish_illegal_state` (the process **stays up**, unhealthy, no worker) | the pending publication journal does not match what is on disk (a directory moved or created by hand in `library/` or `work/`, a missing staging); nothing was deleted; `/health/ready` names the album and the build | put back what was moved and `docker compose restart app` (the recovery runs again), or stop the app and use the explicit rebuild command below |
 | `publish_io` | a filesystem error (EIO, ENOSPC) while completing the pending publication | fix the disk or free space; the process exits 1, since it may be transient, and the next start retries |
-| `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown (§6.4), in a worker (`fatal failure, stopping the workers`) or in an API request (`fatal failure in an API request, stopping`) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
+| `store_connection_lost` / `store_commit_uncertain` (at run time, after `ready`) | the database was lost, or a commit's outcome is unknown, in a worker (`fatal failure, stopping the workers`) or in an API request (`fatal failure in an API request, stopping`) | nothing: Docker restarts the app, which recovers; if it repeats, check PostgreSQL |
 
 The files at the top of `/data`:
 
 ```text
 /data/.lock              flock target; empty, never removed
 /data/.musiclib-store    store_id=<uuid>\n   (mode 0444, written once)
-/data/.maintenance       operation=<rebuild|restore>\nstore_id=<uuid>\n   (only during Phase 6 maintenance)
+/data/.maintenance       operation=<rebuild|restore>\nstore_id=<uuid>\n   (only while a rebuild or restore runs)
 ```
 
 ### Variables
@@ -571,18 +576,18 @@ Set them in `.env` next to `compose.yaml`; `.env.example` lists them.
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |
 | `MUSICLIB_BACKUP` | `musiclib-backup` | external directory (prefer another ext4 disk) or named volume for `/backup` |
 | `MUSICLIB_BIND` / `MUSICLIB_PORT` | `127.0.0.1` / `8080` | published address |
-| `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | §10.4: the only `Host` (and `Origin`) the API accepts |
-| `WORKERS` | empty: `max(1, min(4, CPUs))` (§6.1) | worker pool size, 1..16 |
+| `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | the only `Host` (and `Origin`) the API accepts |
+| `WORKERS` | empty: `max(1, min(4, CPUs))` | worker pool size, 1..16 |
 | `MUSICLIB_DEV_UID` / `MUSICLIB_DEV_GID` | your `id -u` / `id -g` | uid of `test`/`dev` (set by the scripts) |
 | `COMPOSE_FILE` | `compose.yaml` | Compose's own: `compose.dev.yaml` for a source build (plain commands and maintenance scripts) |
 
 ## Pinned images
 
 Every image is pinned by exact version **and** by the digest of its multi-arch
-index (DESIGN.md §2.1). The digest is what is actually used; the tag documents it.
+index. The digest is what is actually used; the tag documents it.
 The one exception is the application's own image in `compose.yaml`, pinned by
 its exact release version: its digest exists only once the release is
-published (NOTES.md N-332).
+published, and the release notes name it.
 
 | Image | Where | Pin |
 |---|---|---|
@@ -590,7 +595,7 @@ published (NOTES.md N-332).
 | Go 1.25.14, Debian 13 | `Dockerfile` `GO_IMAGE` | `golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73` |
 | runtime base, Debian 13 | `Dockerfile` `RUNTIME_IMAGE` | `debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a` |
 | PostgreSQL 17.11 | `compose.yaml` (`postgres`), `compose.dev.yaml` (`postgres`, `postgres-test`) | `postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232` |
-| Vibrance MusicLib (the app) | `compose.yaml` (`app`) | `ghcr.io/tommasonovelli/musiclib:1.0.0`: the release version, without a digest (NOTES.md N-332) |
+| Vibrance MusicLib (the app) | `compose.yaml` (`app`) | `ghcr.io/tommasonovelli/musiclib:1.0.0`: the release version, without a digest |
 | shellcheck 0.11.0 | `scripts/lint-shell.sh` | `koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d` |
 | sqlc 1.31.1 | `scripts/lib/common.sh` | `sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537` |
 | BuildKit 0.32.2 | `.github/workflows/release.yml` (`BUILDKIT_IMAGE`) | `moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8` |
@@ -605,8 +610,7 @@ fully static.
 
 Native tools are built from release tarballs pinned by version **and** sha256
 (`Dockerfile`, ARGs of the stage). The build fails if a download does not
-match its hash. See NOTES.md N-073 (FFmpeg, nasm, LAME) and N-083 (TagLib,
-CMake) for how each pin was verified.
+match its hash.
 
 | Tool | Stage | Pin | Goes into |
 |---|---|---|---|
@@ -616,7 +620,7 @@ CMake) for how each pin was verified.
 | TagLib 2.3.2 | `build-tags` | `taglib-2.3.2.tar.gz` `3ca2d8afaa7f1cf7f6ed10e511ebc368bfacd6dcaa3dbfa690b89e502e8963dc` (no upstream signature; GitHub asset digest and Homebrew agree) | linked statically into `musiclib-tags` |
 | CMake 4.4.3 (Kitware binary) | `build-tags` | `cmake-4.4.3-linux-x86_64.tar.gz` `d6c83076c575bc00b823522ac974bda66d0af05d6ddc30e739c12385cf32c6cc` (signed SHA-256 list checked) | nowhere: builds TagLib |
 
-The TagLib helper `native/musiclib-tags` (DESIGN.md §2.1, §8.1) is built in
+The TagLib helper `native/musiclib-tags` is built in
 `build-tags` from this repository, against those two:
 
 | Binary | Build | Goes into |
@@ -641,14 +645,15 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
   2. Update `FFMPEG_VERSION` and `FFMPEG_SHA256`.
   3. Reset `FFMPEG_EXTRA_VERSION` to `musiclib1`, or increase it when only
      the configure line changes.
-  4. Update `media.PinnedVersion`, this table and NOTES.md.
+  4. Update `media.PinnedVersion` and this table; record how the pin was
+     verified in the commit message.
   5. Run `scripts/check.sh`. `TestMP3EstimationWarningOfThePinnedTool` and
      the fixtures check the behaviours the adapter relies on.
 - **The first build** of the `build-ffmpeg` stage takes a few minutes. It is
   cached afterwards, and shared by the `test`, `dev` and `app` images.
 - **The TagLib helper is reproducible too:** the images hold the same
   `musiclib-tags`, and a `--no-cache` rebuild of `build-tags` gives the same
-  sha256 for both binaries and for `libtag.a` (NOTES.md N-083). The stage
+  sha256 for both binaries and for `libtag.a`. The stage
   takes about 80 s without cache; a change under `native/musiclib-tags/`
   rebuilds only the helper.
 - **The helper's version** is two strings: `musiclib-tags version` prints
@@ -661,14 +666,14 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
   written file (the field table, a reading rule, the bytes written): bump
   `kHelperVersion` and `media.PinnedTagsVersion` together, then re-pin the
   binary's sha256 in `render.TestToolBinariesPinned` and the value in
-  `TestVersionGolden` (every album renders again, NOTES.md N-130). The MP3
+  `TestVersionGolden` (every album renders again). The MP3
   reader and writer (`src/id3v2.cpp`, `src/ape.cpp`, `src/mp3.cpp`) and the
   M4A ones (`src/mp4.cpp`, `src/m4a.cpp`) are the helper's own; TagLib only
-  cross-checks them (N-152, N-165). The re-pin, step by step:
+  cross-checks them. The re-pin, step by step:
   1. `docker build --target build-tags .` (runs the unit tests);
   2. `scripts/dev.sh sha256sum /usr/local/bin/musiclib-tags /usr/local/bin/musiclib-tags-asan`;
   3. the release sha256 into `pinnedBinaries` (`internal/render/version_test.go`),
-     both into NOTES.md N-083;
+     both into the commit message;
   4. confirm with `docker build --no-cache --target build-tags .` that the
      bytes do not change, then `scripts/check.sh`.
 - **Bumping TagLib:**
@@ -680,14 +685,15 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
      `mpeg/mpegfile.cpp`, `mpeg/id3v2/id3v2framefactory.cpp`,
      `mpeg/id3v2/id3v2frame.cpp`, `ape/apetag.cpp` and `tagutils.cpp`
      (`Utils::findID3v1`, `findAPE`). For M4A, `mp4/mp4atom.cpp`,
-     `mp4/mp4tag.cpp`, `mp4/mp4itemfactory.cpp` and `mp4/mp4properties.cpp`
-     (N-165). The helper's readers mirror where
-     TagLib finds tags and what it drops or alters (NOTES.md N-085, N-152,
-     N-154): a change there can require a change of a reader.
+     `mp4/mp4tag.cpp`, `mp4/mp4itemfactory.cpp` and `mp4/mp4properties.cpp`.
+     The helper's readers mirror where
+     TagLib finds tags and what it drops or alters: a change there can
+     require a change of a reader.
   3. Update `TAGLIB_VERSION` and `TAGLIB_SHA256`; reset
      `TAGLIB_BUILD_REVISION` to `musiclib1`, or increase it when only the
      cmake line changes.
-  4. Update `media.PinnedTagLibVersion`, this table and NOTES.md N-083.
+  4. Update `media.PinnedTagLibVersion` and this table; record how the pin
+     was verified in the commit message.
   5. Run `scripts/check.sh`: the hostile-input tests run on the new TagLib
      under the sanitizers too.
 - **Bumping CMake:** download the tarball and `cmake-<v>-SHA-256.txt.asc`,
@@ -715,7 +721,7 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
 
 Rules:
 - A **PostgreSQL major** bump (17 → 18) is a dump and restore, not a tag change.
-- The Go, TagLib and ffmpeg versions are inputs of `render_version` (§2.1), so
+- The Go, TagLib and ffmpeg versions are inputs of `render_version`, so
   bumping them changes `render_version`.
 
 ## Releasing

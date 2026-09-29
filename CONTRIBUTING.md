@@ -1,6 +1,6 @@
 # Contributing to Vibrance MusicLib
 
-Read the [README](README.md), [design](docs/archive/DESIGN.md) and relevant [decisions](docs/archive/NOTES.md) before changing behavior. Contributions of original code and documentation must be available under the project's [MIT License](LICENSE). The logo, the sun symbol, stays outside the MIT License ([LOGO.md](LOGO.md)). Include the origin and applicable license of any third-party material, preserve its notices, and clarify compatibility with the maintainer before submitting it.
+Read the [README](README.md) and the project rules and invariants in [AGENTS.md](AGENTS.md) before changing behavior. Contributions of original code and documentation must be available under the project's [MIT License](LICENSE). The logo, the sun symbol, stays outside the MIT License ([LOGO.md](LOGO.md)). Include the origin and applicable license of any third-party material, preserve its notices, and clarify compatibility with the maintainer before submitting it.
 
 ## Development setup
 
@@ -24,4 +24,4 @@ For documentation-only changes, review the full diff, check local links and comm
 
 For a reproducible bug report, include the commit, host/kernel, filesystem, Docker/Compose versions, relevant configuration without credentials, minimal steps, expected/actual behavior and redacted logs. Never attach `.env`, database URLs containing passwords, catalog dumps, private music or personal metadata. If an integrity problem is involved, preserve the evidence and backups before attempting recovery.
 
-Use the [public release checklist](docs/archive/opensource.md) to track packaging and documentation gaps. A release is published by pushing a version tag; the maintainer's procedure is in [the Docker guide](docs/docker.md#releasing). Public support channels, a private security-reporting contact and the changelog policy still need to be established by the owner; do not publish vulnerability details or credentials in a public report.
+A release is published by pushing a version tag; the maintainer's procedure is in [the Docker guide](docs/docker.md#releasing). Changes are recorded in `CHANGELOG.md`, in the Keep a Changelog style: one `## [X.Y.Z] - YYYY-MM-DD` section per release, which the release workflow requires and publishes as the release notes. Public support channels and a private security-reporting contact are still to be established by the owner; do not publish vulnerability details or credentials in a public report.

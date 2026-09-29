@@ -17,7 +17,7 @@
 # initialize. The project name and the volumes are the same as compose.yaml,
 # so switching between the two files keeps the database and /data.
 #
-# Every image is pinned by version and digest (DESIGN.md §2.1).
+# Every image is pinned by version and digest.
 
 name: musiclib
 
@@ -32,7 +32,7 @@ x-postgres: &postgres
   # with gosu: these are the only capabilities it needs.
   cap_drop: [ALL]
   cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
-  # DESIGN.md §11.1: these three stay on. They are the defaults; setting them
+  # Durability: these three stay on. They are the defaults; setting them
   # explicitly makes the requirement visible and overrides any stray
   # postgresql.conf / ALTER SYSTEM.
   command:
@@ -43,7 +43,7 @@ x-postgres: &postgres
     - full_page_writes=on
     - -c
     - synchronous_commit=on
-  # No published port (DESIGN.md §10.4): clients use the Compose network; for
+  # No published port: clients use the Compose network; for
   # a psql session use `docker compose exec postgres psql -U musiclib`.
   healthcheck:
     # TCP on 127.0.0.1, not the Unix socket: during first initialization the
@@ -75,9 +75,9 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   # -------------------------------------------------------------------------
-  # Throwaway server of the PostgreSQL tests (DESIGN.md §12.1, NOTES.md
-  # N-024): same image and settings as `postgres`, data on tmpfs, reachable
-  # only on the internal `testdb` network. Each test creates and drops its
+  # Throwaway server of the PostgreSQL tests: same image and settings as
+  # `postgres`, data on tmpfs, reachable only on the internal `testdb`
+  # network. Each test creates and drops its
   # own database (internal/store/pgtest). Started by scripts/check.sh and
   # scripts/dev.sh; `docker compose -f compose.dev.yaml stop postgres-test`
   # discards everything.
@@ -93,7 +93,7 @@ services:
     networks: [testdb]
 
   # -------------------------------------------------------------------------
-  # The application (DESIGN.md §11.1), built from source: the same settings
+  # The application, built from source: the same settings
   # as in compose.yaml, the local image instead of the published one.
   app:
     build:
@@ -115,14 +115,14 @@ services:
       DATABASE_URL: postgres://musiclib:${POSTGRES_PASSWORD:-}@postgres:5432/musiclib?sslmode=disable
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:${MUSICLIB_PORT:-8080}}
       HTTP_ADDR: ":8080"
-      # Empty means the default of DESIGN.md §6.1: max(1, min(4, CPUs)).
+      # Empty means the default: max(1, min(4, CPUs)).
       WORKERS: ${WORKERS:-}
     ports:
-      # DESIGN.md §10.4: loopback by default; LAN access needs an explicit
+      # Loopback by default; LAN access needs an explicit
       # MUSICLIB_BIND (and a matching PUBLIC_ORIGIN).
       - "${MUSICLIB_BIND:-127.0.0.1}:${MUSICLIB_PORT:-8080}:8080"
     volumes:
-      # /data must be ext4 (DESIGN.md §3.1). MUSICLIB_DATA may be a named
+      # /data must be local ext4. MUSICLIB_DATA may be a named
       # volume (default) or an absolute host path on ext4 owned by MUSICLIB_UID.
       - ${MUSICLIB_DATA:-musiclib-data}:/data
       # Backups are not inside /data. Prefer an external ext4 disk mounted
@@ -137,12 +137,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # DESIGN.md §11.1: a prepared publication gets up to 30 s to finish.
+    # A publication already under way gets up to 30 s to finish.
     stop_grace_period: 45s
     # The slim image has no curl: the subcommand queries /health/ready on
-    # HTTP_ADDR and exits 0 or 1 (N-027). It takes no lock and starts nothing.
+    # HTTP_ADDR and exits 0 or 1. It takes no lock and starts nothing.
     # start_period covers the boot: waiting for PostgreSQL, migrations and
-    # the volume checks (DESIGN.md §11.1).
+    # the volume checks.
     healthcheck:
       test: ["CMD", "/usr/local/bin/musiclibd", "healthcheck"]
       interval: 10s
@@ -174,10 +174,9 @@ services:
     cap_drop: [ALL]
     tmpfs:
       - /tmp
-      # The small, really full filesystem of the full-disk tests (DESIGN.md
-      # §12.2 "Disco pieno durante build", NOTES.md N-045): mounted by the
-      # daemon with a fixed size, private to this container, gone when it
-      # exits. 1088 MiB: the 1 GiB space margin of §11.2 plus room for the
+      # The small, really full filesystem of the full-disk tests: mounted by
+      # the daemon with a fixed size, private to this container, gone when it
+      # exits. 1088 MiB: the app's 1 GiB free-space margin plus room for the
       # test albums. It uses RAM only as far as a test fills it.
       - /fullfs:size=1088m,mode=1777
     environment:

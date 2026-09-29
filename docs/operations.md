@@ -1,6 +1,6 @@
 # Operating Vibrance MusicLib (Ubuntu 24.04+, Docker Engine, local ext4)
 
-DESIGN.md §3, §10.4, §11–§12. See [Docker and tests](docker.md) and [the UI](archive/ui.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
+See also [Docker and tests](docker.md). Run all commands from the directory that holds `compose.yaml` and `.env` (the repository root for a source build). Install Docker Engine with the Compose v2 plugin; do not install Go, PostgreSQL or media tools on the host. Use a local ext4 filesystem for `/data` and for the test volume; no nested mounts under `/data`. Keep backups on a **different physical disk** when possible.
 
 ## First start
 
@@ -92,7 +92,7 @@ scripts/rebuild.sh 'STORE_UUID_FROM_MARKER'
 scripts/backup.sh '2026-09-26 full'     # creates /backup/2026-09-26 full
 ```
 
-Without the repository (only `compose.yaml` and `.env`), run the same three steps by hand (DESIGN.md §11.3):
+Without the repository (only `compose.yaml` and `.env`), run the same three steps by hand:
 
 ```sh
 docker compose stop app
@@ -125,7 +125,7 @@ scripts/doctor.sh --deep
 
 `docker compose up -d --wait` creates the app's container if it does not exist yet (from source: with `COMPOSE_FILE=compose.dev.yaml` and `--build`). The restored catalog and originals keep their identities; all published output is regenerated. Wait until Activity is idle before deep doctor. Corrupt dump, manifest or originals are refused. Keep the completed backup read-only and unchanged throughout restore; an external change between verification and pg_restore may leave a marker and require new destinations. Never use a temporary backup directory as restore input.
 
-A backup made before schema 3 restores the same way: the boot adds the track durations' column, and the renders that regenerate the output record the duration of every active album's tracks (trashed albums get theirs when restored). On an installation that stays up, **Rebuild the library folder** (Activity → Advanced) does the same. Such a backup may also hold artists without albums, created before the rule that removes them (NOTES.md N-297); NOTES.md N-299 has the SQL to list them and to delete them, to run by hand with the app stopped.
+A backup made before schema 3 restores the same way: the boot adds the track durations' column, and the renders that regenerate the output record the duration of every active album's tracks (trashed albums get theirs when restored). On an installation that stays up, **Rebuild the library folder** (Activity → Advanced) does the same. Such a backup may also hold artists without any album, created before MusicLib began deleting an artist together with its last album; they are kept as they are, and nothing removes them automatically.
 
 ## Security and troubleshooting
 
@@ -158,7 +158,7 @@ Command exit codes: 0 = success/no doctor errors, 1 = damage or attempted operat
 
 ## Release check on a native host
 
-DESIGN.md §2.1 and §12.1 require a **native** Ubuntu 24.04+ Docker Engine with `/var/lib/docker` (testdata named volume) and `MUSICLIB_DATA` on ext4. Docker Desktop testing is not a substitute (NOTES.md N-017). Before a release, run:
+A release requires a passing run on a **native** Ubuntu 24.04+ Docker Engine with `/var/lib/docker` (testdata named volume) and `MUSICLIB_DATA` on ext4. Docker Desktop testing is not a substitute. Before a release, run:
 
 ```sh
 findmnt -no FSTYPE /var/lib/docker      # must report ext4
@@ -174,4 +174,4 @@ scripts/dev.sh go test -race -count=3 -run 'TestRebuildRealCrashWindows|TestRest
 scripts/dev.sh go test -race -run 'TestBackupLossRestoreBootAndDoctor|TestReleaseCollectionInterruptedAndRestored' ./cmd/musiclibd
 ```
 
-Record the machine/kernel, commands, output and any skipped tests; do not release until the native gate and the §12.3 acceptance run pass. This repository's Docker Desktop gate uses real ext4 inside the VM, not the native host kernel.
+Record the machine/kernel, commands, output and any skipped tests; do not release until the native gate and the acceptance tests above (a test collection imported, edited, interrupted and restored without manual fixes) pass. This repository's Docker Desktop gate uses real ext4 inside the VM, not the native host kernel.
