@@ -82,7 +82,7 @@ Good to know:
 
 - The block is safe to paste twice: it never replaces an existing `compose.yaml` or `.env`.
 - `docker compose up -d --wait` pulls the images the first time, then waits until MusicLib reports that it is ready. MusicLib starts again by itself after a reboot, unless you stopped it.
-- The database password must be in `.env` **before the first start**: PostgreSQL reads it only once, when it creates its database. Changing it in `.env` later doesn't change the database's password (see [docs/operations.md](docs/operations.md#first-start) to change it).
+- **The database password.** `compose.yaml` comes with a default password, `musiclib`, and it is better not to keep it: the block writes a random one into `.env`, which replaces the default. If you install without the block, set `POSTGRES_PASSWORD` in `.env` **before the first start**: PostgreSQL reads it only once, when it creates its database. Changing it in `.env` later doesn't change the database's password, and MusicLib can no longer connect (see [docs/operations.md](docs/operations.md#first-start) to change it).
 - `.env` holds that password: keep it private (the block makes it readable by you only).
 - To keep your library in a folder of your choice instead of Docker's storage, read the next section **before** the first start.
 
@@ -99,9 +99,9 @@ By default MusicLib keeps its data in Docker named volumes. You can put it in fo
    findmnt -no FSTYPE -T /srv/musiclib/data    # must print ext4
    ```
 
-3. Add them to `~/musiclib/.env`, together with the folder of the music you want to import, if it isn't `~/musiclib/import`:
+3. Add these lines to `~/musiclib/.env`, with your folders; the last one only if the music you want to import isn't in `~/musiclib/import`:
 
-   ```sh
+   ```text
    MUSICLIB_DATA=/srv/musiclib/data
    MUSICLIB_BACKUP=/mnt/backup/musiclib
    MUSICLIB_IMPORT=/srv/music
@@ -114,7 +114,7 @@ The import folder is mounted **read-only**: it must exist before MusicLib starts
 ## First steps
 
 - **Import.** The Import page shows the contents of your import folder. Open a folder, or stay at the top to take everything, and choose **Import everything in …**. MusicLib finds the albums inside, imports each one completely or not at all, and lists what was imported, what was skipped (for example an album you had already imported) and what needs your attention, with the reason. Leave the source files where they are until the import has finished.
-- **Edit.** Open an album from the **Library** to change its title, artist, year, genre and compilation flag, the tracks (number, title, artist, genre, disc), the cover, lyrics and extra files. When you save, MusicLib regenerates that album's folder in the library. If two people (or two browser tabs) edit the same album, the second save is refused instead of overwriting the first.
+- **Edit.** Open an album from the **Library** to change its title, artist, year, genre and compilation flag, the tracks (number, title, artist, genre, disc), the cover, lyrics and extra files. When you save, MusicLib regenerates that album's folder in the library. If two browser tabs edit the same album, the second save is refused instead of overwriting the first.
 - **Activity** shows the work in progress: scans, imports and library updates. Failed work stays there, with its reason, until you retry or dismiss it. **Needs attention**, in the sidebar, lists the albums whose last update failed.
 - **Trash.** Moving an album to the trash removes it from the library folder; you can restore it at any time.
 
@@ -177,7 +177,7 @@ All settings are in `~/musiclib/.env`. After changing it, apply it with `docker 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `POSTGRES_PASSWORD` | none, required | Database password; the install block generates it. Read only when the database is first created. |
+| `POSTGRES_PASSWORD` | `musiclib`: better change it | Database password; the install block writes a random one. Read only when the database is first created: set it before the first start. |
 | `PUBLIC_ORIGIN` | `http://127.0.0.1:8080` | The exact address you open in the browser: scheme, host and port. |
 | `MUSICLIB_BIND` | `127.0.0.1` | Host address the web interface listens on. Loopback: this machine only. |
 | `MUSICLIB_PORT` | `8080` | Host port of the web interface. Keep it equal to the port in `PUBLIC_ORIGIN`. |
@@ -195,14 +195,15 @@ Every setting is described in [docs/operations.md](docs/operations.md) and [docs
 
 - By default it listens only on `127.0.0.1`: it can be opened only from the machine it runs on.
 - `PUBLIC_ORIGIN` must match the address in the browser exactly. `http://localhost:8080` and `http://127.0.0.1:8080` are different addresses: with the default setting, only the second one works.
-- **From another device on your network**, set the machine's LAN address in both settings in `.env`, then run `docker compose up -d --wait`. Give the machine a fixed address in your router first.
+- **From another device on your network**, set the machine's LAN address in both settings: in `.env`, change these two lines as below (`MUSICLIB_BIND` starts with a `#`: remove it), then run `docker compose up -d --wait`. Give the machine a fixed address in your router first.
 
-  ```sh
+  ```text
   MUSICLIB_BIND=192.168.1.20
   PUBLIC_ORIGIN=http://192.168.1.20:8080
   ```
 
 - **From your computer to a server without a desktop**, an SSH tunnel keeps the default settings: run `ssh -L 8080:127.0.0.1:8080 you@server` and open `http://127.0.0.1:8080` on your computer.
+- **The database** has a default password, `musiclib`, unless you set `POSTGRES_PASSWORD` in `.env` before the first start; the install block does it for you with a random one. The database publishes no port, so other machines can't reach it, but a password of your own is still better.
 - **Never expose MusicLib directly to the Internet.** For remote access, put it behind a reverse proxy that requires authentication, and set `PUBLIC_ORIGIN` to the proxy's address.
 
 ## Backup, check and restore
@@ -213,11 +214,11 @@ These commands run from `~/musiclib`. Each one stops MusicLib, runs a one-off ma
 
 ```sh
 docker compose stop app
-docker compose run --rm --no-deps app backup --to "/backup/$(date +%F)"
+docker compose run --rm --no-deps app backup --to "/backup/$(date +%F-%H%M)"
 docker compose start app
 ```
 
-- The backup is a new folder under `/backup`, the backup folder (`MUSICLIB_BACKUP`). It is a full copy, verified while it is written, and never overwrites an existing backup: choose a new name each time.
+- The backup is a new folder under `/backup`, the backup folder (`MUSICLIB_BACKUP`), named after the date and time, such as `2026-09-29-2130`. It is a full copy, verified while it is written, and never overwrites an existing backup: a name that already exists is refused (`backup_exists`).
 - The generated library isn't saved (it is regenerated after a restore), and neither is your import folder.
 - The default backup volume is on the same disk as your data: it protects against mistakes, not against a disk failure. Set `MUSICLIB_BACKUP` to a folder on another disk, keep several backups, and try a restore now and then.
 - To copy a backup elsewhere, use `sudo cp -a`: some of its files are readable only by uid 1000.
@@ -241,7 +242,7 @@ Doctor only reads and never repairs. It exits with 0 when nothing is damaged, 1 
 
    ```sh
    docker compose up -d --wait postgres
-   docker compose run --rm --no-deps app restore --from "/backup/2026-09-29"
+   docker compose run --rm --no-deps app restore --from "/backup/2026-09-29-2130"
    docker compose up -d --wait
    ```
 
@@ -251,12 +252,12 @@ Start only the database before the restore, as above: the first start of MusicLi
 
 ## Updating
 
-Back up first: an update can upgrade the database, and there is no way back except restoring that backup. Your settings are in `.env`, so the new release's `compose.yaml` simply replaces the old one:
+Back up first: an update can upgrade the database, and there is no way back except restoring that backup. Your settings are in `.env`, so the new release's `compose.yaml` simply replaces the old one. (If you changed the database password in `compose.yaml` instead of `.env`, move it to `.env` first: the new file comes with the default.)
 
 ```sh
 cd ~/musiclib
 docker compose stop app &&
-docker compose run --rm --no-deps app backup --to "/backup/before-update-$(date +%F)" &&
+docker compose run --rm --no-deps app backup --to "/backup/before-update-$(date +%F-%H%M)" &&
 curl -fsSLO https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/compose.yaml &&
 docker compose pull && docker compose up -d --wait
 ```
@@ -267,7 +268,7 @@ At its first start, the new version updates the database. **Downgrading isn't po
 
 ## Everyday commands
 
-Run them from `~/musiclib`:
+Run them from `~/musiclib` (from the clone's folder for a [source build](#building-from-source)):
 
 | Task | Command |
 |---|---|
@@ -278,11 +279,13 @@ Run them from `~/musiclib`:
 | Check that it is ready | `curl -f http://127.0.0.1:8080/health/ready` |
 | Show its version | `docker compose run --rm --no-deps app version` |
 
+After the LAN change of [Access and security](#access-and-security), MusicLib no longer listens on `127.0.0.1`: check it with the LAN address, such as `curl -f http://192.168.1.20:8080/health/ready`.
+
 If MusicLib refuses to start, its log names the problem with a stable code, and nothing is repaired or deleted automatically. The codes and what to do about each are in [docs/operations.md](docs/operations.md#security-and-troubleshooting) and [docs/docker.md](docs/docker.md#when-the-app-refuses-to-start).
 
 ## Building from source
 
-The image runs a Go server with its web interface built in, PostgreSQL 17, FFmpeg and a small TagLib-based tag writer, all pinned to exact versions. To build it from a clone of the repository instead of using the published image:
+The app image holds a Go server with its web interface built in, FFmpeg and a small TagLib-based tag writer, all pinned to exact versions; PostgreSQL 17 runs in its own container, from its own pinned image. To build the app image from a clone of the repository instead of using the published one:
 
 ```sh
 git clone https://github.com/tommasonovelli/vibrance-musiclib.git && cd vibrance-musiclib
@@ -293,7 +296,7 @@ mkdir -p import
 docker compose up -d --build --wait
 ```
 
-`COMPOSE_FILE=compose.dev.yaml` makes every `docker compose` command in this README use the source build. The first build compiles its pinned dependencies and takes several minutes. A source build and a published-image installation are the same Compose project, `musiclib`, with the same volumes: on one machine they share the same data.
+`COMPOSE_FILE=compose.dev.yaml` makes every `docker compose` command in this README use the source build: run them from the clone's folder, `vibrance-musiclib`, instead of `~/musiclib`. The first build compiles its pinned dependencies and takes several minutes. A source build and a published-image installation are the same Compose project, `musiclib`, with the same volumes: on one machine they share the same data.
 
 To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md). Operations in depth are in [docs/operations.md](docs/operations.md), and development, tests and pinned dependencies in [docs/docker.md](docs/docker.md).
 

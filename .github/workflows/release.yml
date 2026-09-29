@@ -293,14 +293,12 @@ jobs:
 
           ### Install
 
-          Docker Engine with the Compose v2 plugin, Linux amd64, `/data` on local ext4. In an empty directory:
+          Docker Engine with the Compose v2 plugin, Linux amd64, `/data` on local ext4. The block creates `~/musiclib`, writes a random database password into `.env` (instead of the default `musiclib`) and starts MusicLib:
 
           ```sh
-          curl -fLO @DOWNLOAD@/compose.yaml
-          curl -fL -o .env.example @DOWNLOAD@/env.example
-          cp .env.example .env && chmod 600 .env
-          sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
-          mkdir -p import
+          mkdir -p ~/musiclib/import && cd ~/musiclib
+          [ -e compose.yaml ] || curl -fsSLO @DOWNLOAD@/compose.yaml
+          [ -e .env ] || { curl -fsSL -o .env @DOWNLOAD@/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env; }
           docker compose up -d --wait
           ```
 

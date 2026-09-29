@@ -160,16 +160,16 @@ network:
 
 - **`compose.yaml`**, production: `postgres` and `app`, the app from the
   published image `ghcr.io/tommasonovelli/musiclib:<version>`. Nothing is
-  built. `docker compose up -d` starts both. `POSTGRES_PASSWORD` is
-  required. Installation, upgrades and maintenance: [operations](operations.md).
+  built. `docker compose up -d` starts both. Installation, upgrades and maintenance: [operations](operations.md).
 - **`compose.dev.yaml`**, development: the same `postgres` and `app`, the app
   built from this repository's sources as `musiclib-app:local`
   (`MUSICLIB_VERSION=devel`), plus `test`, `dev` and `postgres-test` behind
-  the profile `tools`. `POSTGRES_PASSWORD` may be unset here, so that the
-  tools need no `.env`; PostgreSQL then refuses to initialize a new database.
+  the profile `tools`.
 
-Keep the `postgres` and `app` services of the two files in step: they differ
-only in the app's `image`/`build` and in the password's default.
+Both files need no `.env`: the database password defaults to `musiclib`
+(change it before the first start, see `postgres` below). Keep the `postgres`
+and `app` services of the two files in step: they differ only in the app's
+`image`/`build`.
 
 To run the app from source, use `compose.dev.yaml`, either with `-f` on every
 command or once for all in `.env`:
@@ -209,9 +209,13 @@ originals and backups. The tests never use these volumes: they run on
 only on the socket and must not count as healthy. `fsync`, `full_page_writes`
 and `synchronous_commit` are set to `on` explicitly. initdb runs with
 the image defaults. **No port is published**. The app reaches it on the Compose network.
-`POSTGRES_PASSWORD` has no default: set it in `.env` before the first `up`
-(`openssl rand -hex 32` gives a URL-safe one, as `DATABASE_URL` needs). It
-is read only when the volume is initialized.
+The password is defined once per file, in `x-db-password`:
+`POSTGRES_PASSWORD` from `.env`, or the default `musiclib` when it is unset
+or empty. Better change it before the first `up` (`openssl rand -hex 32`
+into `.env`): it is read only when the volume is initialized. The app gets it
+as `PGPASSWORD`, which pgx uses because `DATABASE_URL` carries none, so it
+need not be URL-safe; the offline `backup`/`restore` pass it on to
+`pg_dump`/`pg_restore` the same way.
 
 **postgres-test** (`compose.dev.yaml`, profile `tools`): the PostgreSQL of
 the tests. Same image, digest and settings as
@@ -252,8 +256,8 @@ docker compose run --rm --no-deps app doctor --deep
 docker compose start app
 ```
 
-The environment is `DATABASE_URL`, `PUBLIC_ORIGIN`,
-`HTTP_ADDR=:8080` and `WORKERS`. Other settings:
+The environment is `DATABASE_URL` (its password in `PGPASSWORD`),
+`PUBLIC_ORIGIN`, `HTTP_ADDR=:8080` and `WORKERS`. Other settings:
 - `/data` is the named volume `musiclib_musiclib-data`, or an ext4 host path
   through `MUSICLIB_DATA`.
 - `/import` is a read-only bind of `MUSICLIB_IMPORT` (default `./import`). It
@@ -570,7 +574,7 @@ Set them in `.env` next to `compose.yaml`; `.env.example` lists them.
 
 | Variable (`.env`) | Default | Meaning |
 |---|---|---|
-| `POSTGRES_PASSWORD` | none: required by `compose.yaml`; empty in `compose.dev.yaml` | DB password, URL-safe (`openssl rand -hex 32`), read at initdb time only |
+| `POSTGRES_PASSWORD` | `musiclib` (better change it) | DB password (`openssl rand -hex 32`), read at initdb time only; empty means the default |
 | `MUSICLIB_UID` / `MUSICLIB_GID` | `1000` | ids of the app process (`user:`); the image and new named volumes are 1000:1000, another uid needs host directories it owns |
 | `MUSICLIB_DATA` | `musiclib-data` | named volume or absolute ext4 path for `/data` |
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |

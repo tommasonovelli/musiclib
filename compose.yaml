@@ -1,9 +1,11 @@
 # Vibrance MusicLib: production Compose file.
 # PostgreSQL and the app, from the published image. See docs/operations.md.
 #
-#   cp .env.example .env        then set POSTGRES_PASSWORD (openssl rand -hex 32)
 #   mkdir -p import             the read-only /import; Compose does not create it
 #   docker compose up -d --wait
+#
+# Settings go in .env next to this file (see .env.example); every one has a
+# default. Change the database password before the first start: see below.
 #
 # Development, tests and building the app from source: compose.dev.yaml
 # (docs/docker.md). Both files are the Compose project `musiclib` with the
@@ -15,6 +17,17 @@
 # place that names it.
 
 name: musiclib
+
+# The database password, defined here once for both services.
+# DEFAULT PASSWORD: `musiclib`. Better change it BEFORE THE FIRST START:
+# set POSTGRES_PASSWORD in .env (the README's install block writes a random
+# one there), or replace `musiclib` below; .env wins when it sets one, and
+# survives an upgrade that replaces this file.
+# PostgreSQL reads it only when it creates its database, at the first start:
+# changing it later does not change the database's password, and the app can
+# no longer connect (docs/operations.md, "First start", explains how to change
+# it). The database publishes no port: other machines cannot reach it.
+x-db-password: &db-password ${POSTGRES_PASSWORD:-musiclib}
 
 x-hardening: &hardening
   security_opt:
@@ -59,10 +72,9 @@ services:
     environment:
       POSTGRES_USER: musiclib
       POSTGRES_DB: musiclib
-      # Required, no default. Read only when the pgdata volume is first
-      # initialized: changing it later does not change the database's
-      # password. URL-safe (it goes into DATABASE_URL below).
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env next to compose.yaml, e.g. the output of openssl rand -hex 32 (see .env.example)}
+      # x-db-password above. Read only when the pgdata volume is first
+      # initialized.
+      POSTGRES_PASSWORD: *db-password
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -82,7 +94,10 @@ services:
     tmpfs:
       - /tmp
     environment:
-      DATABASE_URL: postgres://musiclib:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env next to compose.yaml, e.g. the output of openssl rand -hex 32 (see .env.example)}@postgres:5432/musiclib?sslmode=disable
+      # No password in the URL: the PostgreSQL client reads it from
+      # PGPASSWORD (x-db-password above), so it need not be URL-safe.
+      DATABASE_URL: postgres://musiclib@postgres:5432/musiclib?sslmode=disable
+      PGPASSWORD: *db-password
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:${MUSICLIB_PORT:-8080}}
       HTTP_ADDR: ":8080"
       # Empty means the default: max(1, min(4, CPUs)).

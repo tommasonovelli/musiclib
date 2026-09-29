@@ -40,7 +40,7 @@ docs/                   operations and Docker guides
 - `scripts/check.sh [packages]` is the gate: `sqlc diff`, `go build`, `go vet`, `gofmt`, `go test -race` against a real PostgreSQL 17 (`postgres-test`) with `TMPDIR` on a real ext4 volume, no network. It tests a snapshot of the tree taken at build time. A host `go test` that skips database tests proves nothing.
 - `scripts/dev.sh [cmd]` runs a shell or one command in the toolchain container on the live sources (e.g. `scripts/dev.sh go test -race -count=20 -run TestX ./internal/publish`).
 - `scripts/sqlc.sh` regenerates `internal/store` after any change in `sql/` or `migrations/`; the generated code is committed. `scripts/lint-shell.sh` after changing shell scripts; `scripts/fuzz.sh Target duration [pkg]` for fuzz targets.
-- `check.sh`, `dev.sh` and `fuzz.sh` always use `compose.dev.yaml` and need no `.env`; the maintenance wrappers (`doctor.sh`, `rebuild.sh`, `backup.sh`, `restore.sh`) act on the installation's Compose file. To run the app from source: set `POSTGRES_PASSWORD` in `.env`, `docker compose -f compose.dev.yaml up -d --build --wait`, then open `http://127.0.0.1:8080/`.
+- `check.sh`, `dev.sh` and `fuzz.sh` always use `compose.dev.yaml` and need no `.env`; the maintenance wrappers (`doctor.sh`, `rebuild.sh`, `backup.sh`, `restore.sh`) act on the installation's Compose file. To run the app from source: `docker compose -f compose.dev.yaml up -d --build --wait`, then open `http://127.0.0.1:8080/`.
 - Details, pins and the release procedure: [docs/docker.md](docs/docker.md).
 
 ## Owner's working rules
@@ -132,6 +132,7 @@ docs/                   operations and Docker guides
 ### Container and operations
 
 - Configuration comes only from the environment: `DATABASE_URL`, `PUBLIC_ORIGIN`, `HTTP_ADDR`, `WORKERS`. Container paths are fixed (`/data`, `/import`, `/backup`).
+- The database password is defined once per Compose file (`x-db-password`): `POSTGRES_PASSWORD` from `.env`, else the default `musiclib`, which the docs tell users to change before the first start. The app receives it as `PGPASSWORD` (read by pgx) and `DATABASE_URL` carries none.
 - Never root: `musiclibd` refuses uid 0 and sets umask 022; the app container runs without capabilities, with a read-only root filesystem. PostgreSQL keeps `fsync`, `full_page_writes` and `synchronous_commit` on and publishes no port.
 - `doctor`, `rebuild`, `backup` and `restore` run offline (app stopped, PostgreSQL up) and take the volume lock. Doctor never repairs; restore only into a new empty database and volume, never over an installation; backups are never overwritten.
 

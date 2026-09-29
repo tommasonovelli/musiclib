@@ -4,22 +4,20 @@ See also [Docker and tests](docker.md). Run all commands from the directory that
 
 ## First start
 
-A production installation needs only two files of the release, `compose.yaml` and `.env.example`, and runs the published image `ghcr.io/tommasonovelli/musiclib:1.0.0` (Linux amd64); nothing is built. **The image exists only once the `v1.0.0` release is published**: until then `docker compose up` fails to pull it, and you run from source instead (below).
+A production installation needs only two files of the release, `compose.yaml` and `env.example` (the repository's `.env.example`, attached without its leading dot), and runs the published image `ghcr.io/tommasonovelli/musiclib:1.0.0` (Linux amd64); nothing is built. **The image exists only once the `v1.0.0` release is published**: until then `docker compose up` fails to pull it, and you run from source instead (below).
 
 ```sh
-mkdir musiclib && cd musiclib
-curl -fLO https://raw.githubusercontent.com/tommasonovelli/musiclib/v1.0.0/compose.yaml
-curl -fLO https://raw.githubusercontent.com/tommasonovelli/musiclib/v1.0.0/.env.example
-cp .env.example .env && chmod 600 .env
-# A random, URL-safe database password, written into .env without printing it:
-sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
-mkdir -p import                  # the read-only /import; or set MUSICLIB_IMPORT in .env
+mkdir -p ~/musiclib/import && cd ~/musiclib
+[ -e compose.yaml ] || curl -fsSLO https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/compose.yaml
+[ -e .env ] || { curl -fsSL -o .env https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env; }
 docker compose up -d --wait      # PostgreSQL and the app; returns when the app is healthy
 curl -f http://127.0.0.1:8080/health/ready
 docker compose logs -f app
 ```
 
-`POSTGRES_PASSWORD` is required: without it Compose refuses every command with `required variable POSTGRES_PASSWORD is missing a value`. Use a URL-safe value (`openssl rand -hex 32`): Compose inserts it into `DATABASE_URL`. PostgreSQL reads it only when its volume is first initialized; changing `.env` later does not change the database's password (to change it, run `docker compose exec postgres psql -U musiclib -d musiclib -c '\password musiclib'`, put the same value in `.env`, then `docker compose up -d --wait`).
+The block is idempotent: it never replaces an existing `compose.yaml` or `.env`. `import` is the read-only `/import` (or set `MUSICLIB_IMPORT` in `.env`); Compose does not create it.
+
+**The database password has a default, `musiclib`: change it before the first start.** It is defined once, at the top of `compose.yaml` (`x-db-password`), for both services; `POSTGRES_PASSWORD` in `.env` overrides it, and an empty value means the default. The block above writes a random one into `.env` without printing it. Without the block, set it in `.env` (preferred: a new release's `compose.yaml` comes with the default again) or in place of `musiclib` in `compose.yaml`. The database publishes no port, so other machines cannot reach it; a password of your own is still better. PostgreSQL reads it only when its volume is first initialized: changing it later does not change the database's password, and the app can no longer connect. To change it, run `docker compose exec postgres psql -U musiclib -d musiclib -c '\password musiclib'`, put the same value in `.env`, then `docker compose up -d --wait`.
 
 The defaults keep the database, `/data` and `/backup` in the named volumes `musiclib_pgdata`, `musiclib_musiclib-data` and `musiclib_musiclib-backup`. For host directories on ext4 (a data disk, a backup disk), set them in `.env` before the first start:
 
@@ -36,7 +34,7 @@ EOF
 
 The image runs as `1000:1000` and owns `/data` and `/backup`, so a new named volume belongs to `1000:1000`. `MUSICLIB_UID`/`MUSICLIB_GID` in `.env` run the process as another uid (Compose `user:`); the named volumes do not follow, so another uid needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host directories owned by it (and `/import` readable by it). A bind-mounted `MUSICLIB_BACKUP` directory must be writable by `MUSICLIB_UID` (and its group by `MUSICLIB_GID`). The `.env` file contains a password: restrict its permissions (`chmod 600 .env`) and keep it out of backups/shared checkouts.
 
-`DATABASE_URL` is assembled from the Compose database and `POSTGRES_PASSWORD`; outside Compose, supply a PostgreSQL URI or pgx keyword/value connection string via `DATABASE_URL`. Offline pg_dump/pg_restore use a password-free libpq URI built from host, port, user, database and approved TLS settings; pgx-only query options are not passed to libpq. For TLS settings use the PostgreSQL URI form (keyword/value DSNs are accepted for non-TLS connections only); encrypted client keys requiring `sslpassword` are not supported by the offline tools. Passwords go to the child via `PGPASSWORD`, not command arguments. `PUBLIC_ORIGIN` is mandatory for the binary and must match the browser's exact host and port; Compose defaults it to the loopback URL. `HTTP_ADDR` defaults to `:8080` (Compose sets it explicitly), `WORKERS` to min(4, available CPUs), allowed 1–16; the pgx pool limit is WORKERS + 8. The binary sets umask 022 and refuses root. PostgreSQL 17 uses `fsync=on`, `full_page_writes=on`, `synchronous_commit=on` and has no published port. The images and clients are pinned.
+Compose sets `DATABASE_URL` without a password and passes the password as `PGPASSWORD`, which the PostgreSQL client (pgx) uses for a connection string that has none; so the password need not be URL-safe. Outside Compose, supply a PostgreSQL URI or pgx keyword/value connection string via `DATABASE_URL`, with its password or with `PGPASSWORD`. Offline pg_dump/pg_restore use a password-free libpq URI built from host, port, user, database and approved TLS settings; pgx-only query options are not passed to libpq. For TLS settings use the PostgreSQL URI form (keyword/value DSNs are accepted for non-TLS connections only); encrypted client keys requiring `sslpassword` are not supported by the offline tools. Passwords go to the child via `PGPASSWORD`, not command arguments. `PUBLIC_ORIGIN` is mandatory for the binary and must match the browser's exact host and port; Compose defaults it to the loopback URL. `HTTP_ADDR` defaults to `:8080` (Compose sets it explicitly), `WORKERS` to min(4, available CPUs), allowed 1–16; the pgx pool limit is WORKERS + 8. The binary sets umask 022 and refuses root. PostgreSQL 17 uses `fsync=on`, `full_page_writes=on`, `synchronous_commit=on` and has no published port. The images and clients are pinned.
 
 The fixed paths in the container are `/data`, `/import` (read-only, must exist) and `/backup` (must not be inside `/data`). `MUSICLIB_BACKUP` must not be a host directory inside `MUSICLIB_DATA` either: backup and restore compare the filesystem device and root of both mounts from `/proc/self/mountinfo` and refuse a nested destination with `backup_destination` (exit 2). The check sees bind mounts of one host filesystem; it cannot see through a network share or a second filesystem layered over the data directory, so keep the two host paths plainly separate. `/data/.lock` is never deleted; `.musiclib-store` identifies the paired database; `originals/` is immutable content-addressed media; `library/` is disposable published output; `work/` is staging. Do not edit `library/` or change `.maintenance` manually. Only one app instance per volume and database. A missing store marker cannot be replaced by pointing an existing database at a new volume.
 
@@ -47,21 +45,21 @@ The fixed paths in the container are `/data`, `/import` (read-only, must exist) 
 `compose.dev.yaml` builds the app from a clone of the repository (`musiclib-app:local`, version `devel`) with the same PostgreSQL, settings and volumes. `COMPOSE_FILE` in `.env` makes it the default of plain `docker compose` commands and of the `scripts/` maintenance wrappers:
 
 ```sh
-git clone https://github.com/tommasonovelli/musiclib.git && cd musiclib
+git clone https://github.com/tommasonovelli/vibrance-musiclib.git && cd vibrance-musiclib
 cp .env.example .env && chmod 600 .env
-sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
 echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
 mkdir -p import
 docker compose up -d --build --wait    # = docker compose -f compose.dev.yaml up -d --build --wait
 ```
 
-The first build compiles pinned dependencies and takes several minutes.
+The first build compiles pinned dependencies and takes several minutes. `compose.dev.yaml` has the same password default as `compose.yaml`. Run every command of this guide from the clone's folder.
 
 ## Capacity and upgrades
 
 Budget roughly **originals + library** (about twice the source bytes), plus concurrent staging and retired albums, tags and covers. Allow at least 1 GiB free beyond each job's conservative reservation; backups need additional space *outside* `/data`, at least the full originals plus the dump. A full disk can still cause a write error: fix capacity, then retry. Do not remove originals to make space.
 
-Back up before an update (`scripts/backup.sh NAME`, or the plain commands under "Offline commands"). Then, with the published image, change the version of the `app` image in `compose.yaml` (the only place that names it), or take the `compose.yaml` of the new release and keep your `.env`, and:
+Back up before an update (`scripts/backup.sh NAME`, or the plain commands under "Offline commands"). Then, with the published image, change the version of the `app` image in `compose.yaml` (the only place that names it), or take the `compose.yaml` of the new release and keep your `.env` (a database password set in `compose.yaml` instead of `.env` must be moved to `.env` first), and:
 
 ```sh
 docker compose pull app
@@ -75,7 +73,7 @@ From source, fetch the reviewed changes and run `docker compose up -d --build --
 
 An installation started from source before release 1.0.0 (`docker compose --profile app up -d --build`) keeps its data with either file: `compose.yaml` and `compose.dev.yaml` are the same Compose project, `musiclib`, with the same volumes (`musiclib_pgdata`, `musiclib_musiclib-data`, `musiclib_musiclib-backup`) or the same `MUSICLIB_DATA`/`MUSICLIB_BACKUP` paths. **Back up first.**
 
-- Your `.env` already has `POSTGRES_PASSWORD`; keep it. If it has none, the database was initialized with the old default `musiclib`: write `POSTGRES_PASSWORD=musiclib` into `.env` (both files need the real value), start, and then change it as described under "First start".
+- The password: an installation whose `.env` sets `POSTGRES_PASSWORD` keeps working unchanged. One that never set it was initialized with `musiclib`, which is the default again: it keeps working too; change it as described under "First start".
 - To keep building from source, add `COMPOSE_FILE=compose.dev.yaml` to `.env` and use `docker compose up -d --build --wait` from now on (no profile).
 - To move to the published image once it exists, leave `COMPOSE_FILE` unset and run `docker compose up -d --wait`: only the app container is recreated. Its version must be at least that of the source build: a newer schema is refused (`store_schema_too_new`).
 - `MUSICLIB_UID`/`MUSICLIB_GID` other than 1000 used to rebuild the image; now they only set the process's uid. Keep them as they are: existing volumes keep their owner, and the process keeps running as that uid.
