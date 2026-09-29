@@ -2,19 +2,137 @@
 
 # Vibrance MusicLib
 
-Vibrance MusicLib turns a local music collection into an organized library of folders and tagged files. Import albums, correct their metadata in the browser, and let MusicLib regenerate the library while keeping the imported originals unchanged.
+MusicLib keeps your music collection tidy without ever touching your original files.
 
-It is a personal library manager: the result is an ordinary directory tree that you can use with your own player.
+1. **Import** your album folders. MusicLib copies each file into its own store and never changes, moves or deletes the source.
+2. **Fix the metadata in your browser**: artists, album titles, years, genres, track titles and numbers, covers, lyrics and extra files such as booklets.
+3. **MusicLib writes a clean library folder**: one folder per artist and per album, consistently named files, complete tags and the cover in every track. Point your own music player at it.
 
-## What it does
+Each edit regenerates only the album it affects, and your original copies are kept forever. MusicLib is a self-hosted web app for one person. It runs in Docker on a Linux machine.
 
-- Imports album directories recursively, including multidisc albums, with a report of accepted and rejected candidates.
-- Reads and writes tags for **FLAC, MP3 and M4A containing AAC or ALAC**. Recognizing another audio extension during a scan does not mean that format can be imported.
-- Lets you edit artists, albums and tracks; manage JPEG/PNG covers, attachments and LRC lyrics; search the library; and trash or restore albums.
-- Keeps a durable work queue, reports failed jobs, and supports explicit retries and rendering of individual albums or the whole library.
-- Provides offline integrity checks, rebuild, backup and restore commands.
+![The Library page of MusicLib: a grid of album covers with titles, artists and years, and a sidebar with Library, Import, Activity, Trash and Needs attention](docs/assets/screenshot-library.jpg)
 
-A generated album looks like this:
+![The album page of MusicLib: the cover, title, artist, year and genre of an album, its tracklist with durations and a lyrics mark, and its extra files](docs/assets/screenshot-album.jpg)
+
+<sub>The artists, albums and covers in these screenshots are invented.</sub>
+
+## Contents
+
+- [What it does and doesn't do](#what-it-does-and-doesnt-do)
+- [Requirements](#requirements)
+- [Install](#install)
+- [First steps](#first-steps)
+- [How folders become albums](#how-folders-become-albums)
+- [The library folder](#the-library-folder)
+- [Where your data lives](#where-your-data-lives)
+- [Configuration](#configuration)
+- [Access and security](#access-and-security)
+- [Backup, check and restore](#backup-check-and-restore)
+- [Updating](#updating)
+- [Everyday commands](#everyday-commands)
+- [Building from source](#building-from-source)
+- [License](#license)
+
+## What it does and doesn't do
+
+**It does:**
+
+- import album folders, including multi-disc albums, and report what it imported and what it skipped, and why;
+- read and write tags of **FLAC**, **MP3** and **M4A** (AAC or ALAC) files;
+- manage **JPEG and PNG covers**, **LRC lyrics** and **extra files** (booklets, scans, logs);
+- let you search the library, move albums to the trash and restore them;
+- verify its work: every copy is checked against the original, and the audio of each track is checked before and after its tags are written;
+- check, back up and restore the whole collection.
+
+**It doesn't:** play or stream music (use your own player), convert audio between formats, look up metadata or recognize music online, watch folders for new files (you start each import), manage user accounts (there is one user and no login), or edit arbitrary tags. The interface is in English.
+
+## Requirements
+
+MusicLib is designed to run inside Docker. The supported setup is:
+
+- **Ubuntu 24.04 or later** on an **amd64** (x86-64) machine;
+- **Docker Engine** with the **Compose v2** plugin (`docker compose`), installed from Docker's own packages, and a user that can run `docker` without `sudo`;
+- **local ext4 storage** for MusicLib's data: Docker's own storage (`/var/lib/docker`, where named volumes live), or the host folder you choose for it;
+- `curl` and `openssl` (`sudo apt install curl openssl` if they are missing).
+
+MusicLib checks the storage at every start and refuses what it can't use safely. **Not supported:** Docker Desktop (on any system), NAS and network filesystems (NFS, SMB), filesystems other than ext4, and ARM machines (Raspberry Pi, Apple Silicon).
+
+To check the filesystem of Docker's storage:
+
+```sh
+findmnt -no FSTYPE -T /var/lib/docker    # must print ext4
+```
+
+## Install
+
+Paste this block into a terminal. It creates `~/musiclib`, downloads the two files of the latest release, writes a random database password into `.env`, and starts MusicLib:
+
+```sh
+mkdir -p ~/musiclib/import && cd ~/musiclib
+[ -e compose.yaml ] || curl -fsSLO https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/compose.yaml
+[ -e .env ] || { curl -fsSL -o .env https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env; }
+docker compose up -d --wait
+```
+
+When the last command returns, open **<http://127.0.0.1:8080>** in a browser on the same machine. On a machine without a desktop, see [Access and security](#access-and-security).
+
+Put your albums in **`~/musiclib/import`**, then import them from the **Import** page.
+
+Good to know:
+
+- The block is safe to paste twice: it never replaces an existing `compose.yaml` or `.env`.
+- `docker compose up -d --wait` pulls the images the first time, then waits until MusicLib reports that it is ready. MusicLib starts again by itself after a reboot, unless you stopped it.
+- The database password must be in `.env` **before the first start**: PostgreSQL reads it only once, when it creates its database. Changing it in `.env` later doesn't change the database's password (see [docs/operations.md](docs/operations.md#first-start) to change it).
+- `.env` holds that password: keep it private (the block makes it readable by you only).
+- To keep your library in a folder of your choice instead of Docker's storage, read the next section **before** the first start.
+
+### Keeping the data in a host folder
+
+By default MusicLib keeps its data in Docker named volumes. You can put it in folders of the host instead: for example the library on a data disk, and backups on a second disk. Decide this before the first start, because MusicLib pairs its database with its data folder when it first starts.
+
+1. Paste the install block **without its last line** (`docker compose up -d --wait`).
+2. Create the folders: absolute paths, on **local ext4**, **empty**, and **owned by uid 1000** (the user MusicLib runs as):
+
+   ```sh
+   sudo mkdir -p /srv/musiclib/data /mnt/backup/musiclib
+   sudo chown 1000:1000 /srv/musiclib/data /mnt/backup/musiclib
+   findmnt -no FSTYPE -T /srv/musiclib/data    # must print ext4
+   ```
+
+3. Add them to `~/musiclib/.env`, together with the folder of the music you want to import, if it isn't `~/musiclib/import`:
+
+   ```sh
+   MUSICLIB_DATA=/srv/musiclib/data
+   MUSICLIB_BACKUP=/mnt/backup/musiclib
+   MUSICLIB_IMPORT=/srv/music
+   ```
+
+4. Start: `docker compose up -d --wait`.
+
+The import folder is mounted **read-only**: it must exist before MusicLib starts, and its files must be readable by uid 1000 (files readable by everyone are fine). The backup folder must not be inside the data folder. With `MUSICLIB_DATA` set, the generated library is at `/srv/musiclib/data/library`, ready for your player.
+
+## First steps
+
+- **Import.** The Import page shows the contents of your import folder. Open a folder, or stay at the top to take everything, and choose **Import everything in …**. MusicLib finds the albums inside, imports each one completely or not at all, and lists what was imported, what was skipped (for example an album you had already imported) and what needs your attention, with the reason. Leave the source files where they are until the import has finished.
+- **Edit.** Open an album from the **Library** to change its title, artist, year, genre and compilation flag, the tracks (number, title, artist, genre, disc), the cover, lyrics and extra files. When you save, MusicLib regenerates that album's folder in the library. If two people (or two browser tabs) edit the same album, the second save is refused instead of overwriting the first.
+- **Activity** shows the work in progress: scans, imports and library updates. Failed work stays there, with its reason, until you retry or dismiss it. **Needs attention**, in the sidebar, lists the albums whose last update failed.
+- **Trash.** Moving an album to the trash removes it from the library folder; you can restore it at any time.
+
+Everything the interface does is also available through a JSON HTTP API: see [docs/docker.md](docs/docker.md#the-api).
+
+## How folders become albums
+
+- A folder with audio files directly inside it is **one album**. Its subfolders without audio (scans, artwork) come along as extra files.
+- A folder whose audio is only in subfolders named `CD1`, `CD2`, … or `Disc 1`, `Disc 2`, … is **one multi-disc album**.
+- Other folders are searched for albums inside them. Files that belong to no album are listed as not imported.
+- A folder with audio both directly inside it and in its subfolders is ambiguous: it isn't imported, and the report says why. So is an album with audio in a format MusicLib doesn't support (OGG or WAV, for example), with the name of the file.
+- The cover is `cover.*`, `folder.*` or `front.*` at the album's root, or else a picture embedded in the tracks: JPEG or PNG, up to 20 MB and 40 megapixels. A cover file is also kept as an extra file.
+- An `.lrc` file with the same name as a track, in the same folder, becomes that track's lyrics. Every other file is kept as an extra file of the album.
+- Importing the same files again is recognized and skipped. MusicLib never merges albums or artists on its own.
+
+## The library folder
+
+MusicLib generates the library folder from the database and the originals. A generated album looks like this:
 
 ```text
 library/
@@ -27,92 +145,162 @@ library/
       02 - Freddie Freeloader.flac
       Extras/
         booklet.pdf
+        cover.jpg
 ```
 
-`.musiclib.json` is a generated receipt. Edit metadata through MusicLib: files in `library/` are generated output, and manual changes can be replaced by a later render.
+- The layout is always `Artist/Album/NN - Title.ext`, with `Disc N/` folders for a multi-disc album, `cover.jpg` or `cover.png` at the album's root, lyrics next to their track and every extra file under `Extras/`.
+- Names are cleaned up so that they also work on Windows filesystems: characters such as `/ \ : * ? " < > |` become `_`, and very long names are shortened. Two albums or tracks that would end up at the same path are reported as a conflict for you to resolve; nothing is dropped or renamed silently.
+- MusicLib writes the title, artist, album artist, album, track and disc numbers and totals, year, genre, compilation flag and cover into every track. Any other tag the files already had is kept as it is.
+- An album's folder is replaced as a whole: your player sees either the old or the new version of an album, never a half-written one.
+- `.musiclib.json` is a receipt that MusicLib uses to check its own output.
 
-## Current status and boundaries
+**Treat the library folder as read-only.** Change metadata in MusicLib: manual changes to files in `library/` are replaced by the next update of that album. If files there were changed or deleted anyway, **Rebuild the library folder** (Activity → Advanced) regenerates all of it.
 
-The supported production target is **Ubuntu 24.04 or later, Docker Engine with Compose v2, and local ext4 storage**. Start with **Linux amd64**: the current build downloads an x86_64 CMake binary, and ARM support has not been established. Docker Desktop is used for development; NAS filesystems and Docker Desktop are not declared production targets.
+## Where your data lives
 
-The implementation and existing test evidence are recorded in [PROGRESS.md](docs/archive/PROGRESS.md). The native Ubuntu/ext4 release acceptance gate remains open (N-017); this README does not declare a completed public release. There is currently a source build workflow, rather than a documented published application image. See the [public release checklist](docs/archive/opensource.md) for the remaining work, including the audit of bundled third-party software.
+| Data | Where | Default |
+|---|---|---|
+| Your source music | the import folder, read-only | `~/musiclib/import` |
+| Catalog: names, edits, work queue | PostgreSQL database | volume `musiclib_pgdata` |
+| Originals: an unchanged copy of every imported file | `originals/` in the data folder | volume `musiclib_musiclib-data` |
+| The generated library | `library/` in the data folder | volume `musiclib_musiclib-data` |
+| Temporary work | `work/` in the data folder | volume `musiclib_musiclib-data` |
+| Backups | the backup folder | volume `musiclib_musiclib-backup` |
 
-MusicLib runs as one application instance paired with one database and data volume. It has no player, streaming, transcoding of published audio, online music recognition, automatic filesystem watcher, or user accounts and roles. The interface is in English.
+With the default named volumes, the data is inside Docker's storage, readable only with `sudo`: the library is at `/var/lib/docker/volumes/musiclib_musiclib-data/_data/library`. Set `MUSICLIB_DATA` (see [above](#keeping-the-data-in-a-host-folder)) to have it at a path of your choice.
 
-## Start from source
+**Disk space.** Plan for about **twice the size of the music you import**, one copy for the originals and one for the library, plus room for work in progress and at least 1 GiB free. Each backup needs about the size of the originals again, on the backup disk. MusicLib never deletes an original: trashing an album or deleting a track frees no space.
 
-Use a native Linux host with Docker Engine and the Compose v2 plugin. The container build supplies Go, PostgreSQL clients, TagLib and FFmpeg; you do not need to install them on the host. The first build downloads and compiles pinned dependencies and can take several minutes.
+## Configuration
 
-The following example uses the default named volumes for the database, data and backups. Docker's volume storage must be on local ext4 for the data volume. Keep enough free space for originals, generated files and staging.
+All settings are in `~/musiclib/.env`. After changing it, apply it with `docker compose up -d --wait`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `POSTGRES_PASSWORD` | none, required | Database password; the install block generates it. Read only when the database is first created. |
+| `PUBLIC_ORIGIN` | `http://127.0.0.1:8080` | The exact address you open in the browser: scheme, host and port. |
+| `MUSICLIB_BIND` | `127.0.0.1` | Host address the web interface listens on. Loopback: this machine only. |
+| `MUSICLIB_PORT` | `8080` | Host port of the web interface. Keep it equal to the port in `PUBLIC_ORIGIN`. |
+| `MUSICLIB_IMPORT` | `./import` | Folder with the music to import, mounted read-only. It must exist. |
+| `MUSICLIB_DATA` | `musiclib-data` (named volume) | Or an absolute path of an empty ext4 folder owned by uid 1000. Set it before the first start. |
+| `MUSICLIB_BACKUP` | `musiclib-backup` (named volume) | Or an absolute path of a folder owned by uid 1000, preferably on another disk. |
+| `WORKERS` | empty: the number of CPUs, at most 4 | How many imports and album updates run at once, 1 to 16. |
+| `MUSICLIB_UID`, `MUSICLIB_GID` | `1000` | The user and group MusicLib runs as. Another value needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as folders owned by it. |
+
+Every setting is described in [docs/operations.md](docs/operations.md) and [docs/docker.md](docs/docker.md#variables).
+
+## Access and security
+
+**MusicLib has no login.** Anyone who can reach its address can change or delete your catalog. It is meant for one person on a trusted machine or home network.
+
+- By default it listens only on `127.0.0.1`: it can be opened only from the machine it runs on.
+- `PUBLIC_ORIGIN` must match the address in the browser exactly. `http://localhost:8080` and `http://127.0.0.1:8080` are different addresses: with the default setting, only the second one works.
+- **From another device on your network**, set the machine's LAN address in both settings in `.env`, then run `docker compose up -d --wait`. Give the machine a fixed address in your router first.
+
+  ```sh
+  MUSICLIB_BIND=192.168.1.20
+  PUBLIC_ORIGIN=http://192.168.1.20:8080
+  ```
+
+- **From your computer to a server without a desktop**, an SSH tunnel keeps the default settings: run `ssh -L 8080:127.0.0.1:8080 you@server` and open `http://127.0.0.1:8080` on your computer.
+- **Never expose MusicLib directly to the Internet.** For remote access, put it behind a reverse proxy that requires authentication, and set `PUBLIC_ORIGIN` to the proxy's address.
+
+## Backup, check and restore
+
+These commands run from `~/musiclib`. Each one stops MusicLib, runs a one-off maintenance command while the database keeps running, and starts MusicLib again.
+
+**Back up** the catalog and all the originals:
 
 ```sh
-git clone https://github.com/tommasonovelli/musiclib.git
-cd musiclib
-mkdir -p import
-umask 077
+docker compose stop app
+docker compose run --rm --no-deps app backup --to "/backup/$(date +%F)"
+docker compose start app
+```
+
+- The backup is a new folder under `/backup`, the backup folder (`MUSICLIB_BACKUP`). It is a full copy, verified while it is written, and never overwrites an existing backup: choose a new name each time.
+- The generated library isn't saved (it is regenerated after a restore), and neither is your import folder.
+- The default backup volume is on the same disk as your data: it protects against mistakes, not against a disk failure. Set `MUSICLIB_BACKUP` to a folder on another disk, keep several backups, and try a restore now and then.
+- To copy a backup elsewhere, use `sudo cp -a`: some of its files are readable only by uid 1000.
+- If a backup fails, it leaves a `.musiclib-backup-*.tmp` folder, which you can delete.
+
+**Check** the library: every original, and every file of the library, against its recorded hash (without `--deep`, a quicker check of sizes and presence):
+
+```sh
+docker compose stop app
+docker compose run --rm --no-deps app doctor --deep
+docker compose start app
+```
+
+Doctor only reads and never repairs. It exits with 0 when nothing is damaged, 1 when it found damage (each finding comes with advice), and 2 when it refused to run.
+
+**Restore** a backup into a new, empty installation, for example on a new machine after a disk failure. Restore never overwrites an existing catalog or library.
+
+1. Paste the install block **without its last line**.
+2. In `.env`, set `MUSICLIB_BACKUP` to the folder that contains your backup (and `MUSICLIB_DATA` to an empty folder, if you keep the data in a host folder).
+3. Run:
+
+   ```sh
+   docker compose up -d --wait postgres
+   docker compose run --rm --no-deps app restore --from "/backup/2026-09-29"
+   docker compose up -d --wait
+   ```
+
+Start only the database before the restore, as above: the first start of MusicLib would initialize the empty data folder, and the restore would then refuse it. After the restore, MusicLib regenerates the library folder by itself; Activity shows the progress. If a restore fails, start again with a new, empty database and data folder. To restore on a machine that still has an installation, and for every error code, see [docs/operations.md](docs/operations.md#restore-use-new-empty-destinations).
+
+> **Never run `docker compose down -v`: it deletes your library, its database and its backup volume.** To stop MusicLib, use `docker compose stop`.
+
+## Updating
+
+Back up first: an update can upgrade the database, and there is no way back except restoring that backup. Your settings are in `.env`, so the new release's `compose.yaml` simply replaces the old one:
+
+```sh
+cd ~/musiclib
+docker compose stop app &&
+docker compose run --rm --no-deps app backup --to "/backup/before-update-$(date +%F)" &&
+curl -fsSLO https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/compose.yaml &&
+docker compose pull && docker compose up -d --wait
+```
+
+The commands are chained: if the backup fails, nothing is updated and MusicLib stays stopped until you fix the cause (`docker compose start app` restarts the old version). You can also change the version on the `image:` line of `compose.yaml` by hand. Check the running version with `docker compose run --rm --no-deps app version`.
+
+At its first start, the new version updates the database. **Downgrading isn't possible**: an older version refuses a database that a newer one has updated. To go back, restore the backup made before the update, using the older version.
+
+## Everyday commands
+
+Run them from `~/musiclib`:
+
+| Task | Command |
+|---|---|
+| Stop MusicLib | `docker compose stop` |
+| Start it again | `docker compose up -d --wait` |
+| Show its status | `docker compose ps` |
+| Read its log | `docker compose logs --tail=100 app` |
+| Check that it is ready | `curl -f http://127.0.0.1:8080/health/ready` |
+| Show its version | `docker compose run --rm --no-deps app version` |
+
+If MusicLib refuses to start, its log names the problem with a stable code, and nothing is repaired or deleted automatically. The codes and what to do about each are in [docs/operations.md](docs/operations.md#security-and-troubleshooting) and [docs/docker.md](docs/docker.md#when-the-app-refuses-to-start).
+
+## Building from source
+
+The image runs a Go server with its web interface built in, PostgreSQL 17, FFmpeg and a small TagLib-based tag writer, all pinned to exact versions. To build it from a clone of the repository instead of using the published image:
+
+```sh
+git clone https://github.com/tommasonovelli/vibrance-musiclib.git && cd vibrance-musiclib
 cp .env.example .env && chmod 600 .env
-# A random, URL-safe database password, written into .env without printing it:
-sed -i "s/^POSTGRES_PASSWORD=\$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
 echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
-```
-
-The `sed` line writes a strong random, URL-safe password (`openssl rand -hex 32`) into `.env`: Compose inserts the same value directly into a PostgreSQL URI. There is no default: Compose refuses to start the production file without it, and PostgreSQL refuses to initialize without it. Changing `.env` later does not change the password of an already initialized database. `COMPOSE_FILE=compose.dev.yaml` selects the development Compose file, which builds the app from source; the production `compose.yaml` runs the published image instead (see the [operations guide](docs/operations.md#first-start)).
-
-```sh
+mkdir -p import
 docker compose up -d --build --wait
-curl -f http://127.0.0.1:8080/health/ready
-docker compose logs --tail=100 app
 ```
 
-Open **http://127.0.0.1:8080/**. With `compose.dev.yaml`, `docker compose up -d --build` starts PostgreSQL and the app, built from source as `musiclib-app:local`. Readiness becomes positive after boot, migrations and recovery complete.
+`COMPOSE_FILE=compose.dev.yaml` makes every `docker compose` command in this README use the source build. The first build compiles its pinned dependencies and takes several minutes. A source build and a published-image installation are the same Compose project, `musiclib`, with the same volumes: on one machine they share the same data.
 
-Place albums in `import/`, then choose **Import** in the browser and start an import from a directory. The import directory must exist before startup, is mounted read-only, and must remain available and unchanged until its jobs finish. MusicLib copies accepted files into its own store; it does not move your source collection.
-
-For existing source directories or host bind mounts, configure `MUSICLIB_IMPORT`, `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as described in the [operations guide](docs/operations.md#first-start). The app defaults to UID/GID `1000:1000`; source files must be readable and source directories traversable by that identity. Bind-mounted data and backup directories must be writable by it. A fresh named volume inherits the image's ownership, `1000:1000`; an existing volume is not automatically re-owned. `MUSICLIB_UID` and `MUSICLIB_GID` run the process as another identity, which then needs host directories it owns for data and backups.
-
-## Storage, safety and maintenance
-
-| Container path | Purpose |
-|---|---|
-| `/import` | Your external source collection, mounted read-only |
-| `/data/originals` | Immutable, content-addressed copies of imported files |
-| `/data/library` | Generated album folders and tagged files |
-| `/data/work` | Temporary staging for imports and renders |
-| `/backup` | Backup destination outside `/data` |
-
-PostgreSQL holds the catalog, queue and publication journal. A render prepares a complete album in staging, writes its managed tags, verifies the audio and publishes it through a recoverable directory replacement protocol. Originals remain available for future renders. The storage contract and recovery rules are detailed in [DESIGN.md](docs/archive/DESIGN.md).
-
-Budget roughly **twice the imported media bytes** for originals plus library, with additional room for staging, covers, attachments and retired output. The external source collection and separate backups add to this total. MusicLib reserves space conservatively, but external writes and a full disk can still interrupt a job.
-
-The default backup volume is separate from the data volume, but it is not an off-device backup. Prefer a backup directory on another physical disk, retain several complete generations, and periodically restore into fresh destinations. Backup includes the catalog and originals; generated output is rebuilt after restore, and external import sources are not included.
-
-From the repository root, with PostgreSQL running, the maintenance wrappers stop the app before taking its exclusive lock:
-
-```sh
-scripts/doctor.sh --deep
-scripts/backup.sh 'before-update'
-```
-
-Read [operations](docs/operations.md) before running rebuild or restore. Restore requires a new empty database and data volume; it never overwrites an installation. Back up before updates. Migrations are forward-only: an older binary cannot safely use a newer schema, and a downgrade requires a compatible backup restore. Do not delete lock or maintenance markers to bypass a refusal.
-
-## Access and API
-
-The default published address is `127.0.0.1:8080`. `PUBLIC_ORIGIN` must match the exact host and port used by the browser: `localhost` and `127.0.0.1` are different hosts. LAN access needs an explicit binding and matching origin.
-
-**There is no authentication.** Host/Origin validation and the `X-Musiclib-Request: 1` mutation header protect the browser boundary; that header is not a credential. Do not expose MusicLib directly to the Internet. Remote access requires an authenticated reverse proxy; consult the [security and troubleshooting guidance](docs/operations.md#security-and-troubleshooting).
-
-The HTTP API supports catalog editing, import reports, queue management and downloads by entity ID. Changes to existing albums and artists use `ETag`/`If-Match` to detect conflicting edits. File uploads use raw request bodies. See the [API examples and request rules](docs/docker.md#the-api) and [import/queue examples](docs/docker.md#importing-the-queue-and-the-library-list-round-16). A complete OpenAPI document is future work tracked in [opensource.md](docs/archive/opensource.md).
-
-## Architecture and further reading
-
-`musiclibd` is a Go HTTP server with embedded HTML, CSS, JavaScript and fonts, backed by PostgreSQL 17. A small C++ helper uses TagLib for media tags, and FFmpeg/ffprobe run as external processes. The runtime container runs without root, has a read-only root filesystem and exposes readiness/liveness checks. The UI needs no Node runtime or frontend build.
-
-| Guide | Contents |
-|---|---|
-| [Operations](docs/operations.md) | Configuration, storage, upgrades, maintenance, restore, troubleshooting and native release checks |
-| [Docker and development](docs/docker.md) | Services, variables, pinned dependencies, test workflow and API examples |
-| [Contributing](CONTRIBUTING.md) | Contributor setup and change validation |
+To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md). Operations in depth are in [docs/operations.md](docs/operations.md), and development, tests and pinned dependencies in [docs/docker.md](docs/docker.md).
 
 ## License
 
-MusicLib's original code and documentation are licensed under the [MIT License](LICENSE), copyright 2026 tommasonovelli. Third-party dependencies and assets retain their own licenses, including the [SIL Open Font License](web/OFL.txt) for Hanken Grotesk. The audit and distribution requirements for bundled third-party software remain tracked in [opensource.md](docs/archive/opensource.md#p0--licenza-provenienza-e-distribuzione). The logo, the sun symbol, is the author's artwork and is not covered by the MIT License: see [LOGO.md](LOGO.md).
+MusicLib's code and documentation are released under the [MIT License](LICENSE), copyright 2026 tommasonovelli.
+
+The sun logo is the author's artwork and is **not** covered by the MIT License: you may keep it in unmodified copies, but a modified version you distribute must use its own symbol. See [LOGO.md](LOGO.md).
+
+Third-party software and assets keep their own licenses, among them the Hanken Grotesk font, under the [SIL Open Font License](web/OFL.txt).

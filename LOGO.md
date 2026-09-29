@@ -5,7 +5,8 @@ The sun symbol is original artwork by tommasonovelli. It is not covered by the p
 - [`web/brand/logo.svg`](web/brand/logo.svg), the source file;
 - [`web/favicon.svg`](web/favicon.svg);
 - the `brand-sun` symbol in [`web/layout.html`](web/layout.html);
-- the README banner, [`docs/assets/banner.jpg`](docs/assets/banner.jpg).
+- the README banner, [`docs/assets/banner.jpg`](docs/assets/banner.jpg);
+- the README screenshots, [`docs/assets/screenshot-library.jpg`](docs/assets/screenshot-library.jpg) and [`docs/assets/screenshot-album.jpg`](docs/assets/screenshot-album.jpg).
 
 You may keep the symbol in unmodified copies of this project, including when you redistribute them. If you distribute a modified version to others, replace the symbol with your own. Changes you make for your own use are not restricted.
 
