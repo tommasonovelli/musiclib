@@ -327,6 +327,12 @@ COPY --from=build-tags /opt/musiclib-tags/bin/musiclib-tags /usr/local/bin/
 RUN install -d -o "${APP_UID}" -g "${APP_GID}" -m 0755 /data /backup \
  && install -d -o root -g root -m 0755 /import
 
+# MusicLib's license and the notices of the third-party software in this
+# image, with the license texts they refer to (THIRD_PARTY_NOTICES.md).
+COPY LICENSE LOGO.md THIRD_PARTY_NOTICES.md /usr/share/doc/musiclib/
+COPY licenses/ /usr/share/doc/musiclib/licenses/
+COPY web/OFL.txt /usr/share/doc/musiclib/web/OFL.txt
+
 COPY --from=build-app /home/dev/out/musiclibd /usr/local/bin/musiclibd
 
 # Never root. Compose overrides this with `user: UID:GID`; this is only the

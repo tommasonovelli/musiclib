@@ -7,7 +7,8 @@
 #            then the `runtime` image for linux/amd64, pushed to GHCR with its
 #            SBOM and provenance; a version already in the registry is refused
 #   release  smoke test of the pushed digest, then the GitHub Release with
-#            compose.yaml and .env.example
+#            compose.yaml, .env.example, THIRD_PARTY_NOTICES.md and the
+#            FFmpeg and TagLib source tarballs
 #
 # Every third-party action is pinned by commit SHA, and so are the BuildKit
 # and SBOM scanner images. Each job gets only the permissions it needs.
@@ -270,10 +271,30 @@ jobs:
           # GitHub renames asset names that start with a dot.
           cp .env.example "${assets}/env.example"
 
-      # Extension point: the third-party license notices and the corresponding
-      # source tarballs of the image are to be added here, as further files
-      # in ${RUNNER_TEMP}/assets. Every file there is attached to the release
-      # by the next step.
+      # THIRD_PARTY_NOTICES.md and the unmodified source tarballs of FFmpeg
+      # and TagLib built into the image. Versions and sha256 are read from
+      # the Dockerfile's ARGs, the one place where they are pinned.
+      - name: Add the third-party notices and sources
+        run: |
+          set -euo pipefail
+          assets="${RUNNER_TEMP}/assets"
+          arg() {
+            local value
+            value="$(sed -n "s/^ARG $1=//p" Dockerfile)"
+            [[ "${value}" =~ ^[0-9A-Za-z.+-]+$ ]] || { printf '::error::no single ARG %s in the Dockerfile\n' "$1" >&2; return 1; }
+            printf '%s' "${value}"
+          }
+          fetch() { # file url sha256
+            curl -fsSL --retry 3 -o "${assets}/$1" "$2"
+            printf '%s  %s\n' "$3" "${assets}/$1" | sha256sum -c -
+          }
+          ffmpeg="$(arg FFMPEG_VERSION)"
+          ffmpeg_sha="$(arg FFMPEG_SHA256)"
+          taglib="$(arg TAGLIB_VERSION)"
+          taglib_sha="$(arg TAGLIB_SHA256)"
+          fetch "ffmpeg-${ffmpeg}.tar.gz" "https://ffmpeg.org/releases/ffmpeg-${ffmpeg}.tar.gz" "${ffmpeg_sha}"
+          fetch "taglib-${taglib}.tar.gz" "https://github.com/taglib/taglib/releases/download/v${taglib}/taglib-${taglib}.tar.gz" "${taglib_sha}"
+          cp THIRD_PARTY_NOTICES.md "${assets}/THIRD_PARTY_NOTICES.md"
 
       - name: Create the GitHub Release
         env:

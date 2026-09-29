@@ -721,7 +721,15 @@ on the host; `native/musiclib-tags/build/` is ignored by git and Docker.
    in the table itself.
 4. Run `scripts/check.sh`. For postgres, change both Compose files, then run
    `docker compose -f compose.dev.yaml up -d --wait postgres`.
-5. Commit the bump on its own, with the old and new version in the message.
+5. Update [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and `licenses/`
+   when a component of the runtime image or a Go module compiled into
+   `musiclibd` changes: its version, and its license texts. That covers
+   FFmpeg (`licenses/ffmpeg/NOTICES.txt` says how it was made), TagLib, Go,
+   `go.mod` (`go version -m` on the built `musiclibd` lists the modules), the
+   runtime base and its snapshot date, and `GO_IMAGE`, whose C and C++
+   runtime libraries go into the static binaries
+   (`dpkg-query -W libc6-dev gcc-14` in it gives their versions).
+6. Commit the bump on its own, with the old and new version in the message.
 
 Rules:
 - A **PostgreSQL major** bump (17 → 18) is a dump and restore, not a tag change.
@@ -759,9 +767,11 @@ if it fails:
    `CHANGELOG.md` section, followed by the image with its digest and an
    install snippet. Its assets are `compose.yaml` and `env.example` (the
    repository's `.env.example`: GitHub renames asset names that start with a
-   dot). The release is marked **Latest** on GitHub with the same rule as
-   `:latest`, checked again on the tags this job fetched: only when it is the
-   newest version (`--latest=false` otherwise).
+   dot), `THIRD_PARTY_NOTICES.md`, and the FFmpeg and TagLib source tarballs
+   built into the image, downloaded again and checked against the versions
+   and sha256 of the `Dockerfile`'s ARGs. The release is marked **Latest** on
+   GitHub with the same rule as `:latest`, checked again on the tags this job
+   fetched: only when it is the newest version (`--latest=false` otherwise).
 
 Release one version at a time. All runs share one concurrency group, so a
 run waits for the one before it and the floating tags and the Latest release
@@ -823,9 +833,11 @@ lines.
 - In **publish** after the push succeeded: a re-run is refused by the version
   check, so check the image (below) and create the release by hand, with the
   `CHANGELOG.md` section in `notes.md` followed by the line
-  ``- Digest: `sha256:…` `` (from `imagetools inspect`), and
-  `cp .env.example env.example`:
-  `gh release create vX.Y.Z --verify-tag --title "Vibrance MusicLib X.Y.Z" --notes-file notes.md compose.yaml env.example`
+  ``- Digest: `sha256:…` `` (from `imagetools inspect`),
+  `cp .env.example env.example`, and the FFmpeg and TagLib tarballs
+  downloaded and checked as the workflow's step "Add the third-party notices
+  and sources" does:
+  `gh release create vX.Y.Z --verify-tag --title "Vibrance MusicLib X.Y.Z" --notes-file notes.md compose.yaml env.example THIRD_PARTY_NOTICES.md ffmpeg-*.tar.gz taglib-*.tar.gz`
   (add `--latest=false` if it is not the newest version). If the push stopped
   after `:X.Y.Z`, move each floating tag it should have moved by hand, only
   when this is the newest version of that series (`:latest`: of all), e.g.
