@@ -88,6 +88,7 @@ async function refresh(tag) {
   }
   update();
   document.getElementById(focused)?.focus();
+  glow();
 }
 
 async function call(url, method, body, box, match = etag) {
@@ -332,6 +333,21 @@ addEventListener('beforeunload', e => { if (count()) e.preventDefault(); });
 // show why Save did nothing (N-279).
 document.addEventListener('invalid', e => e.target.closest('[popover]:not(:popover-open)')?.showPopover(), true);
 
+// The album's head lies on its own cover, blurred (v1.1.0): once the cover
+// is decoded, its URL goes to the CSS (from script: the CSP forbids inline
+// style attributes, not the CSSOM). No cover, or one that does not decode,
+// means no field; a new cover replaces it.
+async function glow() {
+  const main = $('#main'), img = $('img.cover', editor);
+  let lit = false;
+  try {
+    if (img) { await img.decode(); lit = true; }
+  } catch { /* Not decodable: no field. */ }
+  if (img != $('img.cover', editor)) return; // Replaced meanwhile.
+  if (lit) main.style.setProperty('--cover', `url("${img.currentSrc}")`);
+  main.toggleAttribute('data-glow', lit);
+}
+
 // The server's status every 2 s while a render is pending or running.
 setInterval(async () => {
   const s = $('#status');
@@ -343,3 +359,4 @@ setInterval(async () => {
 
 arm();
 update();
+glow();

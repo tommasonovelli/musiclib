@@ -26,6 +26,7 @@ var staticAssets = map[string]string{
 	"sidebar.js": "text/javascript; charset=utf-8",
 	"OFL.txt":    "text/plain; charset=utf-8",
 	favicon:      "image/svg+xml",
+	grain:        "image/svg+xml",
 	fontLatin:    "font/woff2",
 	fontLatinExt: "font/woff2",
 }
@@ -38,6 +39,11 @@ const (
 	favicon      = "favicon.svg"
 	faviconCache = "public, max-age=86400"
 )
+
+// grain is the noise tile of the sidebar's glow. The stylesheet cannot
+// inline it (the CSP forbids data: images); like the favicon it is cached
+// for a day, so it is not fetched again on every page.
+const grain = "grain.svg"
 
 // The self-hosted Hanken Grotesk subsets (NOTES.md N-244). Their names carry
 // the Google Fonts version, so a new version is a new URL and the files can
@@ -99,8 +105,9 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 }
 
 // staticAsset serves one embedded UI file. The fonts are versioned by name
-// and cached for a year, the favicon for a day; the stylesheet and modules
-// keep no-store, so an upgraded server never runs with a stale module.
+// and cached for a year, the favicon and the grain tile for a day; the
+// stylesheet and modules keep no-store, so an upgraded server never runs
+// with a stale module.
 func (a *API) staticAsset(w http.ResponseWriter, name string) {
 	ctype, ok := staticAssets[name]
 	if !ok {
@@ -116,7 +123,7 @@ func (a *API) staticAsset(w http.ResponseWriter, name string) {
 	switch {
 	case ctype == "font/woff2":
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	case name == favicon:
+	case name == favicon, name == grain:
 		w.Header().Set("Cache-Control", faviconCache)
 	}
 	if _, err := w.Write(b); err != nil {

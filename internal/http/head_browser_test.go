@@ -13,11 +13,12 @@ import (
 )
 
 // The Library head compacts while it is stuck (owner, NOTES.md N-284):
-// stuck is compact, back at the top is full; the page never gets shorter,
-// so a slow scroll across the threshold cannot make it oscillate; the
-// search does not move sideways; nothing moves with reduced motion; the
-// same on a phone; and the IntersectionObserver fallback of library.js
-// does the same where scroll-state queries are missing.
+// stuck is compact, back at the top is full; the head keeps its height,
+// so nothing under it moves and the page never gets shorter; a slow scroll
+// across the threshold cannot make it oscillate; the search does not move
+// sideways; nothing moves with reduced motion; the same on a phone; and the
+// IntersectionObserver fallback of library.js does the same where
+// scroll-state queries are missing.
 
 type headState struct {
 	Font    float64 `json:"font"`
@@ -31,7 +32,7 @@ type headState struct {
 }
 
 const headStateJS = `JSON.stringify((()=>{const h=document.querySelector('.page-head'),b=h.querySelector('.head-bar'),t=h.querySelector('.page-title');
-return {font:parseFloat(getComputedStyle(t).fontSize), flow:b.getBoundingClientRect().height+parseFloat(getComputedStyle(b).marginBottom), doc:document.documentElement.scrollHeight,
+return {font:parseFloat(getComputedStyle(t).fontSize), flow:h.getBoundingClientRect().height, doc:document.documentElement.scrollHeight,
 y:scrollY, searchX:h.querySelector('.search').getBoundingClientRect().left, line:getComputedStyle(t,'::after').content, stuck:h.classList.contains('is-stuck'), moves:getComputedStyle(b).transitionDuration}})())`
 
 func readHead(t *testing.T, tab context.Context) headState {
@@ -87,7 +88,7 @@ func TestBrowserLibraryHeadCompacts(t *testing.T) {
 		var threshold float64
 		fmt.Sscan(top, &threshold)
 		full := readHead(t, tab)
-		wantMoves := "0.2s, 0.2s, 0.2s" // padding, margin, row-gap: the one short duration
+		wantMoves := "0.2s, 0.2s" // padding, row-gap: the one short duration
 		if c.reduced {
 			wantMoves = "0s"
 		}
@@ -143,12 +144,12 @@ func TestBrowserLibraryHeadCompacts(t *testing.T) {
 		if last := samples[len(samples)-1]; last[1] != 17 {
 			t.Fatalf("%s: not compact after a second: %v", name, last)
 		}
-		// Clicks under the head's given-back margin reach the grid.
+		// Clicks in the head's empty space under the compact bar reach the grid.
 		if c.width > 600 && !c.noState {
 			browserEval(t, tab, `scrollTo(0, 400);''`)
 			time.Sleep(settle)
 			if got := browserEval(t, tab, `(()=>{const b=document.querySelector('.head-bar').getBoundingClientRect();const el=document.elementFromPoint(b.left+b.width/2, b.bottom+10);return String(!document.querySelector('.page-head').contains(el))})()`); got != "true" {
-				t.Fatalf("%s: the head's margin takes clicks", name)
+				t.Fatalf("%s: the head's empty space takes clicks", name)
 			}
 		}
 		if p := problems(); len(p) != 0 {

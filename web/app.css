@@ -24,23 +24,32 @@
 /* 2. Tokens. Colours from the principles' table. The accent is MusicLib's
    Violet (N-310): links, the primary button, focus, checkboxes and the
    symbol, never a surface. The status colours have brighter dark-theme
-   twins so an 8px dot stays visible on black (N-248). */
+   twins so an 8px dot stays visible on black (N-248). Each colour is
+   written once as light-dark(light, dark): the theme is the system's, or
+   the one chosen in the sidebar (sidebar.js sets data-theme). */
 
 :root {
   color-scheme: light dark;
 
-  --paper: #fff;
-  --canvas: #f5f5f7;
-  --ink: #1d1d1f;
-  --graphite: #6e6e73;
-  --hairline: #d2d2d7;
-  --accent: #643fd1; /* oklch(0.50 0.21 288): 6.6:1 on paper, 6.1:1 on canvas */
-  --on-accent: #fff;
+  --paper: light-dark(#fff, #0f0f11);
+  --canvas: light-dark(#f5f5f7, #000);
+  --ink: light-dark(#1d1d1f, #f5f5f7);
+  --graphite: light-dark(#6e6e73, #98989d);
+  --hairline: light-dark(#d2d2d7, #38383a);
+  /* Light oklch(0.50 0.21 288): 6.6:1 on paper, 6.1:1 on canvas; dark
+     oklch(0.74 0.14 288): 8.0:1 on paper, 8.8:1 on canvas. */
+  --accent: light-dark(#643fd1, #a79bfe);
+  --on-accent: light-dark(#fff, #1d1d1f); /* dark 7.0:1; white on #a79bfe is 2.4:1 */
   --fill: color-mix(in srgb, var(--ink) 6%, var(--paper)); /* quiet controls */
   --fill-strong: color-mix(in srgb, var(--ink) 10%, var(--canvas));
-  --ok: #248a3d;
-  --busy: #c93400;
-  --error: #d70015;
+  --ok: light-dark(#248a3d, #30d158);
+  --busy: light-dark(#c93400, #ff9f0a);
+  --error: light-dark(#d70015, #ff6961);
+  /* The glow at the foot of the sidebar: the Violet's hue with a bluer and
+     a pinker neighbour, deep on black, pale on the light canvas. */
+  --glow-1: light-dark(oklch(.76 .15 288), oklch(.40 .17 288));
+  --glow-2: light-dark(oklch(.80 .12 328), oklch(.38 .14 322));
+  --glow-3: light-dark(oklch(.80 .11 278), oklch(.30 .13 280));
 
   --family: "Hanken Grotesk", system-ui, sans-serif;
   --mono: ui-monospace, Menlo, Consolas, monospace; /* file names only */
@@ -73,21 +82,8 @@
   --sidebar: 15.5rem; /* 248px; collapsed 4.5rem: the Save bar follows it */
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #1c1c1e;
-    --canvas: #000;
-    --ink: #f5f5f7;
-    --graphite: #98989d;
-    --hairline: #38383a;
-    --accent: #a79bfe; /* oklch(0.74 0.14 288): 7.1:1 on paper, 8.8:1 on canvas */
-    --on-accent: #1d1d1f; /* 7.0:1; white on #a79bfe is 2.4:1 */
-    --ok: #30d158;
-    --busy: #ff9f0a;
-    --error: #ff6961;
-  }
-}
-
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 /* 3. Base. */
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -130,8 +126,8 @@ main:focus { outline: none; }
 /* 4. Shell: the sidebar and the page head. Every sidebar row is a 3rem
    icon cell and a label, so collapsing to the icons (sidebar.js, N-272)
    moves no icon. The lockup heads it, the symbol in the icon column and
-   the word on the labels' edge; the toggle sits at its foot, in the icon
-   column, so it stays under the pointer (N-311). */
+   the word on the labels' edge; the theme and collapse buttons sit at its
+   foot, in the icon column, so they stay under the pointer (N-311). */
 
 .app { display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 100vh; }
 
@@ -141,11 +137,33 @@ main:focus { outline: none; }
   width: var(--sidebar); height: 100vh; padding: var(--s4) var(--s3);
   background: var(--canvas); transition: width var(--slow) var(--ease);
 }
-.sidebar-toggle {
-  position: relative; display: grid; place-items: center; flex: none; margin-top: auto;
-  width: 3rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--r-control);
-  background: none; color: var(--graphite); cursor: pointer; visibility: hidden;
+/* The lower part glows: three soft lights and a grain behind the theme
+   and collapse buttons, fading slowly (an eased mask, no visible edge)
+   into the plain canvas above mid-height. The lights are sized in rem
+   across and centred on the icon column, so collapsing the sidebar only
+   clips them: the glow keeps its shape and its heart stays under the icons.
+   The grain (grain.svg, a file: the CSP forbids data: images) textures
+   the colour and hides banding; soft-light leaves the canvas untouched. */
+.sidebar::before, .sidebar::after {
+  content: ""; position: absolute; inset: auto 0 0; z-index: -1; height: 68%;
+  pointer-events: none;
+  mask: linear-gradient(to top, #000, rgb(0 0 0 / .8) 25%, rgb(0 0 0 / .5) 50%, rgb(0 0 0 / .22) 72%, rgb(0 0 0 / .06) 88%, transparent);
 }
+.sidebar::before {
+  background:
+    radial-gradient(12rem 45% at 2.25rem 100% in oklab, var(--glow-1), transparent),
+    radial-gradient(12rem 35% at 14rem 106% in oklab, var(--glow-2), transparent),
+    radial-gradient(24rem 95% at 6rem 100% in oklab, var(--glow-3), transparent);
+}
+.sidebar::after { background: url(grain.svg); mix-blend-mode: soft-light; opacity: .3; }
+.sidebar-foot { display: grid; gap: 2px; margin-top: auto; }
+.sidebar-toggle {
+  position: relative; display: grid; place-items: center; flex: none;
+  width: 3rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--r-control);
+  background: none; color: var(--ink); cursor: pointer; visibility: hidden;
+}
+.sidebar-toggle:focus-visible { outline-color: var(--ink); }
+.sidebar-toggle > .icon { color: inherit; }
 [data-sidebar] .sidebar-toggle { visibility: visible; }
 /* The symbol is 28px, its ring about as tall as the word's capitals; the
    word, outlined Bricolage Grotesque, is in ink, its capitals centred on it. */
@@ -158,7 +176,8 @@ main:focus { outline: none; }
   color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden;
 }
 .icon { justify-self: center; color: var(--graphite); }
-.nav a:hover, .fix-filter:hover, .sidebar-toggle:hover { text-decoration: none; background: var(--fill-strong); color: var(--ink); }
+.nav a:hover, .fix-filter:hover { text-decoration: none; background: var(--fill-strong); color: var(--ink); }
+.sidebar-toggle:hover { background: color-mix(in srgb, var(--ink) 12%, transparent); }
 .nav a[aria-current="page"], .fix-filter[aria-current="page"] { background: var(--fill-strong); font-weight: 650; }
 :is(:hover, [aria-current="page"]) > .icon { color: var(--ink); }
 .fix-filter:not([data-count="0"]) > .icon { color: var(--error); }
@@ -197,18 +216,18 @@ main:focus { outline: none; }
 /* The Library's search stays in view: a solid, page-wide head with a
    hairline only while stuck, drawn by the title (N-253). Stuck, it
    compacts: the title to the Headline size, the padding tighter (owner,
-   N-284). The bar's bottom margin gives back exactly the height it loses
-   (the sums are linear, so on every frame of the transition too): the page
-   never gets shorter, nothing under the head moves, and the stuck state
-   cannot feed back on itself. The margin belongs to the sticky head, so
-   the head lets clicks through and only its bar takes them. */
+   N-284). The head keeps its full height, so the page never gets shorter,
+   nothing under it moves (not even by a rounding fraction during the
+   transition, which would repaint every cover on every frame) and the
+   stuck state cannot feed back on itself. The bar sits at its top; the
+   head lets clicks through and only its bar takes them. */
 .page-head:has(.search) {
   position: sticky; top: 0; z-index: 4; container-type: scroll-state; overflow-anchor: none;
-  display: grid; margin-inline: calc(-1 * var(--gutter)); pointer-events: none;
+  display: grid; align-items: start; height: 6.0625rem; margin-inline: calc(-1 * var(--gutter)); pointer-events: none;
 }
 .page-head:has(.search) .head-bar {
   position: relative; flex-wrap: nowrap; padding-inline: var(--gutter); background: var(--paper); pointer-events: auto;
-  transition: padding var(--quick) var(--ease), margin var(--quick) var(--ease), row-gap var(--quick) var(--ease);
+  transition: padding var(--quick) var(--ease), row-gap var(--quick) var(--ease);
 }
 .page-head:has(.search) .page-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
@@ -217,12 +236,12 @@ main:focus { outline: none; }
 /* Full: 32 + 41 + 24 = 97px; compact: 12 + 34 (the search) + 12 = 58px. */
 @container scroll-state(stuck: top) {
   .page-title::after { content: ""; position: absolute; inset: auto 0 0; border-bottom: 1px solid var(--hairline); }
-  .page-head:has(.search) .head-bar { padding-block: var(--s3); margin-bottom: 2.4375rem; }
+  .page-head:has(.search) .head-bar { padding-block: var(--s3); }
   .page-head:has(.search) .page-title { font: 600 1.0625rem/2.125rem var(--family); letter-spacing: 0; }
 }
 /* Browsers without scroll-state queries: library.js sets .is-stuck. */
 .page-head.is-stuck .page-title::after { content: ""; position: absolute; inset: auto 0 0; border-bottom: 1px solid var(--hairline); }
-.page-head.is-stuck .head-bar { padding-block: var(--s3); margin-bottom: 2.4375rem; }
+.page-head.is-stuck .head-bar { padding-block: var(--s3); }
 .page-head.is-stuck .page-title { font: 600 1.0625rem/2.125rem var(--family); letter-spacing: 0; }
 html:has(.page-head .search) { scroll-padding-top: 8.5rem; }
 .backlink { display: inline-flex; align-items: center; gap: var(--s1); margin-top: var(--s5); font-weight: 500; }
@@ -379,6 +398,27 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 
 .band, .files li, .section-head { display: flex; align-items: center; justify-content: space-between; }
 .band { margin-top: var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-panel); background: var(--canvas); }
+/* An album's head lies on its own cover (app.js sets --cover once the
+   image is decoded): the cover, stretched across the page and blurred to
+   a colour field, so every colour sits where it is in the image, fading
+   in eased steps into the page before the tracks, with the sidebar's
+   grain on it. The layer overhangs the page so the blur has no pale
+   edges; the page clips it. Background only; it fades in once the cover
+   is ready. The fields' hover fill is see-through, so it tints the field
+   instead of cutting a box out of it. */
+.page:has(> #editor) { position: relative; isolation: isolate; overflow-x: clip; }
+.page:has(> #editor)::before, .page:has(> #editor)::after {
+  content: ""; position: absolute; inset: -8rem -8rem auto; z-index: -1; height: 38rem;
+  pointer-events: none; opacity: 0; transition: opacity var(--slow) var(--ease);
+  mask: linear-gradient(#000 30%, rgb(0 0 0 / .75) 48%, rgb(0 0 0 / .4) 64%, rgb(0 0 0 / .12) 80%, transparent 92%);
+}
+.page:has(> #editor)::before { background: var(--cover) center 30% / cover; filter: blur(80px) saturate(1.6); }
+.page:has(> #editor)::after { background: url(grain.svg); mix-blend-mode: soft-light; }
+.page:has(> #editor)[data-glow]::before { opacity: .55; }
+.page:has(> #editor)[data-glow]::after { opacity: .2; }
+/* On the field the head's links are in ink: the Violet cannot keep its
+   contrast on every cover's colour. */
+.page[data-glow] :is(.backlink, .album-head .link), .album-head > .dots { color: var(--ink); }
 .album-head { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: var(--s6); align-items: start; padding: var(--s5) 0 var(--s6); }
 .cover-box { display: grid; justify-items: start; gap: var(--s3); }
 .cover, .thumbs img { border-radius: var(--r-cover); box-shadow: var(--shadow-cover); object-fit: cover; }
@@ -387,7 +427,7 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 .is-drop .cover { outline: 3px solid var(--accent); outline-offset: 6px; }
 .album-fields { display: grid; gap: var(--s2); }
 .album :is(input:not([type="checkbox"]), textarea) { min-height: 0; margin-inline: -4px; padding: 1px 4px; border: 0; border-radius: 6px; background: none; field-sizing: content; appearance: textfield; }
-.album :is(input, textarea):is(:hover, :focus):not([readonly]) { background: var(--fill); }
+.album :is(input, textarea):is(:hover, :focus):not([readonly]) { background: color-mix(in srgb, var(--ink) 7%, transparent); }
 .album input::-webkit-inner-spin-button, #artist-name::-webkit-calendar-picker-indicator { display: none !important; }
 .album-title textarea { width: 100%; font: var(--type-large); letter-spacing: -.022em; resize: none; }
 #artist-name { min-width: 6ch; font: var(--type-title); font-weight: 500; }
@@ -401,7 +441,7 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 /* ⋯ from a gradient: no glyph, no image. */
 .dots { display: grid; place-items: center; width: 2rem; height: 2rem; border: 0; border-radius: var(--r-pill); background: none; color: var(--graphite); cursor: pointer; }
 .dots::before { content: ""; width: 16px; height: 4px; background: radial-gradient(circle, currentcolor 1.5px, transparent 2px) 0 0 / 6px 4px; }
-.dots:hover, .dots:has(+ :popover-open) { background: var(--fill); color: var(--ink); }
+.dots:hover, .dots:has(+ :popover-open) { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
 .menu, .sheet { border: 1px solid var(--hairline); border-radius: var(--r-panel); background: var(--paper); color: var(--ink); }
 .menu { position-area: bottom span-left; position-try-fallbacks: flip-block; min-width: 13rem; margin: var(--s1) 0; padding: var(--s1); }
 .menu > *, .picks button, .thumbs button { display: flex; align-items: center; gap: var(--s2); width: 100%; min-height: 2rem; padding: var(--s1) var(--s3); border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; cursor: pointer; }
@@ -553,7 +593,9 @@ a.row-link:hover .row-title { text-decoration: underline; }
     position: static; width: auto; height: auto; flex-direction: row; align-items: stretch; gap: var(--s1);
     padding: var(--s2) var(--s3); overflow-x: auto;
   }
-  .brand, .sidebar-toggle { display: none; }
+  .brand, #sidebar-toggle, .sidebar::before, .sidebar::after { display: none; }
+  .sidebar-foot { display: flex; align-items: center; margin: 0; }
+  .sidebar-toggle .nav-label { position: absolute; clip-path: inset(50%); }
   .nav { flex: 1; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--s1); }
   .nav a { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 2px; padding: 6px var(--s1); font: var(--type-caption); }
   .nav a[aria-current="page"] { font-weight: 650; }
@@ -564,14 +606,15 @@ a.row-link:hover .row-title { text-decoration: underline; }
   .fix-filter[data-count="0"] { display: none; }
   .page { --gutter: var(--s4); padding-bottom: var(--s7); }
   .head-bar { padding: var(--s5) 0 var(--s4); }
+  .page-head:has(.search) { height: 7.9375rem; }
   .page-head:has(.search) .head-bar { flex-wrap: wrap; }
   .search { flex-basis: 100%; }
   /* Full: 24 + 41 + 12 + 34 + 16 = 127px; compact: 8 + 22 + 8 + 34 + 8 = 80px. */
   @container scroll-state(stuck: top) {
-    .page-head:has(.search) .head-bar { padding-block: var(--s2); row-gap: var(--s2); margin-bottom: 2.9375rem; }
+    .page-head:has(.search) .head-bar { padding-block: var(--s2); row-gap: var(--s2); }
     .page-head:has(.search) .page-title { line-height: 1.375rem; }
   }
-  .page-head.is-stuck .head-bar { padding-block: var(--s2); row-gap: var(--s2); margin-bottom: 2.9375rem; }
+  .page-head.is-stuck .head-bar { padding-block: var(--s2); row-gap: var(--s2); }
   .page-head.is-stuck .page-title { line-height: 1.375rem; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: var(--s5) var(--s4); }
   .album-panel { margin-top: calc(-1 * var(--s5)); }

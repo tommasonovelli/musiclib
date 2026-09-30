@@ -211,6 +211,7 @@ func TestStaticAssets(t *testing.T) {
 		{"/static/" + fontLatin, "font/woff2", "public, max-age=31536000, immutable", fontLatin},
 		{"/static/" + fontLatinExt, "font/woff2", "public, max-age=31536000, immutable", fontLatinExt},
 		{"/static/OFL.txt", "text/plain; charset=utf-8", "no-store", "OFL.txt"},
+		{"/static/" + grain, "image/svg+xml", faviconCache, grain},
 	} {
 		status, h, body := pageRequest(t, e, c.path, testHost)
 		want, err := os.ReadFile("../../web/" + c.file)

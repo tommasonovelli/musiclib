@@ -3,6 +3,22 @@
 All notable changes to Vibrance MusicLib are recorded in this file, in the format of [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Theme switch**: a button at the foot of the sidebar cycles between the system's theme, light and dark. The choice is remembered by the browser.
+- **A violet glow with a light grain** in the lower part of the sidebar, fading slowly upward, in both themes. The top of the sidebar stays plain.
+- **The album page takes the colours of its cover**: the album's head lies on its own cover, blurred into a field of its colours with a light grain, fading into the page before the tracks. Only albums with a cover glow; a new cover changes it at once.
+
+### Changed
+
+- The page background of the dark theme is darker (`#0f0f11`, was `#1c1c1e`), between the black sidebar and the old grey.
+
+### Fixed
+
+- Scrolling the Library no longer stutters when the head compacts: the head keeps a fixed height, so the album grid under it no longer shifts by a fraction of a pixel on every frame of the transition and every cover is no longer repainted.
+
 ## [1.0.0] - 2026-09-29
 
 The first release of Vibrance MusicLib: a self-hosted web app, for one person, that keeps a music collection tidy without ever changing the original files.
@@ -30,4 +46,5 @@ The first release of Vibrance MusicLib: a self-hosted web app, for one person, t
 - **Upgrades are one-way**: a new version can upgrade the database, and an older version refuses it afterwards. Back up before every update: going back to an older version means restoring that backup.
 - **Third-party software**: `ffmpeg` and `ffprobe` in the image are under GPL-2.0-or-later; MusicLib's own code is under the MIT License. `THIRD_PARTY_NOTICES.md` lists every component of the image with its license, and is attached to this release together with the source tarballs of FFmpeg and TagLib.
 
+[Unreleased]: https://github.com/tommasonovelli/vibrance-musiclib/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/tommasonovelli/vibrance-musiclib/releases/tag/v1.0.0
