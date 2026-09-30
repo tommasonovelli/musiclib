@@ -157,13 +157,140 @@ To restore on a machine that still runs an installation (to test a backup, for e
 
    If the existing installation keeps its backups in a host directory (`MUSICLIB_BACKUP`), copy from there. Then run the restore above in the new directory and open `http://127.0.0.1:8081`. The two installations share nothing and can run side by side.
 
+## HTTPS and a domain name
+
+MusicLib serves plain HTTP. To open it from other devices at an address such as `https://music.example.com`, put a reverse proxy in front of it. The proxy adds the name and HTTPS, so the password and the sign-in cookie no longer cross the network in clear; the password (`MUSICLIB_PASSWORD`) still protects every page and the API. This guide uses [Caddy](https://caddyserver.com), which obtains and renews the certificate by itself, passes the original `Host` to MusicLib and sets no limit on upload sizes. The examples were checked with Caddy 2.11.4.
+
+MusicLib needs one setting for it, `PUBLIC_ORIGIN`: the exact address of the proxy, `https://` and the name, all lowercase (an international name in its `xn--` form), with no trailing slash and no port unless the proxy listens on a port other than 443 (MusicLib refuses `:443`, which browsers leave out). With an `https://` address the sign-in cookie is marked `Secure`. Whichever way you choose:
+
+- **MusicLib answers only at that address.** From then on `http://127.0.0.1:8080`, a LAN address and an SSH tunnel answer `421 host_not_allowed`; only the health checks (`/health/live`, `/health/ready`) answer at any address. Scripts that use the API use the new address.
+- **MusicLib takes the whole name**: it cannot be served under a path, such as `https://example.com/music/`.
+- **Keep MusicLib's own port private**: leave `MUSICLIB_BIND` at `127.0.0.1`, so the proxy is the only way in.
+- MusicLib needs no `X-Forwarded-*` header and ignores them: its log of sign-ins shows the proxy's address, not the device's.
+- Caddy keeps its certificates and keys in its own storage, which MusicLib's backups do not include.
+
+### Caddy on the same host
+
+A public name needs a DNS record (`A`, and `AAAA` for IPv6) pointing `music.example.com` to your public address, and your router forwarding TCP ports 80 and 443 (and UDP 443, for HTTP/3) to the machine: Caddy uses them to obtain its certificate from Let's Encrypt. Devices at home use the same name; if they cannot reach it from inside your network, add the name with the machine's LAN address to your home network's DNS. The sign-in page is then on the Internet: MusicLib checks one attempt at a time and holds each refused one for a second, so a random password cannot be guessed, but a stranger's attempts can make your own sign-in wait. If you do not need MusicLib from outside your home, prefer [a name for your home network only](#a-name-for-your-home-network-only).
+
+1. Install Caddy from its [official packages](https://caddyserver.com/docs/install); it runs as a service.
+2. Replace `/etc/caddy/Caddyfile` with these two lines, using your name (and your `MUSICLIB_PORT`, if you changed it), then run `sudo systemctl reload caddy`:
+
+   ```text
+   music.example.com
+   reverse_proxy 127.0.0.1:8080
+   ```
+
+3. In `~/musiclib`, point MusicLib at the new address (the `.env` of the install block has this line) and apply it:
+
+   ```sh
+   sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=https://music.example.com|' .env
+   docker compose up -d --wait
+   ```
+
+4. Open `https://music.example.com` and sign in.
+
+### Caddy in Docker
+
+Caddy can also run as a third container next to MusicLib, with nothing installed on the host. Next to `compose.yaml`, create `compose.override.yaml`, which Docker Compose reads together with `compose.yaml` by itself:
+
+```yaml
+# Caddy in front of MusicLib: docs/operations.md, "HTTPS and a domain name".
+services:
+  app:
+    # No port on the host: only Caddy reaches MusicLib, over the Compose network.
+    ports: !reset []
+
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
+    container_name: ${COMPOSE_PROJECT_NAME:-musiclib}-caddy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+```
+
+and a `Caddyfile` next to it:
+
+```text
+music.example.com {
+	reverse_proxy app:8080
+}
+```
+
+The DNS record and the router's ports are those of the previous section. Then point MusicLib at the new address and start everything:
+
+```sh
+sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=https://music.example.com|' .env
+docker compose up -d --wait
+```
+
+- `!reset` removes MusicLib's port on the host; it needs Docker Compose 2.24 or later. Check with `docker compose config`: the `app` service must show no `ports`. If your Compose refuses `!reset`, delete the `app:` entry (its first three lines): MusicLib then stays reachable on `127.0.0.1:8080` from this machine only, as before.
+- Without that port, the health check of the install block (`curl http://127.0.0.1:8080/health/ready`) no longer answers: use `docker compose ps` (the app shows `healthy`) or `curl -f https://music.example.com/health/ready`.
+- The backup, check and restore commands work as before: they stop and start MusicLib only, and Caddy answers `502` in the meantime.
+- Caddy's certificates, and for a home name its certificate authority (below), are in the volume `musiclib_caddy_data`: keep it.
+- Caddy is yours to update: replace its image line with a newer release, by version and digest, then `docker compose up -d --wait`.
+- A source build (`COMPOSE_FILE=compose.dev.yaml` in `.env`) names the override too: `COMPOSE_FILE=compose.dev.yaml:compose.override.yaml`.
+
+### A name for your home network only
+
+Without a public name or an open port, MusicLib can still have a name and HTTPS on your home network, such as `music.home.arpa` (`home.arpa` is reserved for home networks). Caddy then signs the certificate with its own local certificate authority instead of Let's Encrypt.
+
+1. Make the name point to the machine's LAN address on every device: add a local DNS record in your router or home DNS server (such as Pi-hole), or, on a computer, a line in its hosts file (`192.168.1.20 music.home.arpa`). Phones and tablets need the DNS record.
+2. Use the `Caddyfile` below, in Docker as in the previous section; with Caddy on the host, write `reverse_proxy 127.0.0.1:8080` instead of `app:8080` and reload Caddy. Forward no port in the router: ports 80 and 443 need to be reachable only from your network.
+
+```text
+music.home.arpa {
+	tls internal
+	reverse_proxy app:8080
+}
+```
+
+3. Set the address and apply it: `sed -i 's|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=https://music.home.arpa|' .env`, then `docker compose up -d --wait`.
+4. Trust Caddy's certificate authority on each device, as below. Until then, browsers show a certificate warning.
+
+**Trusting Caddy's local certificate authority.** Its root certificate is `root.crt`. Copy it with `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .` (Caddy in Docker) or `sudo install -m 644 -o "$USER" /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt .` (Caddy's package, so the copy is yours and readable), and install it on each device as a trusted root certificate authority:
+
+- Windows: open the file, **Install Certificate**, *Local Machine*, and place it in *Trusted Root Certification Authorities*.
+- macOS: open it in Keychain Access, add it to the *System* keychain, and set it to *Always Trust*.
+- iPhone and iPad: open the file, install the profile (Settings, General, VPN & Device Management), then turn on full trust in Settings, General, About, Certificate Trust Settings.
+- Android: Settings, Security, Encryption & credentials, Install a certificate, CA certificate. Chrome uses it; some apps do not.
+- Firefox keeps its own list on every system: Settings, Privacy & Security, Certificates, View Certificates, Authorities, Import, and trust it to identify websites.
+
+A device that trusts this root accepts **every** certificate Caddy's authority signs, for any name, not only `music.home.arpa`: whoever obtains its private key, stored next to `root.crt` in Caddy's data, could impersonate any website to that device. Keep Caddy's data private (do not copy it elsewhere or into a shared backup), install the root only on your own devices, and remove it from a device you no longer use. The root lasts about ten years and Caddy renews the site's certificate by itself; if Caddy's data is lost, Caddy makes a new root, which every device must trust again.
+
+### Other reverse proxies
+
+Any reverse proxy works if it:
+
+- passes the browser's `Host` header unchanged, port included. nginx does not by default: set `proxy_set_header Host $http_host;` (`$host` drops the port). Apache: `ProxyPreserveHost On`;
+- leaves the other headers alone, in particular `Origin`, `Cookie`, `Set-Cookie`, `If-Match`, `ETag` and `X-Musiclib-Request`;
+- serves MusicLib at the root of its own name;
+- accepts large request bodies: an extra file can be 256 MiB and a cover 20 MiB. nginx refuses bodies over 1 MB by default, and the upload then fails with "The server doesn't answer": set `client_max_body_size 0;`, MusicLib applies its own limits;
+- lets long transfers run. For nginx, `proxy_request_buffering off;` and `proxy_buffering off;` pass uploads and downloads through instead of storing them in temporary files, and a longer `proxy_read_timeout` and `proxy_send_timeout` (60 s by default) help large uploads over slow connections.
+
+Response compression is not needed. If you turn it on (Caddy's `encode`, nginx's `gzip`), the `ETag` header changes: the web interface is not affected, and API scripts should take the `etag` field of the JSON body instead of the header.
+
 ## Security and troubleshooting
 
-The default published address is **127.0.0.1 only**. LAN use needs both `MUSICLIB_BIND` and matching `PUBLIC_ORIGIN`; do not expose it directly to the Internet.
+The default published address is **127.0.0.1 only**. LAN use needs both `MUSICLIB_BIND` and a matching `PUBLIC_ORIGIN`. Never expose MusicLib's own port directly to the Internet: for a name and HTTPS, put Caddy in front, as in [HTTPS and a domain name](#https-and-a-domain-name).
 
 One password (`MUSICLIB_PASSWORD`), no user accounts. `POST /login` with the form field `password` starts a session: a random 32-byte id in the cookie `musiclib_session` (`HttpOnly`, `SameSite=Strict`, `Secure` when `PUBLIC_ORIGIN` is `https`), valid for 30 days from the sign-in and kept in memory only, so a restart signs everyone out; `POST /logout` ends it. Without a session every page redirects to `/login` and every API request is `401 login_required`; only `/login`, `/logout`, the static UI files under `/static/` and the health endpoints answer without one. A wrong password is answered after about one second, and attempts are checked one at a time; sign-ins and refused attempts are logged with the client address, never the password. The API checks Host, Origin and `X-Musiclib-Request: 1` before anything else; the two plain HTML forms, `POST /login` and `POST /logout`, need no `X-Musiclib-Request` but keep the Host and Origin checks. There is no CORS.
 
-**Use HTTPS beyond a trusted network.** Over plain HTTP (the LAN setting) the password and the session cookie cross the network in clear. From a shared network or from outside, put a reverse proxy that serves HTTPS in front and set `PUBLIC_ORIGIN` to its `https://` address, which also marks the cookie `Secure`. Two installations on the same host (such as a restore next to an existing one) share the cookie, because browsers do not separate cookies by port: signing in to one signs you out of the other, so use a private window for the second.
+**Use HTTPS beyond a trusted network.** Over plain HTTP (the LAN setting) the password and the session cookie cross the network in clear. From a shared network or from outside, use HTTPS: put Caddy in front as in [HTTPS and a domain name](#https-and-a-domain-name) and set `PUBLIC_ORIGIN` to its `https://` address, which also marks the cookie `Secure`. Two installations on the same host (such as a restore next to an existing one) share the cookie, because browsers do not separate cookies by port: signing in to one signs you out of the other, so use a private window for the second.
 
 Mount `/import` read-only and never point it into `/data`.
 

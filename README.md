@@ -182,9 +182,9 @@ All settings are in `~/musiclib/.env`. After changing it, apply it with `docker 
 |---|---|---|
 | `POSTGRES_PASSWORD` | `musiclib`: better change it | Database password; the install block writes a random one. Read only when the database is first created: set it before the first start. |
 | `MUSICLIB_PASSWORD` | none: required | Sign-in password of the web interface and the API, at least 12 characters; the install block writes a random one. After changing it, every browser is signed out. |
-| `PUBLIC_ORIGIN` | `http://127.0.0.1:8080` | The exact address you open in the browser: scheme, host and port. |
+| `PUBLIC_ORIGIN` | `http://127.0.0.1:8080` | The exact address you open in the browser: scheme, host and port. Behind a reverse proxy, its `https://` address. |
 | `MUSICLIB_BIND` | `127.0.0.1` | Host address the web interface listens on. Loopback: this machine only. |
-| `MUSICLIB_PORT` | `8080` | Host port of the web interface. Keep it equal to the port in `PUBLIC_ORIGIN`. |
+| `MUSICLIB_PORT` | `8080` | Host port of the web interface. Without a reverse proxy, keep it equal to the port in `PUBLIC_ORIGIN`. |
 | `MUSICLIB_IMPORT` | `./import` | Folder with the music to import, mounted read-only. It must exist. |
 | `MUSICLIB_DATA` | `data` (named volume) | Or an absolute path of an empty ext4 folder owned by uid 1000. Set it before the first start. |
 | `MUSICLIB_BACKUP` | `backup` (named volume) | Or an absolute path of a folder owned by uid 1000, preferably on another disk. |
@@ -197,7 +197,7 @@ Every setting is described in [docs/operations.md](docs/operations.md) and [docs
 
 **One password protects MusicLib**: `MUSICLIB_PASSWORD` in `.env` (see [Install](#install)). Every page and the API need it; only the health checks answer without it. A sign-in lasts 30 days and ends when MusicLib restarts; **Sign out** is at the foot of the sidebar. MusicLib is meant for one person: there are no user accounts.
 
-**Over plain HTTP the password travels in clear.** With the default setting it never leaves the machine. From other devices (the LAN setting below), anyone who can watch your network can read the password and the sign-in cookie: use it only on a network you trust, and from a shared network or from outside only through HTTPS (a reverse proxy in front of MusicLib).
+**Over plain HTTP the password travels in clear.** With the default setting it never leaves the machine. From other devices (the LAN setting below), anyone who can watch your network can read the password and the sign-in cookie: use it only on a network you trust, and from a shared network or from outside only through HTTPS, with a proxy such as Caddy in front of MusicLib (below).
 
 - By default it listens only on `127.0.0.1`: it can be opened only from the machine it runs on.
 - `PUBLIC_ORIGIN` must match the address in the browser exactly. `http://localhost:8080` and `http://127.0.0.1:8080` are different addresses: with the default setting, only the second one works.
@@ -210,7 +210,7 @@ Every setting is described in [docs/operations.md](docs/operations.md) and [docs
 
 - **From your computer to a server without a desktop**, an SSH tunnel keeps the default settings: run `ssh -L 8080:127.0.0.1:8080 you@server` and open `http://127.0.0.1:8080` on your computer.
 - **The database** has a default password, `musiclib`, unless you set `POSTGRES_PASSWORD` in `.env` before the first start; the install block does it for you with a random one. The database publishes no port, so other machines can't reach it, but a password of your own is still better.
-- **Never expose MusicLib directly to the Internet.** For remote access, put it behind a reverse proxy that serves HTTPS, and set `PUBLIC_ORIGIN` to the proxy's `https://` address: the sign-in cookie is then sent over HTTPS only.
+- **A domain name with HTTPS**, such as `https://music.example.com`, or a name for your home network only: put [Caddy](https://caddyserver.com) in front of MusicLib, on the same machine or in Docker next to it, and set `PUBLIC_ORIGIN` to its `https://` address. The password still protects MusicLib; Caddy adds the name and HTTPS. The files to copy are in [docs/operations.md](docs/operations.md#https-and-a-domain-name). Never expose MusicLib's own port directly to the Internet.
 - **Two installations on one machine** (such as a [restore next to an existing one](docs/operations.md#restoring-next-to-an-existing-installation)) share the browser's sign-in cookie, so signing in to one signs you out of the other: open the second one in a private window.
 
 ## Backup, check and restore
@@ -309,7 +309,7 @@ Run them from `~/musiclib` (from the clone's folder for a [source build](#buildi
 | Show its version | `docker compose run --rm --no-deps app version` |
 | Show the sign-in password | `grep MUSICLIB_PASSWORD .env` |
 
-After the LAN change of [Access and security](#access-and-security), MusicLib no longer listens on `127.0.0.1`: check it with the LAN address, such as `curl -f http://192.168.1.20:8080/health/ready`.
+After the LAN change of [Access and security](#access-and-security), MusicLib no longer listens on `127.0.0.1`: check it with the LAN address, such as `curl -f http://192.168.1.20:8080/health/ready`. With [Caddy in Docker](docs/operations.md#caddy-in-docker) the app publishes no port, so this check does not apply there.
 
 If MusicLib refuses to start, its log names the problem with a stable code, and nothing is repaired or deleted automatically. The codes and what to do about each are in [docs/operations.md](docs/operations.md#security-and-troubleshooting) and [docs/docker.md](docs/docker.md#when-the-app-refuses-to-start).
 
