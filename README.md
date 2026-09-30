@@ -277,7 +277,8 @@ Then run the three restore commands above in `~/musiclib-restore`, and open `htt
 **From 1.0.0 to 1.1.0 or later, add a sign-in password first**: 1.1.0 does not start without `MUSICLIB_PASSWORD`, and a 1.0.0 `.env` has none. This line adds a random one, unless `.env` already has one; read it afterwards with `grep MUSICLIB_PASSWORD .env`:
 
 ```sh
-cd ~/musiclib && grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && echo "MUSICLIB_PASSWORD=$(openssl rand -base64 24)" >> .env; }
+cd ~/musiclib
+grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && printf '\nMUSICLIB_PASSWORD=%s\n' "$(openssl rand -base64 24)" >> .env; }
 ```
 
 Back up first: an update can upgrade the database, and there is no way back except restoring that backup. Your settings are in `.env`, so the new release's `compose.yaml` simply replaces the old one. (If you changed the database password in `compose.yaml` instead of `.env`, move it to `.env` first: the new file comes with the default.)

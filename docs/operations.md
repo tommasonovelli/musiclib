@@ -67,7 +67,7 @@ Budget roughly **originals + library** (about twice the source bytes), plus conc
 **From 1.0.0 to 1.1.0 or later**, add the sign-in password to `.env` first: 1.1.0 refuses to start without `MUSICLIB_PASSWORD` (`password_invalid`), and a 1.0.0 `.env` has no such line. This adds a random one unless a value is already set; read it with `grep MUSICLIB_PASSWORD .env`:
 
 ```sh
-grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && echo "MUSICLIB_PASSWORD=$(openssl rand -base64 24)" >> .env; }
+grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && printf '\nMUSICLIB_PASSWORD=%s\n' "$(openssl rand -base64 24)" >> .env; }
 ```
 
 The new `compose.yaml` passes it to the app; an older `compose.yaml` does not, so take the new one too.

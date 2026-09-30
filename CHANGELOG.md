@@ -8,7 +8,7 @@ Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
 **Upgrading from 1.0.0: MusicLib now asks for a password, and does not start without one.** Before updating, add one to `.env` (this line adds a random one unless `.env` already sets it):
 
 ```sh
-grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && echo "MUSICLIB_PASSWORD=$(openssl rand -base64 24)" >> .env; }
+grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && printf '\nMUSICLIB_PASSWORD=%s\n' "$(openssl rand -base64 24)" >> .env; }
 ```
 
 Then take the new `compose.yaml`, which passes it to MusicLib, and update as usual. Read the password with `grep MUSICLIB_PASSWORD .env`.
