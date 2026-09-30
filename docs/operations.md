@@ -19,7 +19,7 @@ The block is idempotent: it never replaces an existing `compose.yaml` or `.env`.
 
 **The database password has a default, `musiclib`: change it before the first start.** It is defined once, at the top of `compose.yaml` (`x-db-password`), for both services; `POSTGRES_PASSWORD` in `.env` overrides it, and an empty value means the default. The block above writes a random one into `.env` without printing it. Without the block, set it in `.env` (preferred: a new release's `compose.yaml` comes with the default again) or in place of `musiclib` in `compose.yaml`. The database publishes no port, so other machines cannot reach it; a password of your own is still better. PostgreSQL reads it only when its volume is first initialized: changing it later does not change the database's password, and the app can no longer connect. To change it, run `docker compose exec postgres psql -U musiclib -d musiclib -c '\password musiclib'`, put the same value in `.env`, then `docker compose up -d --wait`.
 
-The defaults keep the database, `/data` and `/backup` in the named volumes `musiclib_pgdata`, `musiclib_musiclib-data` and `musiclib_musiclib-backup`. For host directories on ext4 (a data disk, a backup disk), set them in `.env` before the first start:
+The defaults keep the database, `/data` and `/backup` in the named volumes `musiclib_db`, `musiclib_data` and `musiclib_backup`. For host directories on ext4 (a data disk, a backup disk), set them in `.env` before the first start:
 
 ```sh
 # Create an ext4-backed data and backup directory, owned by the app UID.
@@ -71,16 +71,6 @@ docker compose run --rm --no-deps app version
 
 From source, fetch the reviewed changes and run `docker compose up -d --build --wait` (with `COMPOSE_FILE=compose.dev.yaml`). Boot applies supported forward-only migrations before workers. Do not run older binaries against a newer schema: the server refuses with `store_schema_too_new`, and going back needs a backup made by the older version. Changing `render_version` queues a new full render of active albums that have no existing job; failed render jobs are not silently retried. Check Activity and then run doctor. Never use a floating image tag.
 
-### Upgrading from a source build
-
-An installation started from source before release 1.0.0 (`docker compose --profile app up -d --build`) keeps its data with either file: `compose.yaml` and `compose.dev.yaml` are the same Compose project, `musiclib`, with the same volumes (`musiclib_pgdata`, `musiclib_musiclib-data`, `musiclib_musiclib-backup`) or the same `MUSICLIB_DATA`/`MUSICLIB_BACKUP` paths. **Back up first.**
-
-- The password: an installation whose `.env` sets `POSTGRES_PASSWORD` keeps working unchanged. One that never set it was initialized with `musiclib`, which is the default again: it keeps working too; change it as described under "First start".
-- To keep building from source, add `COMPOSE_FILE=compose.dev.yaml` to `.env` and use `docker compose up -d --build --wait` from now on (no profile).
-- To move to the published image once it exists, leave `COMPOSE_FILE` unset and run `docker compose up -d --wait`: only the app container is recreated. Its version must be at least that of the source build: a newer schema is refused (`store_schema_too_new`).
-- `MUSICLIB_UID`/`MUSICLIB_GID` other than 1000 used to rebuild the image; now they only set the process's uid. Keep them as they are: existing volumes keep their owner, and the process keeps running as that uid.
-- Containers of the development tools (`postgres-test`) belong to the same project, so `compose.yaml` reports them as orphans. Remove them with `docker compose -f compose.dev.yaml rm -s -f postgres-test`, never with `down -v`, which deletes the volumes.
-
 ## Offline commands
 
 Leave PostgreSQL running. From a clone of the repository, the scripts stop the app, take the nonblocking `/data/.lock` via the offline command, and restart the app after success if it was running; doctor also restarts after exit 1 (findings). They leave the app stopped after any destructive command failure or doctor refusal (exit 2). They act on `compose.yaml` and its published image, or on the file named by `COMPOSE_FILE` (environment or `.env`): a source build sets `COMPOSE_FILE=compose.dev.yaml`, so that the offline command runs the same image as the server. If the app holds the lock, all commands refuse at once.
@@ -110,7 +100,7 @@ Backup creates a unique `.musiclib-backup-*.tmp` directory in `/backup`, verifie
 
 ## Restore: use new empty destinations
 
-Restore **never overwrites**. Empty database means no user tables, sequences or views in its schema, including goose metadata; empty data volume means no entries except `.lock` and an empty ext4 `lost+found` directory. A failed restore leaves `.maintenance`; do not start the server or retry into that partially restored destination. Create a **new PostgreSQL volume/database and new data volume**, retaining the old ones for investigation, then repeat from the completed backup. To replace a lost Compose installation safely, provision a separate Compose project ([next to an existing installation](#restoring-next-to-an-existing-installation)) or move the old volumes away, point `MUSICLIB_DATA` at a new empty ext4 directory, and ensure PostgreSQL's `pgdata` is a new empty volume. Confirm `docker compose ps` and the mounts before proceeding; never run `down -v` against the only surviving backup or against a database you need. Mount the completed backup as `/backup` with `MUSICLIB_BACKUP`. Then:
+Restore **never overwrites**. Empty database means no user tables, sequences or views in its schema, including goose metadata; empty data volume means no entries except `.lock` and an empty ext4 `lost+found` directory. A failed restore leaves `.maintenance`; do not start the server or retry into that partially restored destination. Create a **new PostgreSQL volume/database and new data volume**, retaining the old ones for investigation, then repeat from the completed backup. To replace a lost Compose installation safely, provision a separate Compose project ([next to an existing installation](#restoring-next-to-an-existing-installation)) or move the old volumes away, point `MUSICLIB_DATA` at a new empty ext4 directory, and ensure the PostgreSQL volume `db` is new and empty. Confirm `docker compose ps` and the mounts before proceeding; never run `down -v` against the only surviving backup or against a database you need. Mount the completed backup as `/backup` with `MUSICLIB_BACKUP`. Then:
 
 ```sh
 # PostgreSQL only, never the app: its first start would initialize the new destinations.
@@ -131,7 +121,7 @@ A backup made before schema 3 restores the same way: the boot adds the track dur
 
 To restore on a machine that still runs an installation (to test a backup, for example), use a second directory with its own `compose.yaml` and `.env`, such as `~/musiclib-restore` created with the install block without its last line. `compose.yaml` fixes the Compose project name, `name: musiclib`: in a second directory the same name would select the **existing** installation's containers and volumes, so every command there would act on it. Three settings in the new directory's `.env` keep the two apart:
 
-1. **Its own project name.** `COMPOSE_PROJECT_NAME` overrides `name:`; the new project gets its own volumes (`musiclib-restore_pgdata`, `musiclib-restore_musiclib-data`, `musiclib-restore_musiclib-backup`). Check it before any other command:
+1. **Its own project name.** `COMPOSE_PROJECT_NAME` overrides `name:`; the new project gets its own containers (`musiclib-restore`, `musiclib-restore-db`) and volumes (`musiclib-restore_db`, `musiclib-restore_data`, `musiclib-restore_backup`). Check it before any other command:
 
    ```sh
    echo 'COMPOSE_PROJECT_NAME=musiclib-restore' >> .env
@@ -149,7 +139,7 @@ To restore on a machine that still runs an installation (to test a backup, for e
 
    ```sh
    sudo mkdir -p /srv/musiclib-restore/backup
-   sudo cp -a '/var/lib/docker/volumes/musiclib_musiclib-backup/_data/2026-09-26 full' /srv/musiclib-restore/backup/
+   sudo cp -a '/var/lib/docker/volumes/musiclib_backup/_data/2026-09-26 full' /srv/musiclib-restore/backup/
    sudo chown 1000:1000 /srv/musiclib-restore/backup
    echo 'MUSICLIB_BACKUP=/srv/musiclib-restore/backup' >> .env
    ```

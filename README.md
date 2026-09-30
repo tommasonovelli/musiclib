@@ -163,13 +163,13 @@ library/
 | Data | Where | Default |
 |---|---|---|
 | Your source music | the import folder, read-only | `~/musiclib/import` |
-| Catalog: names, edits, work queue | PostgreSQL database | volume `musiclib_pgdata` |
-| Originals: an unchanged copy of every imported file | `originals/` in the data folder | volume `musiclib_musiclib-data` |
-| The generated library | `library/` in the data folder | volume `musiclib_musiclib-data` |
-| Temporary work | `work/` in the data folder | volume `musiclib_musiclib-data` |
-| Backups | the backup folder | volume `musiclib_musiclib-backup` |
+| Catalog: names, edits, work queue | PostgreSQL database | volume `musiclib_db` |
+| Originals: an unchanged copy of every imported file | `originals/` in the data folder | volume `musiclib_data` |
+| The generated library | `library/` in the data folder | volume `musiclib_data` |
+| Temporary work | `work/` in the data folder | volume `musiclib_data` |
+| Backups | the backup folder | volume `musiclib_backup` |
 
-With the default named volumes, the data is inside Docker's storage, readable only with `sudo`: the library is at `/var/lib/docker/volumes/musiclib_musiclib-data/_data/library`. Set `MUSICLIB_DATA` (see [above](#keeping-the-data-in-a-host-folder)) to have it at a path of your choice.
+With the default named volumes, the data is inside Docker's storage, readable only with `sudo`: the library is at `/var/lib/docker/volumes/musiclib_data/_data/library`. Set `MUSICLIB_DATA` (see [above](#keeping-the-data-in-a-host-folder)) to have it at a path of your choice.
 
 **Disk space.** Plan for about **twice the size of the music you import**, one copy for the originals and one for the library, plus room for work in progress and at least 1 GiB free. Each backup needs about the size of the originals again, on the backup disk. MusicLib never deletes an original: trashing an album or deleting a track frees no space.
 
@@ -184,8 +184,8 @@ All settings are in `~/musiclib/.env`. After changing it, apply it with `docker 
 | `MUSICLIB_BIND` | `127.0.0.1` | Host address the web interface listens on. Loopback: this machine only. |
 | `MUSICLIB_PORT` | `8080` | Host port of the web interface. Keep it equal to the port in `PUBLIC_ORIGIN`. |
 | `MUSICLIB_IMPORT` | `./import` | Folder with the music to import, mounted read-only. It must exist. |
-| `MUSICLIB_DATA` | `musiclib-data` (named volume) | Or an absolute path of an empty ext4 folder owned by uid 1000. Set it before the first start. |
-| `MUSICLIB_BACKUP` | `musiclib-backup` (named volume) | Or an absolute path of a folder owned by uid 1000, preferably on another disk. |
+| `MUSICLIB_DATA` | `data` (named volume) | Or an absolute path of an empty ext4 folder owned by uid 1000. Set it before the first start. |
+| `MUSICLIB_BACKUP` | `backup` (named volume) | Or an absolute path of a folder owned by uid 1000, preferably on another disk. |
 | `WORKERS` | empty: the number of CPUs, at most 4 | How many imports and album updates run at once, 1 to 16. |
 | `MUSICLIB_UID`, `MUSICLIB_GID` | `1000` | The user and group MusicLib runs as. Another value needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as folders owned by it. |
 
@@ -258,7 +258,7 @@ Start only the database before the restore, as above: the first start of MusicLi
 
    ```sh
    sudo mkdir -p /srv/musiclib-restore/backup
-   sudo cp -a /var/lib/docker/volumes/musiclib_musiclib-backup/_data/2026-09-29-2130 /srv/musiclib-restore/backup/
+   sudo cp -a /var/lib/docker/volumes/musiclib_backup/_data/2026-09-29-2130 /srv/musiclib-restore/backup/
    sudo chown 1000:1000 /srv/musiclib-restore/backup
    echo 'MUSICLIB_BACKUP=/srv/musiclib-restore/backup' >> .env
    ```

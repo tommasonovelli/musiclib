@@ -154,7 +154,7 @@ Playback, streaming, transcoding of published files, online lookup or music reco
 
 - Read the code you change and the relevant guide in `docs/`. Keep changes focused; update documentation together with any change of behavior or guarantees.
 - Verify with `scripts/check.sh` (whole module for code changes) and repeat new or touched concurrency tests with `scripts/dev.sh go test -race -count=N`. Documentation-only changes need no gate: check links, commands and `git diff --check`.
-- Never touch a running installation: its `musiclib_pgdata`, `musiclib_musiclib-data` and `musiclib_musiclib-backup` volumes hold real data. Use `stop`, never `docker compose down -v`; tests use `postgres-test` and the `testdata` volume only.
+- Never touch a running installation: its `musiclib_db`, `musiclib_data` and `musiclib_backup` volumes hold real data. Use `stop`, never `docker compose down -v`; tests use `postgres-test` and the `testdata` volume only.
 - Never commit `.env`, credentials, personal music, catalog dumps or screenshots of private data.
 - No player references, no speculative features, no scope creep: when unsure, choose the simpler and more conservative option and say so in the commit message or report.
 

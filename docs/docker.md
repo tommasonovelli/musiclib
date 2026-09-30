@@ -196,19 +196,20 @@ docker compose -f compose.dev.yaml stop postgres
 
 **These are the installation's volumes, not throwaway development ones.**
 `compose.yaml` and `compose.dev.yaml` are the same Compose project
-`musiclib`, with the same `postgres` and the same volumes `musiclib_pgdata`,
-`musiclib_musiclib-data` (the originals) and `musiclib_musiclib-backup`. A
+`musiclib`, with the same `postgres` and the same volumes `musiclib_db`,
+`musiclib_data` (the originals) and `musiclib_backup`. A
 running app uses this same `postgres`, so stopping it takes the app's
 database away too. Stop services with `stop`: `down` also removes the installation's `app` and
 `postgres` containers, and `down -v` deletes the library's database,
 originals and backups. The tests never use these volumes: they run on
 `postgres-test`, below.
 
-**postgres**: PostgreSQL 17, volume `musiclib_pgdata`, healthcheck with
-`pg_isready` over TCP. TCP on purpose: the temporary init-time server listens
-only on the socket and must not count as healthy. `fsync`, `full_page_writes`
-and `synchronous_commit` are set to `on` explicitly. initdb runs with
-the image defaults. **No port is published**. The app reaches it on the Compose network.
+**postgres**: PostgreSQL 17, container `musiclib-db`, volume `musiclib_db`,
+healthcheck with `pg_isready` over TCP. TCP on purpose: the temporary
+init-time server listens only on the socket and must not count as healthy.
+`fsync`, `full_page_writes` and `synchronous_commit` are set to `on`
+explicitly. initdb runs with the image defaults. **No port is published**.
+The app reaches it on the Compose network.
 The password is defined once per file, in `x-db-password`:
 `POSTGRES_PASSWORD` from `.env`, or the default `musiclib` when it is unset
 or empty. Better change it before the first `up` (`openssl rand -hex 32`
@@ -239,9 +240,9 @@ knows where PostgreSQL comes from:
   connection. It speaks the protocol without
   TLS, so the URL must keep `sslmode=disable`, as both services set it.
 
-**app**: the server, `musiclibd`. From source, with `COMPOSE_FILE=compose.dev.yaml`
-in `.env` as above (with the published image, the same commands without
-`--build`):
+**app**: the server, `musiclibd`, container `musiclib`. From source, with
+`COMPOSE_FILE=compose.dev.yaml` in `.env` as above (with the published image,
+the same commands without `--build`):
 
 ```sh
 mkdir -p import                                   # or set MUSICLIB_IMPORT; Compose does not create it
@@ -258,7 +259,7 @@ docker compose start app
 
 The environment is `DATABASE_URL` (its password in `PGPASSWORD`),
 `PUBLIC_ORIGIN`, `HTTP_ADDR=:8080` and `WORKERS`. Other settings:
-- `/data` is the named volume `musiclib_musiclib-data`, or an ext4 host path
+- `/data` is the named volume `musiclib_data`, or an ext4 host path
   through `MUSICLIB_DATA`.
 - `/import` is a read-only bind of `MUSICLIB_IMPORT` (default `./import`). It
   must exist; Compose does not create it.
@@ -578,9 +579,9 @@ Set them in `.env` next to `compose.yaml`; `.env.example` lists them.
 |---|---|---|
 | `POSTGRES_PASSWORD` | `musiclib` (better change it) | DB password (`openssl rand -hex 32`), read at initdb time only; empty means the default |
 | `MUSICLIB_UID` / `MUSICLIB_GID` | `1000` | ids of the app process (`user:`); the image and new named volumes are 1000:1000, another uid needs host directories it owns |
-| `MUSICLIB_DATA` | `musiclib-data` | named volume or absolute ext4 path for `/data` |
+| `MUSICLIB_DATA` | `data` | named volume or absolute ext4 path for `/data` |
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |
-| `MUSICLIB_BACKUP` | `musiclib-backup` | external directory (prefer another ext4 disk) or named volume for `/backup` |
+| `MUSICLIB_BACKUP` | `backup` | external directory (prefer another ext4 disk) or named volume for `/backup` |
 | `MUSICLIB_BIND` / `MUSICLIB_PORT` | `127.0.0.1` / `8080` | published address |
 | `PUBLIC_ORIGIN` | `http://127.0.0.1:${MUSICLIB_PORT}` | the only `Host` (and `Origin`) the API accepts |
 | `WORKERS` | empty: `max(1, min(4, CPUs))` | worker pool size, 1..16 |

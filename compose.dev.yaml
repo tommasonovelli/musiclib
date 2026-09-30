@@ -68,15 +68,17 @@ services:
   # -------------------------------------------------------------------------
   postgres:
     <<: *postgres
+    # As in compose.yaml: `musiclib-db`, or the project's name plus `-db`.
+    container_name: ${COMPOSE_PROJECT_NAME:-musiclib}-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: musiclib
       POSTGRES_DB: musiclib
-      # x-db-password above. Read only when the pgdata volume is first
+      # x-db-password above. Read only when the db volume is first
       # initialized.
       POSTGRES_PASSWORD: *db-password
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - db:/var/lib/postgresql/data
 
   # -------------------------------------------------------------------------
   # Throwaway server of the PostgreSQL tests: same image and settings as
@@ -106,6 +108,8 @@ services:
       args:
         MUSICLIB_VERSION: devel
     image: musiclib-app:local
+    # As in compose.yaml: `musiclib`, or the project's name.
+    container_name: ${COMPOSE_PROJECT_NAME:-musiclib}
     init: true
     restart: unless-stopped
     # The image runs as 1000:1000; see compose.yaml.
@@ -131,10 +135,10 @@ services:
     volumes:
       # /data must be local ext4. MUSICLIB_DATA may be a named
       # volume (default) or an absolute host path on ext4 owned by MUSICLIB_UID.
-      - ${MUSICLIB_DATA:-musiclib-data}:/data
+      - ${MUSICLIB_DATA:-data}:/data
       # Backups are not inside /data. Prefer an external ext4 disk mounted
       # through MUSICLIB_BACKUP; the default is a separate named volume.
-      - ${MUSICLIB_BACKUP:-musiclib-backup}:/backup
+      - ${MUSICLIB_BACKUP:-backup}:/backup
       - type: bind
         source: ${MUSICLIB_IMPORT:-./import}
         target: /import
@@ -244,9 +248,9 @@ networks:
     internal: true
 
 volumes:
-  pgdata:
-  musiclib-data:
-  musiclib-backup:
+  db:
+  data:
+  backup:
   # Go build cache (also holds the fuzzing cache), shared by test and dev.
   go-build-cache:
   # Module cache for `dev`; seeded from the image on first use.

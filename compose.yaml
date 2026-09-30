@@ -37,6 +37,10 @@ services:
   # -------------------------------------------------------------------------
   postgres:
     image: postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232
+    # `musiclib-db`: Compose sets COMPOSE_PROJECT_NAME to the project's name,
+    # so another project, such as the restore project in docs/operations.md,
+    # gets its own names.
+    container_name: ${COMPOSE_PROJECT_NAME:-musiclib}-db
     <<: *hardening
     # The entrypoint starts as root, chowns PGDATA and drops to `postgres`
     # with gosu: these are the only capabilities it needs.
@@ -72,16 +76,18 @@ services:
     environment:
       POSTGRES_USER: musiclib
       POSTGRES_DB: musiclib
-      # x-db-password above. Read only when the pgdata volume is first
+      # x-db-password above. Read only when the db volume is first
       # initialized.
       POSTGRES_PASSWORD: *db-password
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - db:/var/lib/postgresql/data
 
   # -------------------------------------------------------------------------
   # The application.
   app:
     image: ghcr.io/tommasonovelli/musiclib:1.0.0
+    # `musiclib`, or the project's name, as for postgres.
+    container_name: ${COMPOSE_PROJECT_NAME:-musiclib}
     init: true
     restart: unless-stopped
     # The image runs as 1000:1000 and a new named volume is created owned by
@@ -109,10 +115,10 @@ services:
     volumes:
       # /data must be local ext4. MUSICLIB_DATA may be a named
       # volume (default) or an absolute host path on ext4 owned by MUSICLIB_UID.
-      - ${MUSICLIB_DATA:-musiclib-data}:/data
+      - ${MUSICLIB_DATA:-data}:/data
       # Backups are not inside /data. Prefer an external ext4 disk mounted
       # through MUSICLIB_BACKUP; the default is a separate named volume.
-      - ${MUSICLIB_BACKUP:-musiclib-backup}:/backup
+      - ${MUSICLIB_BACKUP:-backup}:/backup
       - type: bind
         source: ${MUSICLIB_IMPORT:-./import}
         target: /import
@@ -137,6 +143,6 @@ services:
       start_interval: 1s
 
 volumes:
-  pgdata:
-  musiclib-data:
-  musiclib-backup:
+  db:
+  data:
+  backup:
