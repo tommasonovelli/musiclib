@@ -42,6 +42,33 @@ func TestBackupRestoreRefuseHeldLockBeforeDatabase(t *testing.T) {
 	}
 }
 
+// A destination outside /backup is inside the one-off container, lost when
+// it exits although the backup reports success: the command refuses it with
+// its own code before the volume lock, the database or the destination is
+// touched. Without a database or a /data, any later refusal would log another
+// code.
+func TestBackupRefusesDestinationOutsideBackup(t *testing.T) {
+	noDB := doctorEnv("postgres://invalid:secret@127.0.0.1:1/db")
+	for _, dest := range []string{
+		"/tmp/x", "/", "", "/data/backup", "/backupx", "/backupx/2026",
+		"/backup", "/backup/", "/backup/.", "/backup/..", "/backup/x/",
+		"/backup//x", "/backup/./x", "/backup/../tmp/x", "/backup/x/../../tmp",
+		"backup/x", "./backup/x", "../backup/x",
+	} {
+		var logs syncBuffer
+		got := musiclibd([]string{"backup", "--to", dest}, noDB, &logs)
+		if got != exitUsage || !strings.Contains(logs.String(), `"code":"backup_outside_backup"`) || strings.Contains(logs.String(), "secret") {
+			t.Fatalf("backup --to %q = %d, logged %s", dest, got, &logs)
+		}
+	}
+	// What backup.sh and the documented commands pass, and a nested folder.
+	for _, dest := range []string{"/backup/2026-09-29-2130", "/backup/before-update-2026-09-29-2130", "/backup/2026-09-29 full", "/backup/old/2026-09-29-2130"} {
+		if err := checkBackupDestination(dest); err != nil {
+			t.Fatalf("backup --to %q refused: %v", dest, err)
+		}
+	}
+}
+
 func TestBackupRestoreRefuseUnavailableDatabase(t *testing.T) {
 	p := testPaths(t)
 	noDB := doctorEnv("postgres://invalid:secret@127.0.0.1:1/db")

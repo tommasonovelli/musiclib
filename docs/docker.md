@@ -170,6 +170,7 @@ docker compose -f compose.dev.yaml up -d --build --wait     # returns when the a
 ```
 
 - With `COMPOSE_FILE` in `.env`, plain `docker compose` commands and the maintenance scripts (`scripts/doctor.sh`, `backup.sh`, `rebuild.sh`, `restore.sh`) act on the source build; without it they act on `compose.yaml` and its published image. The development scripts ignore `COMPOSE_FILE`: `check.sh`, `dev.sh` and `fuzz.sh` always use `compose.dev.yaml`.
+- The maintenance scripts act only on containers created in the clone's folder. Before stopping anything they compare the folder that Docker records in the project's `app` and `postgres` containers (label `com.docker.compose.project.working_dir`) with the checkout, as the same directory (`-ef`, so `C:\…` and `/c/…` forms in Git Bash, symlinks and trailing slashes compare correctly). A container created elsewhere (a second checkout or worktree that ran `docker compose up` under the same project name, or an installation in `~/musiclib`) makes them refuse with the commands to run by hand. Create the app and database of a source build from the checkout's root, as above.
 - The app is built as the image `musiclib-app:local`, version `devel`. The tag is fixed: a second clone that builds from source retags the first clone's image.
 - `import` must exist (`mkdir -p import`, or set `MUSICLIB_IMPORT`): Compose does not create it.
 

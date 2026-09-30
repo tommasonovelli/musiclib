@@ -643,7 +643,7 @@ What to know:
 
 - The backup is a new folder under `/backup`, the backup folder (`MUSICLIB_BACKUP`). It is a full copy, and every original is verified while it is copied.
 - It **never overwrites**: a name that already exists is refused (`backup_exists`).
-- **Always write under `/backup/`**, the backup folder. The destination must be a new folder name in an existing folder outside `/data`. Any other path, such as `/tmp/…`, is inside the one-off container and disappears with it.
+- **The destination is always a new folder under `/backup/`**, the backup folder, written as a plain absolute path such as `/backup/2026-09-29-2130` (a folder inside an existing subfolder, such as `/backup/old/2026-09-29-2130`, works too). Any other path, such as `/tmp/…`, would be inside the one-off container and lost with it, so `backup` refuses it before doing anything (`backup_outside_backup`, exit 2). So does `/backup` itself, and a path with `.` or `..`, a trailing slash or a double slash.
 - The backup is written under a temporary name, `.musiclib-backup-….tmp`, and renamed to its final name only when it is complete. A backup that fails after it started writing leaves that temporary folder: inspect it and delete it yourself; MusicLib never deletes it. Never use a temporary folder as a backup.
 - A backup folder that MusicLib cannot write (for example a host folder owned by another uid) is refused (`fs_permission`, exit 2) before anything is written.
 - `MUSICLIB_BACKUP` must not be inside `MUSICLIB_DATA` on the host either. Backup and restore compare the filesystem and folder behind both mounts and refuse a nested destination (`backup_destination`, exit 2). The check sees bind mounts of one host filesystem, but not through a network share or a second filesystem mounted over the data folder, so keep the two host paths plainly separate.
@@ -872,15 +872,28 @@ docker compose start app
 
 The repository has four wrapper scripts in `scripts/`. Each one stops the app, runs one offline command, and starts the app again when that is safe. They are **not part of a release**: they exist only in a clone of the repository.
 
-**Where they act.** A script runs `docker compose` in the clone's folder, on the Compose file and `.env` there: `compose.yaml` and its published image, or the file named by `COMPOSE_FILE` (from the environment or from `.env`), such as `compose.dev.yaml` for a source build, so that the offline command runs the same image as the server. **Use them only when your installation runs from that clone's folder.** A clone next to an installation in `~/musiclib` names the same Compose project, `musiclib`, but not its `.env`: the scripts would stop your app and run the command with other settings (another data folder, the default database password). For an installation in `~/musiclib`, run the commands by hand as shown above.
+**Where they act.** A script runs `docker compose` in the clone's folder, on the Compose file and `.env` there: `compose.yaml` and its published image, or the file named by `COMPOSE_FILE` (from the environment or from `.env`), such as `compose.dev.yaml` for a source build, so that the offline command runs the same image as the server. **Use them only when your installation runs from that clone's folder.** For an installation in `~/musiclib`, run the commands by hand in `~/musiclib`, as shown above.
+
+A clone next to an installation in `~/musiclib` names the same Compose project, `musiclib`, but not its `.env`: a script run there would stop your app and run the command with other settings (another data folder, the default database password). So, before stopping anything, every script checks the folder that Docker records in each container of the project's `app` and `postgres` (the label `com.docker.compose.project.working_dir`). If a container was created in another folder, or in a folder this shell cannot see, the script stops, exits 1, and prints the commands to run by hand instead, for example:
+
+```text
+doctor.sh: error: the Compose project of this clone (/home/you/src/vibrance-musiclib) already has containers created from /home/you/musiclib, which has its own compose.yaml and .env (a folder this shell cannot see counts as another one). Nothing was stopped. Run the commands by hand in the installation's folder (docs/operations.md, "Maintenance"):
+  cd /home/you/musiclib
+  docker compose stop app
+  docker compose run --rm --no-deps app doctor --deep
+  docker compose start app    # after exit 0 or 1
+```
+
+When the project has no `app` or `postgres` container yet, the check passes.
 
 What every script does, in order:
 
 1. Checks that `docker` and `docker compose` work and that the Docker daemon answers.
-2. Checks its arguments; a wrong use prints `usage: …` and exits 1 without touching anything.
-3. Notes whether the app is running, then stops it (`stopping app (PostgreSQL remains up)`); PostgreSQL keeps running.
-4. Runs the offline command (`running offline doctor`, for example) with `docker compose run --rm --no-deps app …`.
-5. Starts the app again (`starting app again`) only if it was running before and the command exited 0, or, for doctor only, 1 (findings). Otherwise it prints `offline command exited N; app remains stopped; inspect the logs before starting it` and leaves the app stopped.
+2. Checks its arguments; a wrong use prints `usage: …` (or, for `rebuild.sh`, `STORE_ID must be …`) and exits 1 without touching anything.
+3. Checks that the project's containers were created in the clone's folder, as above; otherwise it exits 1 without touching anything.
+4. Notes whether the app is running, then stops it (`stopping app (PostgreSQL remains up)`); PostgreSQL keeps running.
+5. Runs the offline command (`running offline doctor`, for example) with `docker compose run --rm --no-deps app …`.
+6. Starts the app again (`starting app again`) only if it was running before and the command exited 0, or, for doctor only, 1 (findings). Otherwise it prints `offline command exited N; app remains stopped; inspect the logs before starting it` and leaves the app stopped.
 
 The script exits with the command's exit code (0, 1 or 2, as above).
 
@@ -892,7 +905,7 @@ The script exits with the command's exit code (0, 1 or 2, as above).
 | `scripts/restore.sh` | `scripts/restore.sh BACKUP_NAME` | `restore --from /backup/BACKUP_NAME` | `scripts/restore.sh 2026-09-29-2130` |
 
 - `doctor.sh` takes no argument or exactly `--deep`.
-- `rebuild.sh` takes exactly one non-empty argument, the store id: read it first with `docker compose run --rm --no-deps --entrypoint cat app /data/.musiclib-store`.
+- `rebuild.sh` takes exactly one argument, the store id: read it first with `docker compose run --rm --no-deps --entrypoint cat app /data/.musiclib-store`, and pass the UUID after `store_id=` exactly as printed. Anything that is not a lowercase UUID prints `rebuild.sh: error: STORE_ID must be the UUID after store_id= in /data/.musiclib-store, exactly as printed, in lowercase: nothing was stopped` and exits 1 before the app is stopped.
 - `backup.sh` and `restore.sh` take exactly one backup name: a single folder name under `/backup`, not `.` or `..`, with no `/`. Quote a name with spaces (`scripts/backup.sh '2026-09-29 full'`).
 - `restore.sh` is for a new, empty installation where only PostgreSQL runs (`docker compose up -d --wait postgres` first). The app was not running, so the script does not start it: run `docker compose up -d --wait` after exit 0.
 
@@ -990,7 +1003,8 @@ Each code appears in the command's log line, with an `advice` field for failures
 | `rebuild_store_id` (exit 2) | the store id does not match the marker and the database | pass the exact UUID of `/data/.musiclib-store`; nothing was deleted |
 | `rebuild_delete`, `rebuild_unsafe_tree` (exit 1) | the rebuild could not delete `library/` or `work/` (permissions, a mount or a non-folder entry there) | fix the cause named in the log, then run the same rebuild again |
 | `backup_exists` (exit 2) | a backup with that name exists | choose another name; backups are never overwritten |
-| `backup_destination` (exit 2) | the destination is invalid: not under an existing folder, inside `/data`, through a symbolic link, or `MUSICLIB_BACKUP` is inside the `MUSICLIB_DATA` host folder | use `/backup/NAME`, and a `MUSICLIB_BACKUP` outside the data folder |
+| `backup_outside_backup` (exit 2) | the destination is not a new folder under `/backup`: another path such as `/tmp/…`, which would be lost with the one-off container, `/backup` itself, or a path with `.`, `..`, a trailing slash or a double slash; nothing was written | use `/backup/NAME`, such as `/backup/2026-09-29-2130` |
+| `backup_destination` (exit 2) | the destination is invalid: not under an existing folder, through a symbolic link, or `MUSICLIB_BACKUP` is inside the `MUSICLIB_DATA` host folder | use `/backup/NAME`, and a `MUSICLIB_BACKUP` outside the data folder |
 | `fs_permission`, `fs_read_only` (backup or restore, exit 2) | the backup folder cannot be written (owned by another uid, mode 555, or read-only) | `sudo chown 1000:1000` the `MUSICLIB_BACKUP` host folder, or mount a writable one |
 | `backup_corrupt_blob`, `backup_blob_size`, `backup_blob_missing`, `backup_unsafe_original` (exit 1) | an original is damaged, missing or unexpected | run `doctor --deep`, recover the original from an older backup, and delete the leftover `.musiclib-backup-*.tmp` |
 | `backup_dump_failed` (exit 1) | `pg_dump` failed; its redacted error is in the message | fix the cause, delete the leftover temporary folder, retry |

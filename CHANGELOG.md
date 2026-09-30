@@ -28,10 +28,14 @@ Then take the new `compose.yaml`, which passes it to MusicLib, and update as usu
 - A thin line separates the sidebar from the page on wide screens, in both themes.
 - With the sidebar expanded, the buttons at its foot show their names next to their icons, like the entries above them: **Sign out**, the theme switch (**Theme: System**, **Light** or **Dark**) and **Collapse sidebar**. Collapsed, they are icons with a tooltip, as before.
 - When MusicLib cannot read or write its data folder, the error at startup (`volume_permission`) names the user and group it runs as and the `chown` command that fixes a host folder.
-- The documentation is reorganized: `docs/operations.md` is one guide, from installation to troubleshooting and the API, for whoever runs MusicLib; `docs/docker.md` is for developers only; the README is a short introduction that links into the guide.
+- The documentation is reorganized: `docs/operations.md` is one guide, from installation to troubleshooting and the API, for whoever runs MusicLib; `docs/docker.md` is for developers only.
+- The README guides the installation step by step, without opening another file: checking the machine, the optional data folder, the install block, signing in, the settings most people change and how to apply them, the first import and where the library is; then the everyday commands, backups and updates, with links into the guide.
+- The maintenance scripts (`scripts/doctor.sh`, `rebuild.sh`, `backup.sh`, `restore.sh`) refuse, before stopping anything, when the Compose project's `app` or `postgres` container was created in another folder than the clone's, such as an installation in `~/musiclib`, and print the commands to run by hand there. They used to stop that installation's app and run the command with the clone's settings.
 
 ### Fixed
 
+- `backup --to` refuses a destination that is not a new folder under `/backup` (`backup_outside_backup`, exit 2) before doing anything. A path such as `/tmp/x` used to be written inside the one-off container and lost when it exited, although the backup reported success.
+- `scripts/rebuild.sh` checks the store id before it stops the app: a mistyped id no longer leaves the app stopped.
 - Scrolling the Library no longer stutters when the head compacts: the head keeps a fixed height, so the album grid under it no longer shifts by a fraction of a pixel on every frame of the transition and every cover is no longer repainted.
 
 ## [1.0.0] - 2026-09-29

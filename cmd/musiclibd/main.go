@@ -86,6 +86,10 @@ func musiclibd(args []string, getenv func(string) string, stderr io.Writer) int 
 	case len(args) == 2 && args[0] == "doctor" && args[1] == "--deep":
 		return runDoctor(getenv, defaultPaths, true, os.Stdout, log)
 	case len(args) == 3 && args[0] == "backup" && args[1] == "--to":
+		if err := checkBackupDestination(args[2]); err != nil {
+			logFatal(log, err)
+			return exitUsage
+		}
 		return runBackup(getenv, defaultPaths, args[2], os.Stdout, log)
 	case len(args) == 3 && args[0] == "restore" && args[1] == "--from":
 		return runRestore(getenv, defaultPaths, args[2], os.Stdout, log)
