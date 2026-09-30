@@ -23,6 +23,7 @@ Then take the new `compose.yaml`, which passes it to MusicLib, and update as usu
 ### Changed
 
 - The page background of the dark theme is darker (`#0f0f11`, was `#1c1c1e`), between the black sidebar and the old grey.
+- A thin line separates the sidebar from the page on wide screens, in both themes.
 
 ### Fixed
 
