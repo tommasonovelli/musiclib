@@ -15,15 +15,16 @@ Then take the new `compose.yaml`, which passes it to MusicLib, and update as usu
 
 ### Added
 
-- **Password sign-in**: one password, `MUSICLIB_PASSWORD` in `.env` (at least 12 characters), protects the web interface and the API, with a **Sign out** button at the foot of the sidebar. A session lasts 30 days and ends when MusicLib restarts. The install block generates the password; the offline commands (`doctor`, `backup`, `restore`, `rebuild`) don't need it. Scripts sign in with `POST /login`; without a session the API answers `401 login_required`. Over plain HTTP the password crosses the network in clear: from other devices, use a network you trust, or HTTPS.
+- **Password sign-in**: one password, `MUSICLIB_PASSWORD` in `.env` (at least 12 characters), protects the web interface and the API, with a **Sign out** button at the foot of the sidebar. The sign-in page shows the MusicLib logo above the form, on the sidebar's violet glow. A session lasts 30 days and ends when MusicLib restarts. The install block generates the password; the offline commands (`doctor`, `backup`, `restore`, `rebuild`) don't need it. Scripts sign in with `POST /login`; without a session the API answers `401 login_required`. Over plain HTTP the password crosses the network in clear: from other devices, use a network you trust, or HTTPS.
 - **Theme switch**: a button at the foot of the sidebar cycles between the system's theme, light and dark. The choice is remembered by the browser.
 - **A violet glow with a light grain** in the lower part of the sidebar, fading slowly upward, in both themes. The top of the sidebar stays plain.
 - **The album page takes the colours of its cover**: the album's head lies on its own cover, blurred into a field of its colours with a light grain, fading into the page before the tracks. Only albums with a cover glow; a new cover changes it at once.
 
 ### Changed
 
-- The page background of the dark theme is darker (`#0f0f11`, was `#1c1c1e`), between the black sidebar and the old grey.
+- The sidebar and the page share one background: white in the light theme (the sidebar was light grey) and black in the dark theme (the page was dark grey, `#1c1c1e`).
 - A thin line separates the sidebar from the page on wide screens, in both themes.
+- With the sidebar expanded, the buttons at its foot show their names next to their icons, like the entries above them: **Sign out**, the theme switch (**Theme: System**, **Light** or **Dark**) and **Collapse sidebar**. Collapsed, they are icons with a tooltip, as before.
 
 ### Fixed
 

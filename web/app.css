@@ -31,22 +31,23 @@
 :root {
   color-scheme: light dark;
 
-  --paper: light-dark(#fff, #0f0f11);
-  --canvas: light-dark(#f5f5f7, #000);
+  /* One background for the sidebar and the page, white or black; the
+     sidebar's hairline is the only line between them. */
+  --paper: light-dark(#fff, #000);
   --ink: light-dark(#1d1d1f, #f5f5f7);
   --graphite: light-dark(#6e6e73, #98989d);
   --hairline: light-dark(#d2d2d7, #38383a);
-  /* Light oklch(0.50 0.21 288): 6.6:1 on paper, 6.1:1 on canvas; dark
-     oklch(0.74 0.14 288): 8.0:1 on paper, 8.8:1 on canvas. */
+  /* Light oklch(0.50 0.21 288): 6.6:1 on paper; dark oklch(0.74 0.14 288):
+     8.8:1 on paper. */
   --accent: light-dark(#643fd1, #a79bfe);
   --on-accent: light-dark(#fff, #1d1d1f); /* dark 7.0:1; white on #a79bfe is 2.4:1 */
   --fill: color-mix(in srgb, var(--ink) 6%, var(--paper)); /* quiet controls */
-  --fill-strong: color-mix(in srgb, var(--ink) 10%, var(--canvas));
+  --fill-strong: color-mix(in srgb, var(--ink) 10%, var(--paper));
   --ok: light-dark(#248a3d, #30d158);
   --busy: light-dark(#c93400, #ff9f0a);
   --error: light-dark(#d70015, #ff6961);
   /* The glow at the foot of the sidebar: the Violet's hue with a bluer and
-     a pinker neighbour, deep on black, pale on the light canvas. */
+     a pinker neighbour, deep on black, pale on white. */
   --glow-1: light-dark(oklch(.76 .15 288), oklch(.40 .17 288));
   --glow-2: light-dark(oklch(.80 .12 328), oklch(.38 .14 322));
   --glow-3: light-dark(oklch(.80 .11 278), oklch(.30 .13 280));
@@ -89,13 +90,13 @@
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
-html { background: var(--canvas); }
+html { background: var(--paper); }
 body {
   margin: 0;
   font: var(--type-body);
   font-optical-sizing: auto;
   color: var(--ink);
-  background: var(--canvas);
+  background: var(--paper);
   -webkit-text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
 }
@@ -126,8 +127,9 @@ main:focus { outline: none; }
 /* 4. Shell: the sidebar and the page head. Every sidebar row is a 3rem
    icon cell and a label, so collapsing to the icons (sidebar.js, N-272)
    moves no icon. The lockup heads it, the symbol in the icon column and
-   the word on the labels' edge; the theme and collapse buttons sit at its
-   foot, in the icon column, so they stay under the pointer (N-311). */
+   the word on the labels' edge. The sign-out, theme and collapse buttons
+   are rows at its foot, their icons in the icon column, so they stay under
+   the pointer when the sidebar collapses. */
 
 .app { display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 100vh; }
 
@@ -136,16 +138,19 @@ main:focus { outline: none; }
   display: flex; flex-direction: column; gap: var(--s5);
   width: var(--sidebar); height: 100vh; padding: var(--s4) calc(var(--s3) - 1px) var(--s4) var(--s3);
   border-right: 1px solid var(--hairline); /* inside the width; the padding keeps the 3rem column */
-  background: var(--canvas); transition: width var(--slow) var(--ease);
+  background: var(--paper); transition: width var(--slow) var(--ease);
 }
-/* The lower part glows: three soft lights and a grain behind the theme
-   and collapse buttons, fading slowly (an eased mask, no visible edge)
-   into the plain canvas above mid-height. The lights are sized in rem
+/* The lower part glows: three soft lights and a grain behind the buttons
+   at its foot, fading slowly (an eased mask, no visible edge) into the
+   plain background above mid-height. The lights are sized in rem
    across and centred on the icon column, so collapsing the sidebar only
    clips them: the glow keeps its shape and its heart stays under the icons.
    The grain (grain.svg, a file: the CSP forbids data: images) textures
-   the colour and hides banding; soft-light leaves the canvas untouched. */
-.sidebar::before, .sidebar::after {
+   the colour and hides banding; soft-light leaves plain white and black
+   untouched. It blends onto the element's own background, so the sidebar
+   and the sign-in page each paint --paper and are a stacking context:
+   over a transparent group the grain would be grey speckle. */
+.sidebar::before, .sidebar::after, .login::before, .login::after {
   content: ""; position: absolute; inset: auto 0 0; z-index: -1; height: 68%;
   pointer-events: none;
   mask: linear-gradient(to top, #000, rgb(0 0 0 / .8) 25%, rgb(0 0 0 / .5) 50%, rgb(0 0 0 / .22) 72%, rgb(0 0 0 / .06) 88%, transparent);
@@ -156,7 +161,7 @@ main:focus { outline: none; }
     radial-gradient(12rem 35% at 14rem 106% in oklab, var(--glow-2), transparent),
     radial-gradient(24rem 95% at 6rem 100% in oklab, var(--glow-3), transparent);
 }
-.sidebar::after { background: url(grain.svg); mix-blend-mode: soft-light; opacity: .3; }
+.sidebar::after, .login::after { background: url(grain.svg); mix-blend-mode: soft-light; opacity: .3; }
 .sidebar-foot { display: grid; gap: 2px; margin-top: auto; }
 .sidebar-toggle {
   position: relative; display: grid; place-items: center; flex: none;
@@ -178,37 +183,46 @@ main:focus { outline: none; }
 }
 .icon { justify-self: center; color: var(--graphite); }
 .nav a:hover, .fix-filter:hover { text-decoration: none; background: var(--fill-strong); color: var(--ink); }
-.sidebar-toggle:hover { background: color-mix(in srgb, var(--ink) 12%, transparent); }
+/* The nav's hover, see-through so it tints the glow at the foot. */
+.sidebar-toggle:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); }
 .nav a[aria-current="page"], .fix-filter[aria-current="page"] { background: var(--fill-strong); font-weight: 650; }
 :is(:hover, [aria-current="page"]) > .icon { color: var(--ink); }
 .fix-filter:not([data-count="0"]) > .icon { color: var(--error); }
 .fix-filter .count { color: var(--graphite); font: var(--type-note); }
 
-/* Collapsed: the icons only. The count becomes a badge on its icon and the
-   activity dot moves onto its icon too. */
+/* Expanded, the foot's buttons show their label beside the icon, like the
+   nav. Collapsed: the icons only. The count becomes a badge on its icon and
+   the activity dot moves onto its icon too. */
 @media (width > 52rem) {
+  .sidebar-toggle { grid-template-columns: 3rem minmax(0, 1fr); justify-items: start; width: auto; padding-right: var(--s3); font-weight: 500; white-space: nowrap; overflow: hidden; }
   [data-sidebar="collapsed"] { --sidebar: 4.5rem; }
   [data-sidebar="collapsed"] .brand-word { visibility: hidden; }
-  [data-sidebar="collapsed"] :is(.nav a, .fix-filter) { padding-right: 0; overflow: visible; }
+  [data-sidebar="collapsed"] :is(.nav a, .fix-filter, .sidebar-toggle) { padding-right: 0; overflow: visible; }
   [data-sidebar="collapsed"] .fix-filter .count {
     position: absolute; left: 1.625rem; top: 2px; min-width: 1rem; padding: 0 4px; border-radius: var(--r-pill);
     background: var(--error); color: var(--paper); font: var(--type-caption); line-height: 1rem; text-align: center;
-    outline: 2px solid var(--canvas);
+    outline: 2px solid var(--paper);
   }
   [data-sidebar="collapsed"] .fix-filter[data-count="0"] .count { display: none; }
-  [data-sidebar="collapsed"] #nav-active { position: absolute; left: 1.875rem; top: 6px; outline: 2px solid var(--canvas); }
+  [data-sidebar="collapsed"] #nav-active { position: absolute; left: 1.875rem; top: 6px; outline: 2px solid var(--paper); }
   /* The label stays the accessible name; on hover and focus it is shown
-     as a tooltip beside the icon. The toggle's label always is. */
-  :is(.sidebar-toggle, [data-sidebar="collapsed"] .sidebar a) .nav-label {
+     as a tooltip beside the icon. */
+  [data-sidebar="collapsed"] :is(.sidebar a, .sidebar-toggle) .nav-label {
     position: absolute; left: calc(100% + var(--s3)); top: 50%; translate: 0 -50%;
     padding: var(--s1) var(--s2); border-radius: var(--r-control);
     background: var(--ink); color: var(--paper); font: var(--type-note); font-weight: 500;
     white-space: nowrap; pointer-events: none; clip-path: inset(50%);
   }
-  :is(.sidebar-toggle, [data-sidebar="collapsed"] .sidebar a):is(:hover, :focus-visible) .nav-label { clip-path: none; }
+  [data-sidebar="collapsed"] :is(.sidebar a, .sidebar-toggle):is(:hover, :focus-visible) .nav-label { clip-path: none; }
 }
 
 .page { --gutter: var(--s6); min-width: 0; padding: 0 var(--gutter) var(--s8); background: var(--paper); }
+/* Beside the sidebar's hairline the page reaches 1px under it, its padding
+   giving the pixel back. An album's cover field is painted by the page, so
+   at a fractional display scale, where the two edges round to device
+   pixels on their own, no sliver of plain background shows between the
+   line and the field. */
+@media (width > 52rem) { .page { margin-left: -1px; padding-left: calc(var(--gutter) + 1px); } }
 .head-bar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   gap: var(--s3) var(--s5); padding: var(--s6) 0 var(--s5);
@@ -324,7 +338,7 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 .art {
   position: relative; display: grid; place-items: center;
   aspect-ratio: 1; margin-bottom: var(--s2);
-  border-radius: var(--r-cover); background: var(--canvas); box-shadow: var(--shadow-cover);
+  border-radius: var(--r-cover); background: var(--fill); box-shadow: var(--shadow-cover);
   container-type: inline-size;
 }
 .art img { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; transition: filter var(--quick) var(--ease); }
@@ -398,7 +412,8 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 /* 8. Album (N-256): fields read as text until used. */
 
 .band, .files li, .section-head { display: flex; align-items: center; justify-content: space-between; }
-.band { margin-top: var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-panel); background: var(--canvas); }
+.band { margin-top: var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-panel); background: var(--fill); }
+.band .btn { background: var(--paper); }
 /* An album's head lies on its own cover (app.js sets --cover once the
    image is decoded): the cover, stretched across the page and blurred to
    a colour field, so every colour sits where it is in the image, fading
@@ -529,7 +544,7 @@ a.folder-row:hover { background: var(--fill); text-decoration: none; }
 .row-link { display: flex; align-items: center; gap: var(--s3); min-width: 0; color: var(--ink); }
 a.row-link:hover { text-decoration: none; }
 a.row-link:hover .row-title { text-decoration: underline; }
-.thumb { display: grid; flex: none; place-items: center; width: 40px; height: 40px; overflow: hidden; border-radius: var(--r-cover); background: var(--canvas); }
+.thumb { display: grid; flex: none; place-items: center; width: 40px; height: 40px; overflow: hidden; border-radius: var(--r-cover); background: var(--fill); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .thumb-none { background: var(--graphite); color: var(--paper); font: 600 .875rem/1 var(--family); letter-spacing: -.02em; }
 .row-text { display: grid; min-width: 0; }
@@ -600,7 +615,7 @@ a.row-link:hover .row-title { text-decoration: underline; }
   .nav { flex: 1; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--s1); }
   .nav a { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 2px; padding: 6px var(--s1); font: var(--type-caption); }
   .nav a[aria-current="page"] { font-weight: 650; }
-  #nav-active { position: absolute; left: calc(50% + 7px); top: 6px; outline: 2px solid var(--canvas); }
+  #nav-active { position: absolute; left: calc(50% + 7px); top: 6px; outline: 2px solid var(--paper); }
   .fix-filter { grid-template-columns: auto auto; gap: var(--s1); padding-inline: var(--s2); }
   .fix-filter .nav-label { position: absolute; clip-path: inset(50%); }
   .fix-filter .count { color: var(--ink); }
@@ -632,12 +647,25 @@ a.row-link:hover .row-title { text-decoration: underline; }
   .panel-body { corner-shape: squircle; border-radius: calc(var(--r-panel) * 1.6); }
 }
 
-/* 12. Sign in: the form alone on the page. In the sidebar's foot the
-   sign-out form is only its button, which works without JavaScript. */
+/* 12. Sign in: the sidebar's lockup, larger, over a solid card with the
+   form, and the sidebar's glow rising from the foot of the window behind
+   them (its mask and grain). No text sits on the glow. In the
+   sidebar's foot the sign-out form is only its button, which works
+   without JavaScript. */
 
-.login { display: grid; place-items: center; min-height: 100dvh; padding: var(--s5); background: var(--paper); }
-.login-form { display: grid; gap: var(--s3); width: min(20rem, 100%); }
-.login-form .brand-sun { justify-self: center; }
+.login {
+  position: relative; isolation: isolate;
+  display: grid; grid-template-columns: min(22rem, 100%); place-content: center; gap: var(--s6);
+  min-height: 100dvh; padding: var(--s5) var(--s4); background: var(--paper);
+}
+.login::before {
+  background:
+    radial-gradient(50% 60% at 50% 100% in oklab, var(--glow-1), transparent),
+    radial-gradient(45% 55% at 88% 106% in oklab, var(--glow-2), transparent),
+    radial-gradient(90% 95% at 20% 100% in oklab, var(--glow-3), transparent);
+}
+.login-brand { display: flex; align-items: center; justify-self: center; gap: var(--s4); color: var(--ink); }
+.login-form { display: grid; gap: var(--s3); padding: var(--s6); border: 1px solid var(--hairline); border-radius: var(--r-panel); background: var(--paper); }
 .login-title { margin-bottom: var(--s2); text-align: center; font: var(--type-title); }
 .login-form .notice { margin: 0; }
 .sidebar-foot form { display: contents; }

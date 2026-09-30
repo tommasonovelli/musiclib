@@ -1,4 +1,5 @@
-{{define "body"}}<form class="login-form" method="post" action="/login"><svg class="brand-sun" width="48" height="48" aria-hidden="true"><use href="#brand-sun"/></svg><h1 class="login-title">Sign in to MusicLib</h1>
+{{define "body"}}<div class="login-brand"><svg class="brand-sun" width="44" height="44" aria-hidden="true"><use href="#brand-sun"/></svg><svg width="128.54" height="25.83" aria-hidden="true"><use href="#brand-word"/></svg><span class="sr-only">MusicLib</span></div>
+<form class="login-form" method="post" action="/login"><h1 class="login-title">Sign in</h1>
 {{if .Login.Failed}}<p class="notice" role="alert">Wrong password. Try again.</p>{{end}}
 <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
 <button class="btn btn-primary" type="submit">Sign in</button></form>{{end}}
