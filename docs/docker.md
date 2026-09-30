@@ -166,8 +166,10 @@ network:
   (`MUSICLIB_VERSION=devel`), plus `test`, `dev` and `postgres-test` behind
   the profile `tools`.
 
-Both files need no `.env`: the database password defaults to `musiclib`
-(change it before the first start, see `postgres` below). Keep the `postgres`
+Both files load without a `.env`: the database password defaults to `musiclib`
+(change it before the first start, see `postgres` below). Only the app needs
+one setting to start, `MUSICLIB_PASSWORD`, the sign-in password (empty by
+default, so `docker compose` itself never fails without it). Keep the `postgres`
 and `app` services of the two files in step: they differ only in the app's
 `image`/`build`.
 
@@ -175,7 +177,7 @@ To run the app from source, use `compose.dev.yaml`, either with `-f` on every
 command or once for all in `.env`:
 
 ```sh
-cp .env.example .env                       # then set POSTGRES_PASSWORD (openssl rand -hex 32)
+cp .env.example .env                       # then set POSTGRES_PASSWORD (openssl rand -hex 32) and MUSICLIB_PASSWORD (openssl rand -base64 24)
 echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
 docker compose up -d --build --wait        # = docker compose -f compose.dev.yaml up -d --build --wait
 ```
@@ -249,7 +251,8 @@ mkdir -p import                                   # or set MUSICLIB_IMPORT; Comp
 docker compose up -d --build --wait               # returns when app is healthy
 curl -s http://127.0.0.1:8080/health/ready        # {"status":"ready"}
 # Open http://127.0.0.1:8080/ in your browser (Library; Album editor,
-# Import and Activity navigation). Use the exact PUBLIC_ORIGIN host.
+# Import and Activity navigation). Use the exact PUBLIC_ORIGIN host, and
+# sign in with the password in .env: grep MUSICLIB_PASSWORD .env
 docker compose logs -f app                        # JSON lines
 docker compose stop app
 # The app must already be stopped; never run maintenance alongside it.
@@ -258,7 +261,7 @@ docker compose start app
 ```
 
 The environment is `DATABASE_URL` (its password in `PGPASSWORD`),
-`PUBLIC_ORIGIN`, `HTTP_ADDR=:8080` and `WORKERS`. Other settings:
+`PUBLIC_ORIGIN`, `HTTP_ADDR=:8080`, `WORKERS` and `MUSICLIB_PASSWORD`. Other settings:
 - `/data` is the named volume `musiclib_data`, or an ext4 host path
   through `MUSICLIB_DATA`.
 - `/import` is a read-only bind of `MUSICLIB_IMPORT` (default `./import`). It
@@ -415,8 +418,15 @@ browser boundary, for any client:
   sends the right Host. `http://localhost:8080` does not. Neither does a
   LAN address the origin does not name.
 - `Origin`, if sent, must be exactly `PUBLIC_ORIGIN` (403).
+- A session: sign in with `POST /login`, a form with the one field
+  `password` (303 and the cookie `musiclib_session`; a wrong password is
+  401 after about one second, and attempts are checked one at a time).
+  Without a live session every `/api` request is 401 `login_required` and
+  every page redirects (303) to `/login`. A session lasts 30 days and ends
+  at a restart or with `POST /logout`.
 - Every request other than GET and HEAD needs `X-Musiclib-Request: 1`
-  (403 `request_header_required`).
+  (403 `request_header_required`), except the two plain HTML forms `POST
+  /login` and `POST /logout`, which keep the Host and Origin checks.
 - A change of an existing album or artist needs `If-Match` with the
   `ETag` just read: 428 without it, 412 if someone changed it in
   between (reload and redo).
@@ -444,11 +454,16 @@ in milliseconds, or `null` while unknown: read-only, not a field of
 the PUT body.
 
 ```sh
-curl -s http://127.0.0.1:8080/api/artists
-curl -si http://127.0.0.1:8080/api/albums/<id> | grep -i '^etag'     # "album:<id>:<revision>"
-curl -s -X PUT http://127.0.0.1:8080/api/artists/<id>   -H 'X-Musiclib-Request: 1' -H 'Content-Type: application/json'   -H 'If-Match: "artist:<id>:<revision>"' -d '{"name":"Miles Dewey Davis"}'
-curl -s -X POST http://127.0.0.1:8080/api/albums/<id>/render   -H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"'
-curl -s http://127.0.0.1:8080/api/albums/<id>/status
+# Sign in once: the session cookie goes to a file readable only by you, and
+# the password reaches curl through stdin, never the command line.
+J="$(mktemp)"
+sed -n 's/^MUSICLIB_PASSWORD=//p' .env | tr -d '\n' |
+  curl -s -o /dev/null -w '%{http_code}\n' -c "$J" --data-urlencode password@- http://127.0.0.1:8080/login   # 303
+curl -s -b "$J" http://127.0.0.1:8080/api/artists
+curl -si -b "$J" http://127.0.0.1:8080/api/albums/<id> | grep -i '^etag'     # "album:<id>:<revision>"
+curl -s -b "$J" -X PUT http://127.0.0.1:8080/api/artists/<id>   -H 'X-Musiclib-Request: 1' -H 'Content-Type: application/json'   -H 'If-Match: "artist:<id>:<revision>"' -d '{"name":"Miles Dewey Davis"}'
+curl -s -b "$J" -X POST http://127.0.0.1:8080/api/albums/<id>/render   -H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"'
+curl -s -b "$J" http://127.0.0.1:8080/api/albums/<id>/status
 ```
 
 The album editor's files. An upload's
@@ -465,14 +480,14 @@ path:
 
 ```sh
 H='-H X-Musiclib-Request:1 -H If-Match:"album:<id>:<revision>"'
-curl -s -X PUT  $H -H 'Content-Type: application/octet-stream' --data-binary @front.jpg  http://127.0.0.1:8080/api/albums/<id>/cover
-curl -s -X PUT  $H -H 'Content-Type: application/json' -d '{"attachment_id":"<attachment>"}' http://127.0.0.1:8080/api/albums/<id>/cover
-curl -s -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/cover
-curl -s -X POST $H -H 'Content-Type: application/octet-stream' --data-binary @booklet.pdf 'http://127.0.0.1:8080/api/albums/<id>/attachments?path=Scans%2FBooklet.pdf'
-curl -s -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/attachments/<attachment>
-curl -s -X PUT  $H -H 'Content-Type: application/octet-stream' --data-binary @01.lrc http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/lyrics
-curl -s -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/tracks/<track>
-curl -sOJ http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/original     # also .../lyrics, .../cover, .../attachments/<attachment>/content
+curl -s -b "$J" -X PUT  $H -H 'Content-Type: application/octet-stream' --data-binary @front.jpg  http://127.0.0.1:8080/api/albums/<id>/cover
+curl -s -b "$J" -X PUT  $H -H 'Content-Type: application/json' -d '{"attachment_id":"<attachment>"}' http://127.0.0.1:8080/api/albums/<id>/cover
+curl -s -b "$J" -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/cover
+curl -s -b "$J" -X POST $H -H 'Content-Type: application/octet-stream' --data-binary @booklet.pdf 'http://127.0.0.1:8080/api/albums/<id>/attachments?path=Scans%2FBooklet.pdf'
+curl -s -b "$J" -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/attachments/<attachment>
+curl -s -b "$J" -X PUT  $H -H 'Content-Type: application/octet-stream' --data-binary @01.lrc http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/lyrics
+curl -s -b "$J" -X DELETE $H http://127.0.0.1:8080/api/albums/<id>/tracks/<track>
+curl -sOJ -b "$J" http://127.0.0.1:8080/api/albums/<id>/tracks/<track>/original     # also .../lyrics, .../cover, .../attachments/<attachment>/content
 ```
 
 A database lost or a commit left without an answer during an API request
@@ -480,7 +495,8 @@ stops the process like one in a worker (exit 1, then Docker restarts it).
 The request got 503 `store_connection_lost` or
 `store_commit_uncertain`: reload before retrying.
 
-Verified on Docker Desktop with a separate project (`-p musiclib-e2e`,
+Verified for 1.0.0, before the sign-in existed, on Docker Desktop with a
+separate project (`-p musiclib-e2e`,
 `MUSICLIB_PORT=18080`, `PUBLIC_ORIGIN` defaulting to
 `http://127.0.0.1:18080`), each answer as described above:
 - `/health/ready` and `musiclibd healthcheck` answered as before (exit 0);
@@ -498,20 +514,21 @@ Put the albums under the import mount, then drive the import through the
 API.
 
 ```sh
-B='http://127.0.0.1:8080/api'
+B='http://127.0.0.1:8080/api'                        # $J: the session cookie of the sign-in above
 M='-H X-Musiclib-Request:1 -H Content-Type:application/json'
-curl -s "$B/import-source"                          # /import, sorted; symlinks listed, never followed
-curl -s "$B/import-source?path=Jazz"                # a directory under /import (relative, no ..)
+curl -s -b "$J" "$B/import-source"                          # /import, sorted; symlinks listed, never followed
+curl -s -b "$J" "$B/import-source?path=Jazz"                # a directory under /import (relative, no ..)
 ID=$(cat /proc/sys/kernel/random/uuid)              # the request id: keep it to repeat the request
-curl -s -X POST $M -d "{\"id\":\"$ID\",\"path\":\"Jazz\"}" "$B/imports"   # 201; the same again: 200; another path: 409
-curl -s "$B/imports/$ID"                            # the report: scanning, importing, completed; each candidate
-curl -s "$B/jobs?state=failed"                      # pending, running, failed jobs (state=, kind=, limit=, after=)
-curl -s -X POST $M -d '{"artist":null,"title":"Kind of Blue"}' "$B/jobs/<job>/retry"   # a failed import, with artist/title overrides
-curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/retry"                          # any failed job, overrides kept
-curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/dismiss"                        # a failed scan or import: no longer needs attention
-curl -s -X POST -H X-Musiclib-Request:1 "$B/jobs/retry-failed"                          # every failed job that still needs attention
-curl -s -X POST -H X-Musiclib-Request:1 "$B/render-all"
-curl -s "$B/albums?q=miles&limit=50"                # search by title or artist; trash=true, artist=<id>, after=<next>
+curl -s -b "$J" -X POST $M -d "{\"id\":\"$ID\",\"path\":\"Jazz\"}" "$B/imports"   # 201; the same again: 200; another path: 409
+curl -s -b "$J" "$B/imports/$ID"                            # the report: scanning, importing, completed; each candidate
+curl -s -b "$J" "$B/jobs?state=failed"                      # pending, running, failed jobs (state=, kind=, limit=, after=)
+curl -s -b "$J" -X POST $M -d '{"artist":null,"title":"Kind of Blue"}' "$B/jobs/<job>/retry"   # a failed import, with artist/title overrides
+curl -s -b "$J" -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/retry"                          # any failed job, overrides kept
+curl -s -b "$J" -X POST -H X-Musiclib-Request:1 "$B/jobs/<job>/dismiss"                        # a failed scan or import: no longer needs attention
+curl -s -b "$J" -X POST -H X-Musiclib-Request:1 "$B/jobs/retry-failed"                          # every failed job that still needs attention
+curl -s -b "$J" -X POST -H X-Musiclib-Request:1 "$B/render-all"
+curl -s -b "$J" "$B/albums?q=miles&limit=50"                # search by title or artist; trash=true, artist=<id>, after=<next>
+curl -s -b "$J" -X POST -o /dev/null http://127.0.0.1:8080/logout; rm -f "$J"   # sign out: the session ends
 ```
 
 - `path` `""` imports the whole of `/import`. A batch with nothing to
@@ -543,6 +560,7 @@ until the cause is fixed. Nothing is ever repaired or rewritten automatically.
 | `code` | Meaning | What to do |
 |---|---|---|
 | `config_invalid` (exit 2) | an environment variable is missing or invalid; the message lists all of them | fix `.env` / `compose.yaml` |
+| `password_invalid` (exit 2) | `MUSICLIB_PASSWORD` is missing, empty, shorter than 12 characters, longer than 1024 bytes, not UTF-8, or has a control character such as a line break; the value is never logged | set it in `.env` (for example `openssl rand -base64 24`), then `docker compose up -d --wait` |
 | `run_as_root` (exit 2) | uid 0 | set `MUSICLIB_UID`/`MUSICLIB_GID` |
 | `volume_unavailable` | `/data` cannot be opened for a reason other than permissions: it is missing or not a directory, `/data/.lock` is not a regular file, or an I/O error | check the `/data` mount (`MUSICLIB_DATA`) and the disk; `.lock` must be a regular file and is never removed |
 | `volume_locked` | another process holds `/data/.lock` | stop the other instance or maintenance command |
@@ -578,6 +596,7 @@ Set them in `.env` next to `compose.yaml`; `.env.example` lists them.
 | Variable (`.env`) | Default | Meaning |
 |---|---|---|
 | `POSTGRES_PASSWORD` | `musiclib` (better change it) | DB password (`openssl rand -hex 32`), read at initdb time only; empty means the default |
+| `MUSICLIB_PASSWORD` | none: the app requires it | sign-in password (`openssl rand -base64 24`), at least 12 characters; read by the server only |
 | `MUSICLIB_UID` / `MUSICLIB_GID` | `1000` | ids of the app process (`user:`); the image and new named volumes are 1000:1000, another uid needs host directories it owns |
 | `MUSICLIB_DATA` | `data` | named volume or absolute ext4 path for `/data` |
 | `MUSICLIB_IMPORT` | `./import` | host directory mounted read-only on `/import` |

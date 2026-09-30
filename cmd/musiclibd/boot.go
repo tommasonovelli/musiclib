@@ -417,6 +417,7 @@ func (d *daemon) cleanWork(ctx context.Context) error {
 func (d *daemon) startHTTP(ln net.Listener, cancel context.CancelFunc) error {
 	api, err := apihttp.New(apihttp.Config{
 		PublicOrigin:  d.cfg.PublicOrigin,
+		Password:      d.cfg.Password,
 		RenderVersion: render.Version,
 		Fatal:         d.reportAPIFatal,
 		Log:           d.log,

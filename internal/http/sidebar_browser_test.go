@@ -95,14 +95,14 @@ func TestBrowserSidebarCollapse(t *testing.T) {
 		t.Fatalf("expanded accessible names: %s", got)
 	}
 
-	// Keyboard: the skip link, the brand, the five entries, then the theme
-	// button and the toggle at the foot of the sidebar (N-311); Enter
+	// Keyboard: the skip link, the brand, the five entries, then sign-out,
+	// the theme button and the toggle at the foot of the sidebar; Enter
 	// collapses.
-	for range 9 {
+	for range 10 {
 		browserKey(t, tab, kb.Tab)
 	}
 	if got := browserEval(t, tab, `document.activeElement.id`); got != "sidebar-toggle" {
-		t.Fatalf("ninth tab stop: %q", got)
+		t.Fatalf("tenth tab stop: %q", got)
 	}
 	browserKey(t, tab, kb.Enter)
 	browserWait(t, tab, `getComputedStyle(document.querySelector('#sidebar')).width === '72px'`)

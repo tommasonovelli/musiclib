@@ -22,7 +22,7 @@ func pageEnv(t *testing.T) *env {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", e.api)
 	mux.HandleFunc("/", e.api.Pages)
-	e.srv = httptest.NewServer(mux)
+	e.srv = httptest.NewServer(e.signedIn(mux))
 	t.Cleanup(e.srv.Close)
 	return e
 }

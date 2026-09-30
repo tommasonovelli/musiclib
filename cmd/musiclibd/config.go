@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	apihttp "musiclib/internal/http"
 )
 
 // Environment variables (DESIGN.md §11.1: configuration only from the
@@ -19,6 +21,7 @@ const (
 	envPublicOrigin = "PUBLIC_ORIGIN"
 	envHTTPAddr     = "HTTP_ADDR"
 	envWorkers      = "WORKERS"
+	envPassword     = "MUSICLIB_PASSWORD"
 
 	defaultHTTPAddr = ":8080"
 	minWorkers      = 1
@@ -38,9 +41,14 @@ type Config struct {
 	PublicOrigin string
 	HTTPAddr     string
 	Workers      int
+	// Password is the sign-in password, read by the server alone
+	// (loadPassword), never by loadConfig, which the offline commands
+	// share. It is never logged: LogValue leaves it out.
+	Password string
 }
 
-// LogValue is what slog prints for a Config: everything but DatabaseURL.
+// LogValue is what slog prints for a Config: everything but DatabaseURL
+// and Password.
 func (c Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("http_addr", c.HTTPAddr),
@@ -91,6 +99,19 @@ func loadConfig(getenv func(string) string, cpus int) (Config, error) {
 		return Config{}, &bootError{code: codeConfig, msg: "invalid configuration", err: errors.Join(errs...)}
 	}
 	return cfg, nil
+}
+
+// loadPassword reads the sign-in password of the server. A missing or
+// unusable one stops the boot with password_invalid; the message names the
+// rule and where to set the value, never the value or its length.
+func loadPassword(getenv func(string) string) (string, error) {
+	p := getenv(envPassword)
+	if err := apihttp.CheckPassword(p); err != nil {
+		return "", &bootError{code: codePassword, msg: envPassword + " " + err.Error() +
+			": set it in .env next to compose.yaml, for example to the output of `openssl rand -base64 24`, " +
+			"then run `docker compose up -d --wait`"}
+	}
+	return p, nil
 }
 
 // defaultWorkers is max(1, min(4, available CPUs)) (§6.1).

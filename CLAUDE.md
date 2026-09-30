@@ -123,15 +123,15 @@ docs/                   operations and Docker guides
 
 ### API and browser boundary
 
-- `PUBLIC_ORIGIN` is mandatory: `Host` must match it (`421`), `Origin` if present must equal it (`403`); every non-GET/HEAD request needs `X-Musiclib-Request: 1`. No CORS, `nosniff` everywhere, CSP `default-src 'self'`.
+- `PUBLIC_ORIGIN` is mandatory: `Host` must match it (`421`), `Origin` if present must equal it (`403`); every non-GET/HEAD request needs `X-Musiclib-Request: 1`, except the two plain HTML forms `POST /login` and `POST /logout`, which keep the Host and Origin checks. No CORS, `nosniff` everywhere, CSP `default-src 'self'`.
 - Artist and album resources carry strong ETags (`"album:<id>:<revision>"`); every change of an existing artist or album (covers, attachments, tracks and manual renders included) needs `If-Match` (`428` without, `412` if stale), checked in the transaction of the change. No last-write-wins. The rule covers changes of existing artists and albums only: creating an artist or an import, `POST /api/render-all` (it changes no revision) and the job actions (retry, retry of all failed jobs, dismiss) take no `If-Match`.
 - Errors are `{code, message, details}` with stable codes; no absolute paths, SQL or full stderr in responses. JSON bodies reject unknown and duplicate keys.
 - Downloads go by entity id, never by a client-supplied path; arbitrary files are served as attachments.
-- Single user on a trusted machine or network: no authentication, loopback binding by default, remote access only behind an authenticated reverse proxy (out of scope).
+- One user, one password: `MUSICLIB_PASSWORD` (at least 12 characters, no user name), read by the server only; the offline commands, `version` and `healthcheck` run without it, and the server refuses to start without it (`password_invalid`). Sessions live in memory (a restart signs out): a random 32-byte id in the cookie `musiclib_session` (`HttpOnly`, `SameSite=Strict`, `Secure` with an https `PUBLIC_ORIGIN`), 30 days from the sign-in. The password is compared in constant time, one attempt at a time, and a refused attempt holds the turn for one second. Every route needs a session except `/login`, `/logout`, `/static/*` and the health endpoints: pages redirect to `/login`, the API answers `401 login_required`. The password, the cookie and session ids are never logged. Loopback binding by default; over plain HTTP the password crosses the network in clear, so remote or shared-network access goes through an HTTPS reverse proxy.
 
 ### Container and operations
 
-- Configuration comes only from the environment: `DATABASE_URL`, `PUBLIC_ORIGIN`, `HTTP_ADDR`, `WORKERS`. Container paths are fixed (`/data`, `/import`, `/backup`).
+- Configuration comes only from the environment: `DATABASE_URL`, `PUBLIC_ORIGIN`, `HTTP_ADDR`, `WORKERS`, and `MUSICLIB_PASSWORD` for the server. Container paths are fixed (`/data`, `/import`, `/backup`).
 - The database password is defined once per Compose file (`x-db-password`): `POSTGRES_PASSWORD` from `.env`, else the default `musiclib`, which the docs tell users to change before the first start. The app receives it as `PGPASSWORD` (read by pgx) and `DATABASE_URL` carries none.
 - Never root: `musiclibd` refuses uid 0 and sets umask 022; the app container runs without capabilities, with a read-only root filesystem. PostgreSQL keeps `fsync`, `full_page_writes` and `synchronous_commit` on and publishes no port.
 - `doctor`, `rebuild`, `backup` and `restore` run offline (app stopped, PostgreSQL up) and take the volume lock. Doctor never repairs; restore only into a new empty database and volume, never over an installation; backups are never overwritten.

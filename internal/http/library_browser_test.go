@@ -467,6 +467,10 @@ func TestBrowserLibraryScreenshots(t *testing.T) {
 				browserKey(t, tab, kb.Tab)
 				browserKey(t, tab, kb.Tab)
 			}
+			if name == "login-failed" {
+				// A refused attempt answers after the sign-in delay.
+				browserWait(t, tab, `document.querySelector('.login .notice') !== null && document.fonts.status === 'loaded'`)
+			}
 			browserWait(t, tab, `!document.querySelector('.album-panel') || (document.querySelector('.album-panel .panel-tracks') && (!document.querySelector('.album-panel[data-cover]') || document.querySelector('.album-panel').dataset.painted))`)
 			time.Sleep(600 * time.Millisecond)
 		}
@@ -491,6 +495,8 @@ func TestBrowserLibraryScreenshots(t *testing.T) {
 			shoot(root, e.srv.URL+"/albums/"+first.String(), "album", w, h, dark, "")
 			shoot(root, e.srv.URL+"/activity", "activity", w, h, dark, "")
 			shoot(root, e.srv.URL+"/import", "import", w, h, dark, "")
+			shoot(root, e.srv.URL+"/login", "login", w, h, dark, "")
+			shoot(root, e.srv.URL+"/login", "login-failed", w, h, dark, `document.querySelector('#password').value='wrong-password';document.querySelector('.login-form').requestSubmit()`)
 			if w > 600 {
 				// The sidebar: expanded on Activity, collapsed, and collapsed
 				// with the tooltip of a focused entry.

@@ -44,7 +44,7 @@ Each edit regenerates only the album it affects, and your original copies are ke
 - verify its work: every copy is checked against the original, and the audio of each track is checked before and after its tags are written;
 - check, back up and restore the whole collection.
 
-**It doesn't:** play or stream music (use your own player), convert audio between formats, look up metadata or recognize music online, watch folders for new files (you start each import), manage user accounts (there is one user and no login), or edit arbitrary tags. The interface is in English.
+**It doesn't:** play or stream music (use your own player), convert audio between formats, look up metadata or recognize music online, watch folders for new files (you start each import), manage user accounts (there is one user, with one password), or edit arbitrary tags. The interface is in English.
 
 ## Requirements
 
@@ -65,16 +65,16 @@ findmnt -no FSTYPE -T /var/lib/docker    # must print ext4
 
 ## Install
 
-Paste this block into a terminal. It creates `~/musiclib`, downloads the two files of the latest release, writes a random database password into `.env`, and starts MusicLib:
+Paste this block into a terminal. It creates `~/musiclib`, downloads the two files of the latest release, writes a random database password and a random sign-in password into `.env`, and starts MusicLib:
 
 ```sh
 mkdir -p ~/musiclib/import && cd ~/musiclib
 [ -e compose.yaml ] || curl -fsSLO https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/compose.yaml
-[ -e .env ] || { curl -fsSL -o .env https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env; }
+[ -e .env ] || { curl -fsSL -o .env https://github.com/tommasonovelli/vibrance-musiclib/releases/latest/download/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env && sed -i "s|^MUSICLIB_PASSWORD=.*|MUSICLIB_PASSWORD=$(openssl rand -base64 24)|" .env; }
 docker compose up -d --wait
 ```
 
-When the last command returns, open **<http://127.0.0.1:8080>** in a browser on the same machine. On a machine without a desktop, see [Access and security](#access-and-security).
+When the last command returns, open **<http://127.0.0.1:8080>** in a browser on the same machine and sign in with the password the block wrote into `.env`; to read it, run `grep MUSICLIB_PASSWORD .env` in `~/musiclib`. On a machine without a desktop, see [Access and security](#access-and-security).
 
 Put your albums in **`~/musiclib/import`**, then import them from the **Import** page.
 
@@ -83,7 +83,8 @@ Good to know:
 - The block is safe to paste twice: it never replaces an existing `compose.yaml` or `.env`.
 - `docker compose up -d --wait` pulls the images the first time, then waits until MusicLib reports that it is ready. MusicLib starts again by itself after a reboot, unless you stopped it.
 - **The database password.** `compose.yaml` comes with a default password, `musiclib`, and it is better not to keep it: the block writes a random one into `.env`, which replaces the default. If you install without the block, set `POSTGRES_PASSWORD` in `.env` **before the first start**: PostgreSQL reads it only once, when it creates its database. Changing it in `.env` later doesn't change the database's password, and MusicLib can no longer connect (see [docs/operations.md](docs/operations.md#first-start) to change it).
-- `.env` holds that password: keep it private (the block makes it readable by you only).
+- **The sign-in password.** MusicLib asks for one password, `MUSICLIB_PASSWORD` in `.env`, at least 12 characters, and does not start without it. The block generates it; read it with `grep MUSICLIB_PASSWORD .env`. To change it, edit it in `.env` and run `docker compose up -d --wait`: MusicLib restarts and every browser is signed out.
+- `.env` holds both passwords: keep it private (the block makes it readable by you only).
 - To keep your library in a folder of your choice instead of Docker's storage, read the next section **before** the first start.
 
 ### Keeping the data in a host folder
@@ -180,6 +181,7 @@ All settings are in `~/musiclib/.env`. After changing it, apply it with `docker 
 | Variable | Default | Meaning |
 |---|---|---|
 | `POSTGRES_PASSWORD` | `musiclib`: better change it | Database password; the install block writes a random one. Read only when the database is first created: set it before the first start. |
+| `MUSICLIB_PASSWORD` | none: required | Sign-in password of the web interface and the API, at least 12 characters; the install block writes a random one. After changing it, every browser is signed out. |
 | `PUBLIC_ORIGIN` | `http://127.0.0.1:8080` | The exact address you open in the browser: scheme, host and port. |
 | `MUSICLIB_BIND` | `127.0.0.1` | Host address the web interface listens on. Loopback: this machine only. |
 | `MUSICLIB_PORT` | `8080` | Host port of the web interface. Keep it equal to the port in `PUBLIC_ORIGIN`. |
@@ -193,7 +195,9 @@ Every setting is described in [docs/operations.md](docs/operations.md) and [docs
 
 ## Access and security
 
-**MusicLib has no login.** Anyone who can reach its address can change or delete your catalog. It is meant for one person on a trusted machine or home network.
+**One password protects MusicLib**: `MUSICLIB_PASSWORD` in `.env` (see [Install](#install)). Every page and the API need it; only the health checks answer without it. A sign-in lasts 30 days and ends when MusicLib restarts; **Sign out** is at the foot of the sidebar. MusicLib is meant for one person: there are no user accounts.
+
+**Over plain HTTP the password travels in clear.** With the default setting it never leaves the machine. From other devices (the LAN setting below), anyone who can watch your network can read the password and the sign-in cookie: use it only on a network you trust, and from a shared network or from outside only through HTTPS (a reverse proxy in front of MusicLib).
 
 - By default it listens only on `127.0.0.1`: it can be opened only from the machine it runs on.
 - `PUBLIC_ORIGIN` must match the address in the browser exactly. `http://localhost:8080` and `http://127.0.0.1:8080` are different addresses: with the default setting, only the second one works.
@@ -206,7 +210,8 @@ Every setting is described in [docs/operations.md](docs/operations.md) and [docs
 
 - **From your computer to a server without a desktop**, an SSH tunnel keeps the default settings: run `ssh -L 8080:127.0.0.1:8080 you@server` and open `http://127.0.0.1:8080` on your computer.
 - **The database** has a default password, `musiclib`, unless you set `POSTGRES_PASSWORD` in `.env` before the first start; the install block does it for you with a random one. The database publishes no port, so other machines can't reach it, but a password of your own is still better.
-- **Never expose MusicLib directly to the Internet.** For remote access, put it behind a reverse proxy that requires authentication, and set `PUBLIC_ORIGIN` to the proxy's address.
+- **Never expose MusicLib directly to the Internet.** For remote access, put it behind a reverse proxy that serves HTTPS, and set `PUBLIC_ORIGIN` to the proxy's `https://` address: the sign-in cookie is then sent over HTTPS only.
+- **Two installations on one machine** (such as a [restore next to an existing one](docs/operations.md#restoring-next-to-an-existing-installation)) share the browser's sign-in cookie, so signing in to one signs you out of the other: open the second one in a private window.
 
 ## Backup, check and restore
 
@@ -269,6 +274,12 @@ Then run the three restore commands above in `~/musiclib-restore`, and open `htt
 
 ## Updating
 
+**From 1.0.0 to 1.1.0 or later, add a sign-in password first**: 1.1.0 does not start without `MUSICLIB_PASSWORD`, and a 1.0.0 `.env` has none. This line adds a random one, unless `.env` already has one; read it afterwards with `grep MUSICLIB_PASSWORD .env`:
+
+```sh
+cd ~/musiclib && grep -q '^MUSICLIB_PASSWORD=.' .env || { sed -i '/^MUSICLIB_PASSWORD=/d' .env && echo "MUSICLIB_PASSWORD=$(openssl rand -base64 24)" >> .env; }
+```
+
 Back up first: an update can upgrade the database, and there is no way back except restoring that backup. Your settings are in `.env`, so the new release's `compose.yaml` simply replaces the old one. (If you changed the database password in `compose.yaml` instead of `.env`, move it to `.env` first: the new file comes with the default.)
 
 ```sh
@@ -295,6 +306,7 @@ Run them from `~/musiclib` (from the clone's folder for a [source build](#buildi
 | Read its log | `docker compose logs --tail=100 app` |
 | Check that it is ready | `curl -f http://127.0.0.1:8080/health/ready` |
 | Show its version | `docker compose run --rm --no-deps app version` |
+| Show the sign-in password | `grep MUSICLIB_PASSWORD .env` |
 
 After the LAN change of [Access and security](#access-and-security), MusicLib no longer listens on `127.0.0.1`: check it with the LAN address, such as `curl -f http://192.168.1.20:8080/health/ready`.
 
@@ -308,6 +320,7 @@ The app image holds a Go server with its web interface built in, FFmpeg and a sm
 git clone https://github.com/tommasonovelli/vibrance-musiclib.git && cd vibrance-musiclib
 cp .env.example .env && chmod 600 .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+sed -i "s|^MUSICLIB_PASSWORD=.*|MUSICLIB_PASSWORD=$(openssl rand -base64 24)|" .env
 echo 'COMPOSE_FILE=compose.dev.yaml' >> .env
 mkdir -p import
 docker compose up -d --build --wait

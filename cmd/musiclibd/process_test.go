@@ -51,7 +51,7 @@ func startServerProcess(t *testing.T, dbURL string, p paths, umask int, extraEnv
 	cmd.Env = append(os.Environ(), helperEnv+"=1",
 		"TEST_DATA="+p.data, "TEST_IMPORT="+p.imports,
 		envDatabaseURL+"="+dbURL, envPublicOrigin+"=http://127.0.0.1:8080",
-		envHTTPAddr+"="+addr, envWorkers+"=1")
+		envHTTPAddr+"="+addr, envWorkers+"=1", envPassword+"="+testPassword)
 	// Later entries win (os/exec keeps the last value of a duplicate).
 	cmd.Env = append(cmd.Env, extraEnv...)
 	s := &serverProcess{cmd: cmd, stderr: &syncBuffer{}, addr: addr, done: make(chan struct{})}
@@ -165,6 +165,11 @@ func TestServerProcessLifecycle(t *testing.T) {
 		}
 	} else {
 		t.Log("the test database URL has no password: the log check is vacuous")
+	}
+	for _, out := range []string{s.stderr.String(), second.stderr.String()} {
+		if strings.Contains(out, testPassword) {
+			t.Fatalf("the sign-in password appears in the logs:\n%s", out)
+		}
 	}
 	for _, ev := range s.stderr.events(t) {
 		if ev["level"] == "ERROR" {

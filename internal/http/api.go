@@ -17,6 +17,7 @@
 package http
 
 import (
+	"crypto/sha256"
 	"log/slog"
 	nethttp "net/http"
 	"net/url"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
@@ -44,6 +46,9 @@ type Config struct {
 	// as cmd/musiclibd validates it: scheme, lowercase host, optional
 	// non-default port, nothing else.
 	PublicOrigin string
+	// Password is the sign-in password; New refuses one that CheckPassword
+	// refuses.
+	Password string
 	// RenderVersion is the renderer of this binary (§2.1), reported by the
 	// status of an album.
 	RenderVersion string
@@ -89,6 +94,15 @@ type API struct {
 	// richieste HTTP di upload sono limitate a due copie simultanee").
 	uploads chan struct{}
 
+	// password is the SHA-256 of the sign-in password, the only form the
+	// API keeps; secure is true when PUBLIC_ORIGIN is https (the cookie's
+	// Secure attribute). signIns holds one token per sign-in attempt being
+	// checked: one at a time. sessions are the live sessions.
+	password [sha256.Size]byte
+	secure   bool
+	signIns  chan struct{}
+	sessions sessions
+
 	// state is what /api does now: serve with a catalog, or refuse with
 	// 503 and a code.
 	state atomic.Pointer[state]
@@ -112,8 +126,13 @@ func New(cfg Config) (*API, error) {
 	if cfg.RenderVersion == "" || cfg.Fatal == nil || cfg.Log == nil {
 		return nil, newError(0, CodeInvalidConfig, "the API needs the render version, the fatal-error hook and a logger")
 	}
+	if err := CheckPassword(cfg.Password); err != nil {
+		return nil, newError(0, CodeInvalidConfig, "the password %v", err)
+	}
 	a := &API{origin: cfg.PublicOrigin, host: u.Host, renderVersion: cfg.RenderVersion, fatal: cfg.Fatal, log: cfg.Log,
-		failpoints: cfg.Failpoints, uploads: make(chan struct{}, MaxConcurrentUploads)}
+		failpoints: cfg.Failpoints, uploads: make(chan struct{}, MaxConcurrentUploads),
+		password: sha256.Sum256([]byte(cfg.Password)), secure: u.Scheme == "https", signIns: make(chan struct{}, 1),
+		sessions: sessions{m: map[[sha256.Size]byte]time.Time{}}}
 	a.Disable(CodeNotReady, "boot or recovery in progress: try again shortly")
 	return a, nil
 }
@@ -131,13 +150,19 @@ func (a *API) Disable(code, message string) {
 	a.state.Store(&state{code: code, message: message})
 }
 
-// ServeHTTP is the whole of /api: the security headers, the boundary of
-// §10.4, the availability, then the route.
+// ServeHTTP is the whole of /api: the security headers, the boundary, the
+// session, the availability, then the route. Without a session every /api
+// path, known or not, is the same 401, answered before any body is read.
 func (a *API) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	setSecurityHeaders(w.Header())
 	w.Header().Set("Cache-Control", "no-store")
-	if e := a.checkBoundary(r); e != nil {
+	if e := a.checkBoundary(r, false); e != nil {
 		a.writeError(w, e)
+		return
+	}
+	if !a.signedIn(r) {
+		a.writeError(w, newError(nethttp.StatusUnauthorized, CodeLoginRequired,
+			"sign in first: open /login in the browser, or POST the password to /login"))
 		return
 	}
 	// The router would redirect a path that is not clean, or /api to
@@ -176,8 +201,10 @@ func setSecurityHeaders(h nethttp.Header) {
 //     origin_not_allowed;
 //   - a request other than GET and HEAD must carry X-Musiclib-Request: 1,
 //     once: 403 request_header_required otherwise. Non-browser clients may
-//     omit Origin, not this header.
-func (a *API) checkBoundary(r *nethttp.Request) *Error {
+//     omit Origin, not this header. form lifts this rule alone, for the
+//     two plain HTML forms, POST /login and POST /logout: a form cannot
+//     send the header, and neither of them changes the catalog.
+func (a *API) checkBoundary(r *nethttp.Request, form bool) *Error {
 	if !strings.EqualFold(r.Host, a.host) {
 		return newError(nethttp.StatusMisdirectedRequest, CodeHostNotAllowed,
 			"this server answers only for its PUBLIC_ORIGIN %s", a.origin)
@@ -186,7 +213,7 @@ func (a *API) checkBoundary(r *nethttp.Request) *Error {
 		return newError(nethttp.StatusForbidden, CodeOriginNotAllowed,
 			"requests from another origin are refused; this server's origin is %s", a.origin)
 	}
-	if r.Method != nethttp.MethodGet && r.Method != nethttp.MethodHead {
+	if !form && r.Method != nethttp.MethodGet && r.Method != nethttp.MethodHead {
 		if v := r.Header.Values(RequestHeader); len(v) != 1 || v[0] != "1" {
 			return newError(nethttp.StatusForbidden, CodeRequestHeaderRequired,
 				"a %s request must carry the header %s: 1", r.Method, RequestHeader)

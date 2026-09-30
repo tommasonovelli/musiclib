@@ -126,17 +126,58 @@ func TestDefaultWorkers(t *testing.T) {
 	}
 }
 
-// The configuration is logged without DATABASE_URL.
+// The sign-in password: required, at least 12 characters, at most 1024
+// bytes, UTF-8, no control character. Every refusal is password_invalid,
+// and no message contains the value.
+func TestLoadPassword(t *testing.T) {
+	for _, tc := range []struct {
+		name, value, err string
+	}{
+		{"missing", "", "missing or empty"},
+		{"11 characters", "abcdefghijk", "shorter than 12 characters"},
+		{"11 multi-byte characters", strings.Repeat("é", 11), "shorter than 12 characters"},
+		{"a line break", "correct-horse-battery\n", "control character"},
+		{"a carriage return", "correct-horse-battery\r", "control character"},
+		{"a tab", "correct\thorse-battery", "control character"},
+		{"not UTF-8", "correct-horse-\xff-battery", "not valid UTF-8"},
+		{"1025 bytes", strings.Repeat("a", 1025), "longer than 1024 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := loadPassword(env(map[string]string{envPassword: tc.value}))
+			if err == nil || got != "" || codeOf(err) != codePassword || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("loadPassword = %q, %v; want %s containing %q", got, err, codePassword, tc.err)
+			}
+			if tc.value != "" && strings.Contains(err.Error(), tc.value) {
+				t.Fatalf("the error contains the value: %v", err)
+			}
+			if !strings.Contains(err.Error(), envPassword) || !strings.Contains(err.Error(), ".env") {
+				t.Fatalf("the error does not say what to set and where: %v", err)
+			}
+		})
+	}
+	for _, ok := range []string{"abcdefghijkl", strings.Repeat("é", 12), strings.Repeat("a", 1024), "Zm9vYmFyYmF6cXV1eGZvb2Jhcg+/aa"} {
+		if got, err := loadPassword(env(map[string]string{envPassword: ok})); err != nil || got != ok {
+			t.Fatalf("loadPassword(%q) = %q, %v", ok, got, err)
+		}
+	}
+}
+
+// The configuration is logged without DATABASE_URL and without the
+// sign-in password.
 func TestConfigLogValueOmitsDatabaseURL(t *testing.T) {
 	cfg, err := loadConfig(env(validEnv()), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Password = "secret-sign-in-password"
 	var logs syncBuffer
 	newLogger(&logs).Info("starting", "config", cfg)
 	out := logs.String()
 	if strings.Contains(out, "secret-pw") || strings.Contains(out, "postgres://") {
 		t.Fatalf("the log contains the database URL: %s", out)
+	}
+	if strings.Contains(out, "secret-sign-in-password") {
+		t.Fatalf("the log contains the sign-in password: %s", out)
 	}
 	for _, want := range []string{`"workers":2`, `"http_addr":":8080"`, `"public_origin":"http://127.0.0.1:8080"`} {
 		if !strings.Contains(out, want) {

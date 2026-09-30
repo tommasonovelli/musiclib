@@ -132,6 +132,7 @@ const sentences = {
   attachment_path_collision: 'An extra file has this name: change “Save as”.',
   body_too_large: 'The file is too large.',
   network: 'The server doesn’t answer: try again.',
+  login_required: 'You’re signed out. Sign in again in another tab, then save.',
   stale: 'Done, but the page didn’t update: reload it.'
 };
 

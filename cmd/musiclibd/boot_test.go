@@ -88,6 +88,31 @@ func TestBootReadinessLifecycle(t *testing.T) {
 	if r := d.mustAPI(t, http.MethodGet, "/api/albums", "", nil, http.StatusOK); r.body["albums"] == nil {
 		t.Fatalf("GET /api/albums: %v", r.body)
 	}
+	// Without a session, with the right Host: the API is 401 and a page
+	// sends the browser to /login. The health endpoints need no session.
+	noSession := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for path, want := range map[string]int{"/api/artists": http.StatusUnauthorized, "/": http.StatusSeeOther} {
+		req, err := http.NewRequest(http.MethodGet, d.base+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = "127.0.0.1:8080"
+		resp, err := noSession.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != want || (want == http.StatusSeeOther && resp.Header.Get("Location") != "/login") {
+			t.Fatalf("GET %s without a session: %d %v", path, resp.StatusCode, resp.Header)
+		}
+	}
+	for _, path := range []string{"/health/live", "/health/ready"} {
+		if st, _ := d.get(t, path); st != http.StatusOK {
+			t.Fatalf("GET %s without a session: %d", path, st)
+		}
+	}
 	// The health endpoints: GET only, nosniff, no CORS.
 	resp, err := http.Post(d.base+"/health/live", "text/plain", nil)
 	if err != nil {

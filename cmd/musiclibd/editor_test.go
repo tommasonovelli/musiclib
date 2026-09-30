@@ -98,6 +98,7 @@ func (d *testDaemon) upload(t *testing.T, method, path, ifMatch string, body []b
 		t.Fatal(err)
 	}
 	req.Host = "127.0.0.1:8080"
+	d.withSession(t, req)
 	req.Header.Set("X-Musiclib-Request", "1")
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("If-Match", ifMatch)
@@ -128,6 +129,7 @@ func (d *testDaemon) fetch(t *testing.T, path string) (int, http.Header, []byte)
 		t.Fatal(err)
 	}
 	req.Host = "127.0.0.1:8080"
+	d.withSession(t, req)
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatal(err)

@@ -39,6 +39,8 @@ const (
 	testOrigin = "http://music.test:8080"
 	testHost   = "music.test:8080"
 	testRender = "musiclib-render/test"
+	// testPassword is the sign-in password of the test API.
+	testPassword = "test-password-1234"
 )
 
 type env struct {
@@ -48,6 +50,8 @@ type env struct {
 	srv  *httptest.Server
 	host string // browser tests use the listener's ephemeral port
 	svc  *catalog.Service
+	// session is a live session of api, which signedIn adds to requests.
+	session string
 
 	// The blob store on the ext4 TMPDIR (§12.1), the process budget, and
 	// the failpoint of the uploads.
@@ -77,6 +81,7 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool, enable bool) *env {
 	e := &env{t: t, db: db}
 	api, err := New(Config{
 		PublicOrigin:  testOrigin,
+		Password:      testPassword,
 		RenderVersion: testRender,
 		Fatal: func(err error) {
 			e.mu.Lock()
@@ -98,9 +103,25 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool, enable bool) *env {
 	if enable {
 		api.Enable(e.backend())
 	}
-	e.srv = httptest.NewServer(api)
+	if e.session, err = api.sessions.create(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.srv = httptest.NewServer(e.signedIn(api))
 	t.Cleanup(e.srv.Close)
 	return e
+}
+
+// signedIn serves h as the browser of a signed-in user would reach it: a
+// request without a session cookie gets the env's live session, except
+// /login and /logout. The API still checks the session; the tests of the
+// sign-in itself serve the API without this wrapper (auth_test.go).
+func (e *env) signedIn(h nethttp.Handler) nethttp.Handler {
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		if r.URL.Path != "/login" && r.URL.Path != "/logout" && len(r.CookiesNamed(sessionCookie)) == 0 {
+			r.AddCookie(&nethttp.Cookie{Name: sessionCookie, Value: e.session})
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 type lockedWriter struct {

@@ -25,7 +25,7 @@ func browserEnv(t *testing.T) (*env, context.Context) {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", e.api)
 	mux.HandleFunc("/", e.api.Pages)
-	srv := httptest.NewUnstartedServer(mux)
+	srv := httptest.NewUnstartedServer(e.signedIn(mux))
 	srv.Listener = listener
 	srv.Start()
 	t.Cleanup(srv.Close)

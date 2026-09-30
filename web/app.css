@@ -630,3 +630,14 @@ a.row-link:hover .row-title { text-decoration: underline; }
   .btn, input, .nav a, .fix-filter, .sidebar-toggle { corner-shape: squircle; border-radius: calc(var(--r-control) * 1.6); }
   .panel-body { corner-shape: squircle; border-radius: calc(var(--r-panel) * 1.6); }
 }
+
+/* 12. Sign in: the form alone on the page. In the sidebar's foot the
+   sign-out form is only its button, which works without JavaScript. */
+
+.login { display: grid; place-items: center; min-height: 100dvh; padding: var(--s5); background: var(--paper); }
+.login-form { display: grid; gap: var(--s3); width: min(20rem, 100%); }
+.login-form .brand-sun { justify-self: center; }
+.login-title { margin-bottom: var(--s2); text-align: center; font: var(--type-title); }
+.login-form .notice { margin: 0; }
+.sidebar-foot form { display: contents; }
+form > .sidebar-toggle { visibility: visible; }

@@ -6,7 +6,9 @@
 //
 // Configuration comes only from the environment (§11.1): DATABASE_URL,
 // PUBLIC_ORIGIN, HTTP_ADDR (default ":8080") and WORKERS (default
-// max(1, min(4, CPUs)), 1..16, §6.1). The data volume is always /data and the
+// max(1, min(4, CPUs)), 1..16, §6.1). The server alone also needs
+// MUSICLIB_PASSWORD, the sign-in password: the offline commands, version and
+// healthcheck run without it. The data volume is always /data and the
 // import source always /import. Logs are JSON lines on stderr.
 //
 // Offline doctor, rebuild, backup and restore take the volume lock and never
@@ -111,10 +113,17 @@ func serve(log *slog.Logger, getenv func(string) string, p paths) int {
 	// GOMAXPROCS is the number of CPUs available to the process: since Go
 	// 1.25 it honors the cgroup CPU limit as well as the affinity (N-066).
 	cfg, err := loadConfig(getenv, runtime.GOMAXPROCS(0))
-	if err != nil {
-		logFatal(log, err)
+	password, perr := loadPassword(getenv)
+	if err != nil || perr != nil {
+		// Both problems at once, each with its own code.
+		for _, e := range []error{err, perr} {
+			if e != nil {
+				logFatal(log, e)
+			}
+		}
 		return exitUsage
 	}
+	cfg.Password = password
 	log.Info("starting", "version", buildinfo.Version, "config", cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), unix.SIGTERM, unix.SIGINT)
@@ -160,6 +169,8 @@ const (
 	codeRoot   = "run_as_root"
 	codeHTTP   = "http_listen"
 	codeImport = "import_unavailable"
+	// codePassword: MUSICLIB_PASSWORD is missing or unusable.
+	codePassword = "password_invalid"
 	// codeImportIsData: /import is /data or one of its directories (§7.1).
 	codeImportIsData = "import_is_data"
 	// codeWorkers: the worker pool stopped without an error of its own.

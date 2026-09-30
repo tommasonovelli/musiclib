@@ -53,14 +53,26 @@ const (
 	fontLatinExt = "hanken-grotesk-v12-latin-ext.woff2"
 )
 
-// HTML pages share the API's availability and §10.4 Host/Origin boundary.
-// They never place catalog text into HTML except through html/template.
+// Pages serves everything outside /api: the sign-in and sign-out forms,
+// the static UI files, and the pages, which share the API's Host and Origin
+// boundary, its session and its availability. Sign-in and the static files
+// need neither a session nor the catalog, so they work during the boot.
+// Pages never place catalog text into HTML except through html/template.
 func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w.Header())
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.Header().Set("Cache-Control", "no-store")
-	if e := a.checkBoundary(r); e != nil {
+	form := r.Method == http.MethodPost && (r.URL.Path == "/login" || r.URL.Path == "/logout")
+	if e := a.checkBoundary(r, form); e != nil {
 		a.writeError(w, e)
+		return
+	}
+	switch r.URL.Path {
+	case "/login":
+		a.login(w, r)
+		return
+	case "/logout":
+		a.logout(w, r)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -73,6 +85,10 @@ func (a *API) Pages(w http.ResponseWriter, r *http.Request) {
 	}
 	if name, ok := strings.CutPrefix(r.URL.Path, "/static/"); ok {
 		a.staticAsset(w, name)
+		return
+	}
+	if !a.signedIn(r) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	st := a.state.Load()
@@ -151,6 +167,8 @@ type pageData struct {
 	// Import and Activity are the queue views (round 21, N-286 to N-289).
 	Import   *importView
 	Activity *activityView
+	// Login is the sign-in page; the layout draws no sidebar for it.
+	Login *loginView
 }
 
 type pageArtist struct {
@@ -306,12 +324,19 @@ func (a *API) renderPage(w http.ResponseWriter, r *http.Request, c *catalog.Serv
 		return
 	}
 	data.FixCount = n
+	a.execute(w, r, http.StatusOK, file, data)
+}
+
+// execute writes the page file in the layout, with status. It needs no
+// catalog: the sign-in page uses it directly.
+func (a *API) execute(w http.ResponseWriter, r *http.Request, status int, file string, data pageData) {
 	t, err := template.ParseFS(web.Assets, "layout.html", file)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
 		a.log.Error("writing UI page", "error", err)
 	}

@@ -98,6 +98,9 @@ func newLogger(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
+// testPassword is the sign-in password of the test servers.
+const testPassword = "test-password-1234"
+
 // testConfig is a valid configuration on the given database.
 func testConfig(dbURL string) Config {
 	return Config{
@@ -105,6 +108,7 @@ func testConfig(dbURL string) Config {
 		PublicOrigin: "http://127.0.0.1:8080",
 		HTTPAddr:     "127.0.0.1:0",
 		Workers:      1,
+		Password:     testPassword,
 	}
 }
 
@@ -123,6 +127,55 @@ type testDaemon struct {
 
 	once sync.Once
 	err  error
+
+	// session is the cookie of signIn, once a sign-in succeeded.
+	sessionMu sync.Mutex
+	session   *http.Cookie
+}
+
+// signIn signs in to the server with testPassword, as a browser does, and
+// returns the session cookie; the first success is kept for the daemon. If
+// the server does not answer, it returns nil: the request that follows
+// then meets the same silence, which some tests expect.
+func (d *testDaemon) signIn(t *testing.T) *http.Cookie {
+	t.Helper()
+	d.sessionMu.Lock()
+	defer d.sessionMu.Unlock()
+	if d.session != nil {
+		return d.session
+	}
+	req, err := http.NewRequest(http.MethodPost, d.base+"/login", strings.NewReader("password="+testPassword))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "127.0.0.1:8080"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == "musiclib_session" && resp.StatusCode == http.StatusSeeOther {
+			d.session = c
+		}
+	}
+	if d.session == nil {
+		t.Fatalf("POST /login = %d without a session cookie; logs:\n%s", resp.StatusCode, d.logs)
+	}
+	return d.session
+}
+
+// withSession adds the daemon's session cookie to req, when there is one.
+func (d *testDaemon) withSession(t *testing.T, req *http.Request) {
+	t.Helper()
+	if c := d.signIn(t); c != nil {
+		req.AddCookie(c)
+	}
 }
 
 func startDaemon(t *testing.T, cfg Config, p paths) *testDaemon {
@@ -313,9 +366,10 @@ func (r apiResponse) code() string {
 	return s
 }
 
-// api sends one request to the server's API as a well-behaved client of
-// §10.4: the Host of PUBLIC_ORIGIN (testConfig's), X-Musiclib-Request on a
-// mutation, If-Match when given. status is 0 if the server does not answer.
+// api sends one request to the server's API as a well-behaved, signed-in
+// client: the Host of PUBLIC_ORIGIN (testConfig's), the session cookie,
+// X-Musiclib-Request on a mutation, If-Match when given. status is 0 if
+// the server does not answer.
 func (d *testDaemon) api(t *testing.T, method, path, ifMatch string, body any) apiResponse {
 	t.Helper()
 	var rd io.Reader
@@ -331,6 +385,7 @@ func (d *testDaemon) api(t *testing.T, method, path, ifMatch string, body any) a
 		t.Fatal(err)
 	}
 	req.Host = "127.0.0.1:8080"
+	d.withSession(t, req)
 	if method != http.MethodGet {
 		req.Header.Set("X-Musiclib-Request", "1")
 	}

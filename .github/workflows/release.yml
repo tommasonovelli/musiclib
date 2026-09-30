@@ -314,16 +314,16 @@ jobs:
 
           ### Install
 
-          Docker Engine with the Compose v2 plugin, Linux amd64, `/data` on local ext4. The block creates `~/musiclib`, writes a random database password into `.env` (instead of the default `musiclib`) and starts MusicLib:
+          Docker Engine with the Compose v2 plugin, Linux amd64, `/data` on local ext4. The block creates `~/musiclib`, writes a random database password (instead of the default `musiclib`) and a random sign-in password into `.env`, and starts MusicLib:
 
           ```sh
           mkdir -p ~/musiclib/import && cd ~/musiclib
           [ -e compose.yaml ] || curl -fsSLO @DOWNLOAD@/compose.yaml
-          [ -e .env ] || { curl -fsSL -o .env @DOWNLOAD@/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env; }
+          [ -e .env ] || { curl -fsSL -o .env @DOWNLOAD@/env.example && chmod 600 .env && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env && sed -i "s|^MUSICLIB_PASSWORD=.*|MUSICLIB_PASSWORD=$(openssl rand -base64 24)|" .env; }
           docker compose up -d --wait
           ```
 
-          Then open http://127.0.0.1:8080/. Settings, upgrades and backups: @GUIDE@
+          Then open http://127.0.0.1:8080/ and sign in with the password in `.env`: `grep MUSICLIB_PASSWORD .env`. Upgrading from 1.0.0, settings and backups: @GUIDE@
           EOF
           )"
           image_notes="${image_notes//@TAGGED@/${IMAGE}:${VERSION}}"

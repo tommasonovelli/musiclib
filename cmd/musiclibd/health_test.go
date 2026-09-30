@@ -124,3 +124,47 @@ func TestServeRejectsInvalidConfig(t *testing.T) {
 		t.Fatal("the volume was touched with an invalid configuration")
 	}
 }
+
+// The server refuses to start without a usable sign-in password: exit 2,
+// password_invalid, before it listens or touches the volume, and the value
+// is never logged. A bad configuration and a bad password are both
+// reported, each with its code.
+func TestServeRefusesPassword(t *testing.T) {
+	const short = "short-pw-11"
+	for _, tc := range []struct {
+		name  string
+		set   map[string]string
+		codes []string
+	}{
+		{"missing", map[string]string{}, []string{codePassword}},
+		{"short", map[string]string{envPassword: short}, []string{codePassword}},
+		{"short and a bad config", map[string]string{envPassword: short, envWorkers: "99"}, []string{codeConfig, codePassword}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testPaths(t)
+			e := validEnv()
+			for k, v := range tc.set {
+				e[k] = v
+			}
+			var logs syncBuffer
+			if got := serve(newLogger(&logs), env(e), p); got != exitUsage {
+				t.Fatalf("exit %d, want %d", got, exitUsage)
+			}
+			var codes []string
+			for _, ev := range logs.events(t) {
+				if c, ok := ev["code"].(string); ok {
+					codes = append(codes, c)
+				}
+			}
+			if strings.Join(codes, ",") != strings.Join(tc.codes, ",") {
+				t.Fatalf("codes %q, want %q; logs: %s", codes, tc.codes, &logs)
+			}
+			if strings.Contains(logs.String(), short) {
+				t.Fatalf("the password is in the logs: %s", &logs)
+			}
+			if exists(t, p.data+"/.lock") {
+				t.Fatal("the volume was touched without a password")
+			}
+		})
+	}
+}

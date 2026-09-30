@@ -5,7 +5,8 @@
 #   docker compose up -d --wait
 #
 # Settings go in .env next to this file (see .env.example); every one has a
-# default. Change the database password before the first start: see below.
+# default except MUSICLIB_PASSWORD, the sign-in password, which the app
+# requires. Change the database password before the first start: see below.
 #
 # Development, tests and building the app from source: compose.dev.yaml
 # (docs/docker.md). Both files are the Compose project `musiclib` with the
@@ -108,6 +109,11 @@ services:
       HTTP_ADDR: ":8080"
       # Empty means the default: max(1, min(4, CPUs)).
       WORKERS: ${WORKERS:-}
+      # The sign-in password, from .env: at least 12 characters; the app
+      # refuses to start without it (password_invalid). Empty by default on
+      # purpose, never `:?`: the offline commands do not need it, and a
+      # missing value must not stop `docker compose` itself.
+      MUSICLIB_PASSWORD: ${MUSICLIB_PASSWORD:-}
     ports:
       # Loopback by default; LAN access needs an explicit
       # MUSICLIB_BIND (and a matching PUBLIC_ORIGIN).

@@ -37,6 +37,14 @@
   }
   show();
   document.addEventListener('DOMContentLoaded', show);
+  // Signed out meanwhile (a restart, another tab): the API answers 401 and
+  // a page redirects to /login. Either way, go and sign in.
+  const fetch = window.fetch;
+  window.fetch = async (...args) => {
+    const r = await fetch(...args);
+    if (r.status == 401 || r.redirected && new URL(r.url).pathname == '/login') location.assign('/login');
+    return r;
+  };
   document.addEventListener('click', event => {
     if (event.target.closest('#sidebar-toggle')) {
       collapsed = !collapsed;

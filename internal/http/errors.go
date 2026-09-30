@@ -24,6 +24,10 @@ const (
 	CodeHostNotAllowed        = "host_not_allowed"        // 421
 	CodeOriginNotAllowed      = "origin_not_allowed"      // 403
 	CodeRequestHeaderRequired = "request_header_required" // 403
+	// CodeLoginRequired: no live session; sign in at /login. The 401
+	// carries no WWW-Authenticate: a cookie session has no standard
+	// challenge, and Basic would open the browser's own password dialog.
+	CodeLoginRequired = "login_required" // 401
 
 	// The API cannot serve now (§10.1, §11.1): boot, recovery, a suspended
 	// publication (the code of publish), shutdown.
