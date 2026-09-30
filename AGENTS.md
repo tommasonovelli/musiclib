@@ -1,6 +1,6 @@
 # Vibrance MusicLib: rules for contributors and agents
 
-These are the rules and principles for anyone who changes this repository, human or AI agent. `AGENTS.md` and `CLAUDE.md` have identical content: change both together. User-facing documentation is in [README.md](README.md), [docs/operations.md](docs/operations.md) and [docs/docker.md](docs/docker.md).
+These are the rules and principles for anyone who changes this repository, human or AI agent. `AGENTS.md` and `CLAUDE.md` have identical content: change both together. User-facing documentation is in [README.md](README.md) and [docs/operations.md](docs/operations.md); the developer guide is [docs/docker.md](docs/docker.md).
 
 ## What MusicLib is
 

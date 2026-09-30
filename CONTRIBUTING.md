@@ -4,7 +4,7 @@ Read the [README](README.md) and the project rules and invariants in [AGENTS.md]
 
 ## Development setup
 
-Use Docker with the Compose v2 plugin; the pinned toolchain is in the repository. See [docs/docker.md](docs/docker.md) for setup, profiles and test storage. `compose.yaml` is the production file (the published image); development uses `compose.dev.yaml`, which the scripts below select themselves and which needs no `.env`. To run the app built from your checkout, set `MUSICLIB_PASSWORD` in `.env` (the sign-in password, at least 12 characters, see `.env.example`: the app does not start without it), then run `docker compose -f compose.dev.yaml up -d --build --wait`; the database password defaults to `musiclib` (set `POSTGRES_PASSWORD` in `.env` before the first start to change it). Keep the `postgres` and `app` services of the two files in step. Docker Desktop is a development option, while production acceptance requires native Ubuntu 24.04+ and local ext4. On Windows, run the shell scripts from Git Bash and keep the checkout's LF line endings.
+Use Docker with the Compose v2 plugin; the pinned toolchain is in the repository. See the [developer guide](docs/docker.md) for setup, profiles and test storage, and [The developer scripts](docs/docker.md#the-developer-scripts) for every script's arguments and output. `compose.yaml` is the production file (the published image); development uses `compose.dev.yaml`, which the scripts below select themselves and which needs no `.env`. To run the app built from your checkout, set `MUSICLIB_PASSWORD` in `.env` (the sign-in password, at least 12 characters, see `.env.example`: the app does not start without it), then run `docker compose -f compose.dev.yaml up -d --build --wait`; the database password defaults to `musiclib` (set `POSTGRES_PASSWORD` in `.env` before the first start to change it). Keep the `postgres` and `app` services of the two files in step. Docker Desktop is a development option, while production acceptance requires native Ubuntu 24.04+ and local ext4. On Windows, run the shell scripts from Git Bash and keep the checkout's LF line endings.
 
 ```sh
 scripts/dev.sh                  # shell in the toolchain container
@@ -12,13 +12,13 @@ scripts/check.sh                # sqlc diff, build, vet, formatting and race tes
 scripts/lint-shell.sh           # when changing shell scripts
 ```
 
-The test gate requires real PostgreSQL and ext4; it is not equivalent to a host `go test` that skips database tests. The test image contains a snapshot of the working tree; `dev` mounts the live sources. After changing SQL or migrations, regenerate the store with `scripts/sqlc.sh` and review the generated diff. Media/tool version changes have additional pinning steps in [the Docker guide](docs/docker.md#pinned-source-builds).
+The test gate requires real PostgreSQL and ext4; it is not equivalent to a host `go test` that skips database tests. The test image contains a snapshot of the working tree; `dev` mounts the live sources. After changing SQL or migrations, regenerate the store with `scripts/sqlc.sh` and review the generated diff. Media/tool version changes have additional pinning steps in [the developer guide](docs/docker.md#pinned-source-builds).
 
 ## Preparing a change
 
 Keep changes focused and explain the problem, resulting behavior and verification. Preserve the storage invariants: immutable originals, one instance per paired database/volume, complete-album publication, explicit conflict handling and recoverable maintenance. Add meaningful regression coverage when changing those guarantees and update the relevant documentation. Use redistributable fixtures rather than personal music or artwork.
 
-For documentation-only changes, review the full diff, check local links and command semantics, and run `git diff --check`; a container rebuild is unnecessary. For code changes, run the relevant tests and the repository gate. Record commands, results and any skips accurately. Passing Docker Desktop tests does not close the [native release acceptance gate](docs/operations.md#release-check-on-a-native-host).
+For documentation-only changes, review the full diff, check local links and command semantics, and run `git diff --check`; a container rebuild is unnecessary. For code changes, run the relevant tests and the repository gate. Record commands, results and any skips accurately. Passing Docker Desktop tests does not close the [native release acceptance gate](docs/docker.md#release-check-on-a-native-host).
 
 ## Planned work
 
@@ -28,4 +28,4 @@ The work planned for the next release, with the owner's decisions and a to-do li
 
 For a reproducible bug report, include the commit, host/kernel, filesystem, Docker/Compose versions, relevant configuration without credentials, minimal steps, expected/actual behavior and redacted logs. Never attach `.env`, database URLs containing passwords, catalog dumps, private music or personal metadata. If an integrity problem is involved, preserve the evidence and backups before attempting recovery.
 
-A release is published by pushing a version tag; the maintainer's procedure is in [the Docker guide](docs/docker.md#releasing). Changes are recorded in [CHANGELOG.md](CHANGELOG.md), in the Keep a Changelog style: one `## [X.Y.Z] - YYYY-MM-DD` section per release, which the release workflow requires and publishes as the release notes. Public support channels and a private security-reporting contact are still to be established by the owner; do not publish vulnerability details or credentials in a public report.
+A release is published by pushing a version tag; the maintainer's procedure is in [the developer guide](docs/docker.md#releasing). Changes are recorded in [CHANGELOG.md](CHANGELOG.md), in the Keep a Changelog style: one `## [X.Y.Z] - YYYY-MM-DD` section per release, which the release workflow requires and publishes as the release notes. Public support channels and a private security-reporting contact are still to be established by the owner; do not publish vulnerability details or credentials in a public report.

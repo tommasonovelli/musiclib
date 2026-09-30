@@ -28,6 +28,7 @@ Then take the new `compose.yaml`, which passes it to MusicLib, and update as usu
 - A thin line separates the sidebar from the page on wide screens, in both themes.
 - With the sidebar expanded, the buttons at its foot show their names next to their icons, like the entries above them: **Sign out**, the theme switch (**Theme: System**, **Light** or **Dark**) and **Collapse sidebar**. Collapsed, they are icons with a tooltip, as before.
 - When MusicLib cannot read or write its data folder, the error at startup (`volume_permission`) names the user and group it runs as and the `chown` command that fixes a host folder.
+- The documentation is reorganized: `docs/operations.md` is one guide, from installation to troubleshooting and the API, for whoever runs MusicLib; `docs/docker.md` is for developers only; the README is a short introduction that links into the guide.
 
 ### Fixed
 
