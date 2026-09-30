@@ -134,7 +134,8 @@ main:focus { outline: none; }
 .sidebar {
   position: sticky; top: 0; z-index: 5; align-self: start;
   display: flex; flex-direction: column; gap: var(--s5);
-  width: var(--sidebar); height: 100vh; padding: var(--s4) var(--s3);
+  width: var(--sidebar); height: 100vh; padding: var(--s4) calc(var(--s3) - 1px) var(--s4) var(--s3);
+  border-right: 1px solid var(--hairline); /* inside the width; the padding keeps the 3rem column */
   background: var(--canvas); transition: width var(--slow) var(--ease);
 }
 /* The lower part glows: three soft lights and a grain behind the theme
@@ -591,7 +592,7 @@ a.row-link:hover .row-title { text-decoration: underline; }
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar {
     position: static; width: auto; height: auto; flex-direction: row; align-items: stretch; gap: var(--s1);
-    padding: var(--s2) var(--s3); overflow-x: auto;
+    padding: var(--s2) var(--s3); border: 0; overflow-x: auto;
   }
   .brand, #sidebar-toggle, .sidebar::before, .sidebar::after { display: none; }
   .sidebar-foot { display: flex; align-items: center; margin: 0; }
