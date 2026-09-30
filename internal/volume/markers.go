@@ -130,7 +130,7 @@ func readMarker(root *fsops.Root, rel, malformedCode string) (content []byte, fo
 	case fsops.CodeIsDirectory, fsops.CodeSymlink, fsops.CodeSpecialFile:
 		return nil, true, newErr(malformedCode, rel+" is not a regular file", err)
 	case fsops.CodePermission:
-		return nil, true, newErr(CodePermission, "cannot read "+rel, err)
+		return nil, true, permissionErr("cannot read "+rel, err)
 	default:
 		return nil, true, newErr(CodeIO, "cannot open "+rel, err)
 	}

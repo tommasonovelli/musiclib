@@ -52,7 +52,7 @@ func checkFilesystem(data, originals, library, work *fsops.Root) error {
 	}
 	for _, r := range []*fsops.Root{data, originals, library, work} {
 		if err := r.CheckAccess(true); err != nil {
-			return fsErr("the process cannot read and write "+r.Name(), err)
+			return fsErr("cannot read and write "+r.Name(), err)
 		}
 	}
 	if err := probeRenameExchange(work, work); err != nil {

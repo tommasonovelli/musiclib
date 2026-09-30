@@ -267,6 +267,79 @@ func TestPublishReplacesDamagedOwnOutput(t *testing.T) {
 	}
 }
 
+// A publication owns the album folder only. Files another program left in
+// the artist folder or at the top of library/ survive a trash and an artist
+// rename: the artist folder is removed only when empty, and it keeps them.
+// A file inside the album folder leaves with the old folder on a path change.
+func TestPublishKeepsForeignFilesOutsideTheAlbumFolder(t *testing.T) {
+	wantFile := func(e *env, rel, content string) {
+		e.t.Helper()
+		b, err := os.ReadFile(e.path(rel))
+		if err != nil || string(b) != content {
+			e.t.Fatalf("%s: %q %v, want it kept with %q", rel, b, err, content)
+		}
+	}
+	wantEntries := func(e *env, rel, want string) {
+		e.t.Helper()
+		if got := e.entries(rel); strings.Join(got, "|") != want {
+			e.t.Fatalf("%s holds %q, want %q", rel, got, want)
+		}
+	}
+	t.Run("trash and restore", func(t *testing.T) {
+		e := newEnv(t)
+		id := e.importAlbum("Artist", "Album")
+		e.mustPublish("v1")
+		e.write("library/Artist/folder.jpg", "an artist picture")
+		e.write("library/Artist/artist.nfo", "an index")
+		e.write("library/.DS_Store", "a desktop file")
+		e.trash(id)
+		_, res := e.mustPublish("")
+		e.wantPublished(id, res)
+		wantEntries(e, "library", ".DS_Store|Artist")
+		wantEntries(e, "library/Artist", "artist.nfo|folder.jpg")
+		wantFile(e, "library/Artist/folder.jpg", "an artist picture")
+		wantFile(e, "library/Artist/artist.nfo", "an index")
+		wantFile(e, "library/.DS_Store", "a desktop file")
+		e.wantWorkClean()
+
+		// The restored album is installed into the artist folder that stayed.
+		e.restore(id)
+		_, res = e.mustPublish("v2")
+		e.wantPublished(id, res)
+		wantEntries(e, "library/Artist", "Album|artist.nfo|folder.jpg")
+		e.wantWorkClean()
+	})
+	t.Run("artist rename", func(t *testing.T) {
+		e := newEnv(t)
+		id := e.importAlbum("Old Name", "Album")
+		e.mustPublish("v1")
+		e.write("library/Old Name/folder.jpg", "an artist picture")
+		e.renameArtist(id, "New Name")
+		_, res := e.mustPublish("v2")
+		e.wantPublished(id, res)
+		wantEntries(e, "library", "New Name|Old Name")
+		wantEntries(e, "library/Old Name", "folder.jpg")
+		wantFile(e, "library/Old Name/folder.jpg", "an artist picture")
+		e.wantWorkClean()
+	})
+	t.Run("retitle", func(t *testing.T) {
+		e := newEnv(t)
+		id := e.importAlbum("Artist", "First Title")
+		e.mustPublish("v1")
+		e.write("library/Artist/First Title/folder.jpg", "added by another program")
+		if err := e.retitle(id, "Second Title"); err != nil {
+			t.Fatal(err)
+		}
+		_, res := e.mustPublish("v2")
+		e.wantPublished(id, res)
+		wantEntries(e, "library/Artist", "Second Title")
+		if e.exists("library/Artist/Second Title/folder.jpg") {
+			t.Fatal("a foreign file followed the album to its new folder")
+		}
+		e.wantWorkClean()
+	})
+}
+
 // Symlinks and special files are always refused (§9.3): at the new path,
 // as the artist directory, and at the old path.
 func TestPublishRefusesSymlinksAndSpecialFiles(t *testing.T) {

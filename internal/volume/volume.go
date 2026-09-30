@@ -22,6 +22,8 @@ package volume
 
 import (
 	"errors"
+	"os"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -95,11 +97,21 @@ func acquireErr(msg string, err error) *Error {
 		return newErr(CodeLocked, "another musiclib process holds "+LockFile+
 			": stop it first (one instance per volume)", err)
 	case fsops.CodePermission, fsops.CodeReadOnly:
-		return newErr(CodePermission, msg+": the data volume must be a directory that the uid "+
-			"and gid of this process can read and write, on a read-write mount", err)
+		return permissionErr(msg, err)
 	default:
 		return newErr(CodeUnavailable, msg, err)
 	}
+}
+
+// permissionErr builds every [CodePermission] error of the package. The
+// process cannot know the host folder behind /data, so the message names the
+// uid and gid it runs as (the effective ids, which the access checks use) and
+// the command that gives a host folder back to them.
+func permissionErr(msg string, err error) *Error {
+	uid, gid := strconv.Itoa(os.Geteuid()), strconv.Itoa(os.Getegid())
+	return newErr(CodePermission, msg+": this process runs as uid "+uid+" and gid "+gid+
+		" (MUSICLIB_UID, MUSICLIB_GID) and must be able to read and write all of /data, on a read-write mount;"+
+		" if MUSICLIB_DATA is a host folder, run `sudo chown -R "+uid+":"+gid+" <that folder>` on the host", err)
 }
 
 // Root is the /data root itself.
@@ -201,7 +213,7 @@ func (v *Volume) Close() error {
 func fsErr(msg string, err error) *Error {
 	switch fsops.Code(err) {
 	case fsops.CodePermission, fsops.CodeReadOnly:
-		return newErr(CodePermission, msg, err)
+		return permissionErr(msg, err)
 	default:
 		return newErr(CodeIO, msg, err)
 	}

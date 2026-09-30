@@ -92,12 +92,13 @@ Good to know:
 By default MusicLib keeps its data in Docker named volumes. You can put it in folders of the host instead: for example the library on a data disk, and backups on a second disk. Decide this before the first start, because MusicLib pairs its database with its data folder when it first starts.
 
 1. Paste the install block **without its last line** (`docker compose up -d --wait`).
-2. Create the folders: absolute paths, on **local ext4**, **empty**, and **owned by uid 1000** (the user MusicLib runs as):
+2. Create the folders yourself: absolute paths, on **local ext4**, **empty**, and **owned by uid 1000** (the user MusicLib runs as). If a folder is missing, Docker creates it owned by root: a data folder owned by root stops MusicLib from starting, and a backup folder owned by root makes every backup fail.
 
    ```sh
    sudo mkdir -p /srv/musiclib/data /mnt/backup/musiclib
    sudo chown 1000:1000 /srv/musiclib/data /mnt/backup/musiclib
    findmnt -no FSTYPE -T /srv/musiclib/data    # must print ext4
+   ls -A /srv/musiclib/data                     # must print nothing (lost+found at the root of a disk is fine)
    ```
 
 3. Add these lines to `~/musiclib/.env`, with your folders; the last one only if the music you want to import isn't in `~/musiclib/import`:
@@ -110,9 +111,11 @@ By default MusicLib keeps its data in Docker named volumes. You can put it in fo
 
 4. Start: `docker compose up -d --wait`.
 
+Already installed on the named volumes? Move the data to a folder without losing anything: see [Moving an existing installation to a host folder](docs/operations.md#moving-an-existing-installation-to-a-host-folder).
+
 The data folder must be a **new, empty folder used only by MusicLib**, not your music collection: MusicLib creates `originals/`, `library/`, `work/` and a few marker files (`.lock`, `.musiclib-store`) there and never touches anything else, but it doesn't refuse a folder that already holds other files.
 
-The import folder is mounted **read-only**: it must exist before MusicLib starts, and its files must be readable by uid 1000 (files readable by everyone are fine). The backup folder must not be inside the data folder. With `MUSICLIB_DATA` set, the generated library is at `/srv/musiclib/data/library`, ready for your player.
+The import folder is mounted **read-only**: it must exist before MusicLib starts, and its files must be readable by uid 1000 (files readable by everyone are fine). The backup folder must not be inside the data folder. With `MUSICLIB_DATA` set, the generated library is at `/srv/musiclib/data/library`, readable by every user of the machine; other programs may read it but must not write in it (see [The library folder](#the-library-folder)).
 
 ## First steps
 
@@ -154,10 +157,10 @@ library/
 - The layout is always `Artist/Album/NN - Title.ext`, with `Disc N/` folders for a multi-disc album, `cover.jpg` or `cover.png` at the album's root, lyrics next to their track and every extra file under `Extras/`.
 - Names are cleaned up so that they also work on Windows filesystems: characters such as `/ \ : * ? " < > |` become `_`, and very long names are shortened. Two albums or tracks that would end up at the same path are reported as a conflict for you to resolve; nothing is dropped or renamed silently.
 - MusicLib writes the title, artist, album artist, album, track and disc numbers and totals, year, genre, compilation flag and cover into every track. Any other tag the files already had is kept as it is.
-- An album's folder is replaced as a whole: your player sees either the old or the new version of an album, never a half-written one.
+- An album's folder is replaced as a whole: a program reading the library sees either the old or the new version of an album, never a half-written one.
 - `.musiclib.json` is a receipt that MusicLib uses to check its own output.
 
-**Treat the library folder as read-only.** Change metadata in MusicLib: manual changes to files in `library/` are replaced by the next update of that album. If files there were changed or deleted anyway, **Rebuild the library folder** (Activity → Advanced) regenerates all of it.
+**Treat the library folder as read-only.** Change metadata in MusicLib. Anything written into an album's folder, by hand or by another program, is replaced or deleted at that album's next update; files left in an artist folder stay there, and keep the folder after its last album has gone. Give other programs read-only access; what happens in each case is in [docs/operations.md](docs/operations.md#other-programs-and-the-library-folder). If files of the albums were changed or deleted anyway, **Rebuild the library folder** (Activity → Advanced) regenerates every album's folder.
 
 ## Where your data lives
 
@@ -170,7 +173,7 @@ library/
 | Temporary work | `work/` in the data folder | volume `musiclib_data` |
 | Backups | the backup folder | volume `musiclib_backup` |
 
-With the default named volumes, the data is inside Docker's storage, readable only with `sudo`: the library is at `/var/lib/docker/volumes/musiclib_data/_data/library`. Set `MUSICLIB_DATA` (see [above](#keeping-the-data-in-a-host-folder)) to have it at a path of your choice.
+With the default named volumes, the data is inside Docker's storage, readable only with `sudo`: the library is at `/var/lib/docker/volumes/musiclib_data/_data/library`. Set `MUSICLIB_DATA` (see [above](#keeping-the-data-in-a-host-folder), or [move an existing installation](docs/operations.md#moving-an-existing-installation-to-a-host-folder)) to have it at a path of your choice.
 
 **Disk space.** Plan for about **twice the size of the music you import**, one copy for the originals and one for the library, plus room for work in progress and at least 1 GiB free. Each backup needs about the size of the originals again, on the backup disk. MusicLib never deletes an original: trashing an album or deleting a track frees no space.
 
@@ -186,7 +189,7 @@ All settings are in `~/musiclib/.env`. After changing it, apply it with `docker 
 | `MUSICLIB_BIND` | `127.0.0.1` | Host address the web interface listens on. Loopback: this machine only. |
 | `MUSICLIB_PORT` | `8080` | Host port of the web interface. Without a reverse proxy, keep it equal to the port in `PUBLIC_ORIGIN`. |
 | `MUSICLIB_IMPORT` | `./import` | Folder with the music to import, mounted read-only. It must exist. |
-| `MUSICLIB_DATA` | `data` (named volume) | Or an absolute path of an empty ext4 folder owned by uid 1000. Set it before the first start. |
+| `MUSICLIB_DATA` | `data` (named volume) | Or an absolute path of an empty ext4 folder owned by uid 1000, created before the first start. To move an existing installation there, see [docs/operations.md](docs/operations.md#moving-an-existing-installation-to-a-host-folder). |
 | `MUSICLIB_BACKUP` | `backup` (named volume) | Or an absolute path of a folder owned by uid 1000, preferably on another disk. |
 | `WORKERS` | empty: the number of CPUs, at most 4 | How many imports and album updates run at once, 1 to 16. |
 | `MUSICLIB_UID`, `MUSICLIB_GID` | `1000` | The user and group MusicLib runs as. Another value needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as folders owned by it. |

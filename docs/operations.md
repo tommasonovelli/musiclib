@@ -21,20 +21,7 @@ The block is idempotent: it never replaces an existing `compose.yaml` or `.env`.
 
 **The sign-in password is required.** `MUSICLIB_PASSWORD` in `.env`, at least 12 characters (at most 1024 bytes, no line break or other control character), protects the web interface and the API; the server refuses to start without it (`password_invalid`, exit 2) and never logs it. The block above writes a random one; read it with `grep MUSICLIB_PASSWORD .env`. To change it, edit `.env` and run `docker compose up -d --wait`: Compose recreates the app, and every browser is signed out (sessions live in memory). Only the server reads it: doctor, rebuild, backup, restore, `version` and the healthcheck run without it.
 
-The defaults keep the database, `/data` and `/backup` in the named volumes `musiclib_db`, `musiclib_data` and `musiclib_backup`. For host directories on ext4 (a data disk, a backup disk), set them in `.env` before the first start:
-
-```sh
-# Create an ext4-backed data and backup directory, owned by the app UID.
-sudo mkdir -p /srv/musiclib/data /mnt/backup/musiclib
-sudo chown 1000:1000 /srv/musiclib/data /mnt/backup/musiclib
-cat >> .env <<'EOF'
-MUSICLIB_DATA=/srv/musiclib/data
-MUSICLIB_BACKUP=/mnt/backup/musiclib
-MUSICLIB_IMPORT=/srv/music
-EOF
-```
-
-Use a **new, empty directory dedicated to MusicLib** for `MUSICLIB_DATA`, never your music collection or a directory shared with anything else. MusicLib creates only `originals/`, `library/`, `work/` and its marker files (`.lock`, `.musiclib-store`, and `.maintenance` while a rebuild or restore runs) there, and never changes or deletes any other entry; but it does not refuse a directory that already holds other files, so this check is yours. The music to import goes in `MUSICLIB_IMPORT`, mounted read-only.
+The defaults keep the database, `/data` and `/backup` in the named volumes `musiclib_db`, `musiclib_data` and `musiclib_backup`. To keep `/data` or `/backup` in folders of your choice (a data disk, a backup disk), read [The data in a host folder](#the-data-in-a-host-folder) before the first start. The music to import goes in `MUSICLIB_IMPORT` (for example `MUSICLIB_IMPORT=/srv/music` in `.env`), mounted read-only.
 
 The image runs as `1000:1000` and owns `/data` and `/backup`, so a new named volume belongs to `1000:1000`. `MUSICLIB_UID`/`MUSICLIB_GID` in `.env` run the process as another uid (Compose `user:`); the named volumes do not follow, so another uid needs `MUSICLIB_DATA` and `MUSICLIB_BACKUP` as host directories owned by it (and `/import` readable by it). A bind-mounted `MUSICLIB_BACKUP` directory must be writable by `MUSICLIB_UID` (and its group by `MUSICLIB_GID`). The `.env` file contains passwords: restrict its permissions (`chmod 600 .env`) and keep it out of backups/shared checkouts.
 
@@ -156,6 +143,106 @@ To restore on a machine that still runs an installation (to test a backup, for e
    ```
 
    If the existing installation keeps its backups in a host directory (`MUSICLIB_BACKUP`), copy from there. Then run the restore above in the new directory and open `http://127.0.0.1:8081`. The two installations share nothing and can run side by side.
+
+## The data in a host folder
+
+By default `/data` is the named volume `musiclib_data`, inside Docker's storage and readable only with `sudo`. With `MUSICLIB_DATA` in `.env` it is a folder of your choice, and the generated library is `<folder>/library`: folders `0755` and files `0644`, owned by the user MusicLib runs as (uid 1000), so every user of the machine can read it and only MusicLib can write it. All of `/data` stays one folder on one filesystem: `library/` cannot be mounted somewhere else on its own, because MusicLib publishes an album with an atomic rename inside `/data`.
+
+### Before the first start
+
+The folder must be **new, empty and used only by MusicLib** (never your music collection), on **local ext4**, with **nothing mounted inside it**, and **owned by uid 1000** (or by `MUSICLIB_UID`:`MUSICLIB_GID`). Create it yourself: if it does not exist, Docker creates it owned by root, and MusicLib does not start. The backup folder (`MUSICLIB_BACKUP`) must be owned by uid 1000 too, and must not be inside the data folder; put it on another disk if you can.
+
+Run the install block of [First start](#first-start) without its `docker compose up` line, then:
+
+```sh
+sudo mkdir -p /srv/musiclib/data /mnt/backup/musiclib
+sudo chown 1000:1000 /srv/musiclib/data /mnt/backup/musiclib
+findmnt -no FSTYPE -T /srv/musiclib/data      # must print ext4
+ls -A /srv/musiclib/data                       # must print nothing (lost+found at the root of a disk is fine)
+cat >> .env <<'EOF'
+MUSICLIB_DATA=/srv/musiclib/data
+MUSICLIB_BACKUP=/mnt/backup/musiclib
+EOF
+docker compose up -d --wait
+ls /srv/musiclib/data                          # library  originals  work
+```
+
+MusicLib keeps everything there: `originals/` (an unchanged copy of every imported file), `library/`, `work/` (temporary files) and its marker files `.lock` and `.musiclib-store` (and `.maintenance` while a rebuild or restore runs). It never changes or deletes any other entry at the top of the folder, but it does not refuse a folder that already holds other files, so keeping it empty is up to you.
+
+If MusicLib cannot read or write the folder, it does not start, and `docker compose logs --tail=20 app` shows a message such as:
+
+```text
+volume_permission: cannot open the volume lock .lock: this process runs as uid 1000 and gid 1000 (MUSICLIB_UID, MUSICLIB_GID) and must be able to read and write all of /data, on a read-write mount; if MUSICLIB_DATA is a host folder, run `sudo chown -R 1000:1000 <that folder>` on the host: fs_permission (openat2): data/.lock: permission denied
+```
+
+Run that command on the folder you set in `MUSICLIB_DATA`, here `sudo chown -R 1000:1000 /srv/musiclib/data`, then `docker compose restart app`.
+
+### Moving an existing installation to a host folder
+
+An installation that already runs on the named volume moves by copying the volume into the new folder while MusicLib is stopped. The database stays where it is, and nothing is regenerated. The folder needs room for the whole data volume (about twice the size of the music you imported), and MusicLib stays stopped while the copy runs.
+
+1. Create the new folder with the `mkdir`, `chown`, `findmnt` and `ls -A` commands above, for the data folder only, but do not change `.env` yet.
+2. Stop MusicLib and copy the volume into the folder:
+
+   ```sh
+   docker compose stop app
+   docker compose run --rm --no-deps -v /srv/musiclib/data:/to --entrypoint flock app --verbose -n /data/.lock cp -a /data/. /to/
+   ```
+
+   The copy runs in MusicLib's own image, as MusicLib's user, so every file keeps its owner, modes and dates. `flock` first takes MusicLib's lock on the volume: it prints `flock: executing cp` and copies, or, if MusicLib or a maintenance command still uses the volume, it prints `flock: failed to get lock` and copies nothing. Then stop MusicLib and repeat. If `cp` prints an error (a full disk, for example), the copy is incomplete: do not go on, see "If the move fails" below.
+3. Point MusicLib at the new folder, check the copy, and start MusicLib only if the check passes. `doctor --deep` reads every original and every library file against its recorded hash; it must end with `Doctor complete: no damage found.` (exit 0), and `&&` runs the start only then:
+
+   ```sh
+   sed -i '/^MUSICLIB_DATA=/d' .env && echo 'MUSICLIB_DATA=/srv/musiclib/data' >> .env
+   docker compose run --rm --no-deps app doctor --deep && docker compose up -d --wait
+   ```
+
+   The start then checks what doctor does not: that MusicLib can read and write the folder, that it is one filesystem with nothing mounted inside it, and that an atomic rename exchange works there. MusicLib pairs the copy with its database as before (the `volume identified` line of the log shows the same `store_id`) and renders nothing again.
+4. Your library is now at `/srv/musiclib/data/library`.
+
+**If the move fails.** If the copy stops with an error, or doctor does not end with `no damage found`, do not start MusicLib on the new folder. Delete the `MUSICLIB_DATA` line from `.env` and start again on the old volume, which the move has not changed:
+
+```sh
+sed -i '/^MUSICLIB_DATA=/d' .env
+docker compose up -d --wait
+```
+
+If doctor reported damage, check the old volume too, with MusicLib stopped: `docker compose stop app && docker compose run --rm --no-deps app doctor --deep`, then `docker compose start app`. If it reports the same damage, the damage was already there before the move: deal with it first (see [Security and troubleshooting](#security-and-troubleshooting)), or every new try fails the same way.
+
+Before another try, empty the new folder (a second copy cannot replace the read-only originals of the first one), check it with `ls -A` and repeat from step 2. Run this only on the new folder, which MusicLib has never started on, never on a folder MusicLib uses:
+
+```sh
+sudo find /srv/musiclib/data -mindepth 1 -delete
+```
+
+**The old volume.** The move leaves it as it was. As long as you have not imported or changed anything, you can go back by deleting the `MUSICLIB_DATA` line from `.env` and running `docker compose up -d --wait`. Keep the old volume until MusicLib has started on the new folder and a first [backup](#offline-commands) of it has completed; then remove it. Its name is `musiclib_data`, or `<name>_data` if you set `COMPOSE_PROJECT_NAME=<name>` in `.env`; check it in the list first:
+
+```sh
+docker volume ls
+```
+
+then remove it by that name:
+
+```sh
+docker volume rm musiclib_data
+```
+
+Do not keep it for good: it carries the same identity as your database, so if the `MUSICLIB_DATA` line were ever lost, MusicLib would start on the old volume again, with the originals and the library as they were at the time of the copy.
+
+To move to **another machine**, use a backup and a restore instead: see [Restore](#restore-use-new-empty-destinations).
+
+### Other programs and the library folder
+
+Other programs may **read** `library/`. They must **never write** in it: no tags, covers, index or thumbnail files, no renamed folders. MusicLib owns every album folder and replaces it as a whole at the album's next update. What another program leaves there:
+
+- **A file or folder inside an album folder** (such as `folder.jpg`, `.DS_Store`, `Thumbs.db` or a thumbnail folder) is deleted at that album's next update (an edit, a new title, a manual render, **Rebuild the library folder**), together with the old version of the album folder.
+- **A file inside an artist folder**, next to the album folders, or at the top of `library/`, is left alone, also by **Rebuild the library folder**. MusicLib removes an artist folder only when it is empty, so such a file keeps the artist folder in `library/` after its last album has gone to the trash or to another folder (after a new artist name, for example).
+- **A folder created where an album is about to go** (after a new title, for example) blocks that album's update: Activity shows it as failed with `publish_destination_occupied`, and `library/` is not touched. Move the folder away, then retry. MusicLib never adopts or deletes it.
+- **A program running as root** that leaves folders owned by root in `library/`, or changes owners there, stops MusicLib at that album's next update, or at its next start: the log shows a permission error (`publish_io` or `fs_permission`) and MusicLib restarts in a loop. Give the folder back with `sudo chown -R 1000:1000 /srv/musiclib/data` and run `docker compose restart app`: the update then completes. No album is lost in between.
+
+`doctor` lists each foreign file and folder as `doctor_output_extra`: a warning, not damage, so it still ends with "no damage found". Delete them by hand, or regenerate the whole folder with the offline `rebuild` ([Offline commands](#offline-commands)), which deletes everything in `library/` and renders every album again. **Rebuild the library folder** in Activity regenerates the album folders only.
+
+Give other programs read-only access: for a container, mount the library with `:ro`; for a network share, share it read-only. On many Linux desktops your own account is uid 1000 too (`id -u` prints `1000`), so the programs you run yourself can write there: set them not to change the files or folders of the library.
 
 ## HTTPS and a domain name
 
