@@ -20,10 +20,6 @@ Keep changes focused and explain the problem, resulting behavior and verificatio
 
 For documentation-only changes, review the full diff, check local links and command semantics, and run `git diff --check`; a container rebuild is unnecessary. For code changes, run the relevant tests and the repository gate. Record commands, results and any skips accurately. Passing Docker Desktop tests does not close the [native release acceptance gate](docs/docker.md#release-check-on-a-native-host).
 
-## Planned work
-
-The work planned for the next release, with the owner's decisions and a to-do list for each item, is in [v1.1.0.md](v1.1.0.md). Read it before starting on one of its items, and tick the item there when it lands.
-
 ## Reports and release work
 
 For a reproducible bug report, include the commit, host/kernel, filesystem, Docker/Compose versions, relevant configuration without credentials, minimal steps, expected/actual behavior and redacted logs. Never attach `.env`, database URLs containing passwords, catalog dumps, private music or personal metadata. If an integrity problem is involved, preserve the evidence and backups before attempting recovery.

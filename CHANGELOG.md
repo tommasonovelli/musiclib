@@ -5,6 +5,8 @@ Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-30
+
 **Upgrading from 1.0.0: MusicLib now asks for a password, and does not start without one.** Before updating, add one to `.env` (this line adds a random one unless `.env` already sets it):
 
 ```sh
@@ -65,5 +67,6 @@ The first release of Vibrance MusicLib: a self-hosted web app, for one person, t
 - **Upgrades are one-way**: a new version can upgrade the database, and an older version refuses it afterwards. Back up before every update: going back to an older version means restoring that backup.
 - **Third-party software**: `ffmpeg` and `ffprobe` in the image are under GPL-2.0-or-later; MusicLib's own code is under the MIT License. `THIRD_PARTY_NOTICES.md` lists every component of the image with its license, and is attached to this release together with the source tarballs of FFmpeg and TagLib.
 
-[Unreleased]: https://github.com/tommasonovelli/vibrance-musiclib/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/tommasonovelli/vibrance-musiclib/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/tommasonovelli/vibrance-musiclib/releases/tag/v1.1.0
 [1.0.0]: https://github.com/tommasonovelli/vibrance-musiclib/releases/tag/v1.0.0

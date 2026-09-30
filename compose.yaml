@@ -26,8 +26,8 @@ name: musiclib
 # survives an upgrade that replaces this file.
 # PostgreSQL reads it only when it creates its database, at the first start:
 # changing it later does not change the database's password, and the app can
-# no longer connect (docs/operations.md, "First start", explains how to change
-# it). The database publishes no port: other machines cannot reach it.
+# no longer connect (docs/operations.md, "The database password", explains how
+# to change it). The database publishes no port: other machines cannot reach it.
 x-db-password: &db-password ${POSTGRES_PASSWORD:-musiclib}
 
 x-hardening: &hardening
@@ -86,7 +86,7 @@ services:
   # -------------------------------------------------------------------------
   # The application.
   app:
-    image: ghcr.io/tommasonovelli/musiclib:1.0.0
+    image: ghcr.io/tommasonovelli/musiclib:1.1.0
     # `musiclib`, or the project's name, as for postgres.
     container_name: ${COMPOSE_PROJECT_NAME:-musiclib}
     init: true
