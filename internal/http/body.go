@@ -385,6 +385,34 @@ func (o object) ID(key string) (uuid.UUID, *Error) {
 	return id, nil
 }
 
+// IDs is a required array of at least one id, each in canonical form
+// (parseID) and listed once: an id listed twice is 422 duplicate_id.
+func (o object) IDs(key string) ([]uuid.UUID, *Error) {
+	path := joinPath(o.path, key)
+	var raws []json.RawMessage
+	if !isKind(o.fields[key], '[') || json.Unmarshal(o.fields[key], &raws) != nil || len(raws) == 0 {
+		return nil, invalidField(path, "must be an array of at least one id")
+	}
+	ids := make([]uuid.UUID, len(raws))
+	seen := make(map[uuid.UUID]bool, len(raws))
+	for i, raw := range raws {
+		var s string
+		id, ok := uuid.Nil, isKind(raw, '"') && json.Unmarshal(raw, &s) == nil
+		if ok {
+			id, ok = parseID(s)
+		}
+		if !ok {
+			return nil, invalidField(fmt.Sprintf("%s[%d]", path, i), "must be an id in canonical form (lowercase, 8-4-4-4-12)")
+		}
+		if seen[id] {
+			return nil, newError(nethttp.StatusUnprocessableEntity, CodeDuplicateID, "%s is listed twice", id).with("id", id.String())
+		}
+		seen[id] = true
+		ids[i] = id
+	}
+	return ids, nil
+}
+
 // Objects is a required array of objects, each with exactly keys.
 func (o object) Objects(key string, keys ...string) ([]object, *Error) {
 	path := joinPath(o.path, key)

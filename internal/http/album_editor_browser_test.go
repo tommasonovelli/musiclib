@@ -513,6 +513,7 @@ func TestBrowserAlbumTrashAndMenus(t *testing.T) {
 		t.Fatalf("first menu item: %q", got)
 	}
 	key("\t")
+	key("\t")
 	key(kb.Enter)
 	browserWait(t, tab, `document.querySelector('#ask').open`)
 	if got := js(t, tab, `return $('#ask-text').textContent+'|'+$('#ask-ok').textContent`); got != "Move “Kind of Blue” to the trash? You can restore it.|Move to trash" {
@@ -529,7 +530,7 @@ func TestBrowserAlbumTrashAndMenus(t *testing.T) {
 	js(t, tab, `$('#ask-ok').click();return ''`)
 	browserWait(t, tab, `document.querySelector('.band')?.textContent === 'This album is in the trash.Restore'`)
 	// The back link follows the album into the Trash (N-281).
-	if got := js(t, tab, `return [$('.nav a[aria-current=page]').textContent, $('#editor').dataset.trashed, $$('#album-menu button').map(b=>b.textContent).join(','), $$('.backlink').length, $('.backlink').textContent, $('.backlink').getAttribute('href')].join('|')`); got != "Trash|true|Update in library|1|Trash|/?trash=true" {
+	if got := js(t, tab, `return [$('.nav a[aria-current=page]').textContent, $('#editor').dataset.trashed, $$('#album-menu button').map(b=>b.textContent).join(','), $$('.backlink').length, $('.backlink').textContent, $('.backlink').getAttribute('href')].join('|')`); got != "Trash|true|Update in library,Move all tracks to another album…|1|Trash|/?trash=true" {
 		t.Fatalf("trashed page: %s", got)
 	}
 	if body, _ := e.album(id); body["trashed"] != true {

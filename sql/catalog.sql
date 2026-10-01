@@ -269,6 +269,11 @@ SELECT count(*) FROM tracks WHERE album_id = $1;
 -- name: DeleteTrack :execrows
 DELETE FROM tracks WHERE id = @id AND album_id = @album_id;
 
+-- A track of an album moved to another album, at its place there
+-- (catalog.MoveTracks); everything else of the track goes with it.
+-- name: MoveTrack :execrows
+UPDATE tracks SET album_id = @to_album_id, disc = @disc, no = @no WHERE id = @id AND album_id = @album_id;
+
 -- §10.2 GET /api/albums: album summaries in the library's order, the
 -- artist's folder key, then the album's, then the id, byte-wise (COLLATE
 -- "C"). Keyset pagination: the page starts after the cursor's triple

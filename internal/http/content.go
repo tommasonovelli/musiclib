@@ -398,6 +398,58 @@ func (h *handlers) deleteTrack(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.trackCommand(w, r, h.catalog.DeleteTrack)
 }
 
+// moveJSON is the answer of a move of tracks: both albums as they are
+// after it, each with its revision and ETag.
+type moveJSON struct {
+	From albumJSON `json:"from"`
+	To   albumJSON `json:"to"`
+}
+
+// moveTracks is POST /api/albums/{id}/move-tracks with the If-Match of the
+// album {id}, the source, and the body {"tracks": [<track id>, ...], "to":
+// <album id>}: the tracks go to the end of the album "to" (catalog
+// MoveTracks), which needs no If-Match since it is only appended to; its
+// revision is bumped. A source left without tracks goes to the trash. 200
+// with both albums.
+func (h *handlers) moveTracks(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id, rev, ok := h.albumPrecondition(w, r)
+	if !ok {
+		return
+	}
+	body, e := readObject(w, r, "tracks", "to")
+	if e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	tracks, e := body.IDs("tracks")
+	if e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	to, e := body.ID("to")
+	if e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	if _, err := h.catalog.MoveTracks(r.Context(), id, rev, tracks, to); err != nil {
+		h.api.fail(w, r, err)
+		return
+	}
+	var out moveJSON
+	for _, a := range []struct {
+		id  uuid.UUID
+		rep *albumJSON
+	}{{id, &out.From}, {to, &out.To}} {
+		v, err := h.catalog.GetAlbum(r.Context(), a.id)
+		if err != nil {
+			h.api.fail(w, r, err)
+			return
+		}
+		*a.rep = albumRep(v)
+	}
+	h.api.writeJSON(w, nethttp.StatusOK, out)
+}
+
 // putLyrics is PUT /api/albums/{id}/tracks/{track}/lyrics: an upload of
 // an LRC file (at most 2 MiB, valid UTF-8, §10.2), or {"attachment_id"}
 // to assign an .lrc attachment of the album, which stays an attachment

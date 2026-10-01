@@ -5,7 +5,7 @@ const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = editor) => [...root.querySelectorAll(s)];
 const base = `/api/albums/${editor.dataset.id}`;
 const json = JSON.stringify, on = (type, f) => document.addEventListener(type, f);
-let etag = editor.dataset.etag, saved, target, shown = false, busy, timer;
+let etag = editor.dataset.etag, saved, target, shown = false, busy, timer, moving;
 
 // Edits: named form controls by track and name; «No genre» joins its genre.
 const fields = () => [...$('#metadata').elements].filter(f => f.name);
@@ -131,6 +131,8 @@ const sentences = {
   invalid_lyrics: 'Lyrics files must be UTF-8: save it as UTF-8.',
   attachment_path_collision: 'An extra file has this name: change “Save as”.',
   track_exists: 'This file is already a track of the album.',
+  no_tracks: 'An album needs at least one track.',
+  unsaved: 'Save or discard your changes first.',
   corrupt_audio: 'This file is damaged and can’t be played.',
   unsupported_audio: 'Only FLAC, MP3 and M4A files can be tracks.',
   unrenderable_tag: badTag,
@@ -141,6 +143,17 @@ const sentences = {
   network: 'The server doesn’t answer: try again.',
   login_required: 'You’re signed out. Sign in again in another tab, then save.',
   stale: 'Done, but the page didn’t update: reload it.'
+};
+
+// A move's refusals are about the other album.
+const moveSentences = {
+  track_exists: 'The other album already has this track.',
+  cover_not_embeddable: 'The other album’s cover is too large for these files.',
+  genre_not_writable: 'A genre can’t be written to the MP3 files of the other album: change it there first.',
+  too_many_files: 'The other album would have too many tracks.',
+  album_trashed: 'The other album is in the trash: restore it first.',
+  album_not_found: 'The other album isn’t in your library any more.',
+  same_album: 'The tracks are already in this album.'
 };
 
 function sentence(e) {
@@ -155,6 +168,7 @@ function sentence(e) {
   }
   if (code == 'precondition_failed' && e.url.startsWith('/api/artists')) return 'This artist was changed in another window.';
   if (code.startsWith('path_')) return '“Save as” must be a name like Scans/front.jpg.';
+  if (e.url?.endsWith('/move-tracks') && moveSentences[code]) return moveSentences[code];
   return sentences[code] || 'The change didn’t go through: try again.';
 }
 
@@ -266,6 +280,31 @@ async function addTracks(all) {
   $('#tracks-status').textContent = notes.join(' ');
 }
 
+// Tracks to another album: the track whose menu opened the picker, or all
+// of them. The answer's albums are the choices, this one left out.
+async function findAlbums() {
+  const note = $('#move-note');
+  let data;
+  try {
+    const response = await fetch(`/api/albums?limit=20&q=${encodeURIComponent($('#move-q').value.trim())}`);
+    data = response.ok && await response.json();
+  } catch { /* Said below. */ }
+  if (!data) return note.textContent = sentences.network;
+  $('#move-list').replaceChildren(...data.albums.filter(a => a.id != editor.dataset.id).map(a => {
+    const li = document.createElement('li'), b = li.appendChild(document.createElement('button'));
+    b.type = 'button';
+    b.dataset.to = a.id;
+    b.textContent = `${a.title} — ${a.artist_name}${a.year ? ` (${a.year})` : ''}`;
+    return li;
+  }));
+  note.textContent = $('#move-list').children.length ? '' : 'No other album matches.';
+}
+
+async function moveTo(to) {
+  const tracks = moving == 'all' ? $$('[data-track]').map(r => r.dataset.track) : [moving];
+  if (await call(`${base}/move-tracks`, 'POST', json({ tracks, to }), $('#tracks-notice'))) location.assign(`/albums/${to}`);
+}
+
 on('input', e => {
   const t = e.target, r = t.closest('[data-track]');
   if (t.name == 'nogenre' && t.checked) $('[name=genre]', r).value = '';
@@ -296,6 +335,16 @@ on('click', e => {
   if (d.pick) $('#' + d.pick).click();
   if (d.open) $('#' + d.open).showModal();
   if (d.method) run(b);
+  if (d.move && count()) fail({ code: 'unsaved' }, $('#tracks-notice'));
+  else if (d.move) {
+    moving = d.move;
+    $('#move-picker').showModal();
+    findAlbums();
+  }
+  if (d.to) {
+    $('#move-picker').close();
+    moveTo(d.to);
+  }
   if (d.action == 'reapply') {
     for (const n of $$('.notice', document)) n.hidden = true;
     refresh();
@@ -333,6 +382,10 @@ for (const type of ['dragover', 'dragleave', 'drop']) {
 }
 
 on('submit', async e => {
+  if (e.target.id == 'move-search') {
+    e.preventDefault();
+    return findAlbums();
+  }
   if (e.target.id != 'metadata') return;
   e.preventDefault();
   const v = (name, root = editor) => $(`[name=${name}]`, root).value, own = s => s.trim() ? s : null;

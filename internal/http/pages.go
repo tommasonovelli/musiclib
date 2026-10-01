@@ -265,9 +265,13 @@ func clock(s int64) string {
 // albumLength is the discreet line under the track table (N-302): the
 // number of tracks and, when every duration is known, how long the album
 // plays, in words: «12 tracks, 45 minutes», «1 track, 1 hour 3 minutes».
-// A total with unknown parts would be wrong, so it is left out.
+// A total with unknown parts would be wrong, so it is left out, and so is
+// the total of no track (an album in the trash whose tracks were moved).
 func albumLength(tracks []trackJSON) string {
 	out := plural(len(tracks), "track")
+	if len(tracks) == 0 {
+		return out
+	}
 	var ms int64
 	for _, t := range tracks {
 		if t.DurationMS == nil {

@@ -155,7 +155,7 @@ func TestAuthRequiredEverywhere(t *testing.T) {
 		{"GET", album + "/attachments/" + other + "/content"},
 		{"DELETE", album + "/tracks/" + other}, {"GET", album + "/tracks/" + other + "/original"},
 		{"GET", album + "/tracks/" + other + "/lyrics"}, {"PUT", album + "/tracks/" + other + "/lyrics"},
-		{"DELETE", album + "/tracks/" + other + "/lyrics"},
+		{"DELETE", album + "/tracks/" + other + "/lyrics"}, {"POST", album + "/move-tracks"},
 		{"GET", "/api/albums"}, {"GET", "/api/albums?q=secret"}, {"GET", "/api/import-source"},
 		{"POST", "/api/imports"}, {"GET", "/api/imports/" + other}, {"GET", "/api/jobs"},
 		{"POST", "/api/jobs/" + other + "/retry"}, {"POST", "/api/jobs/" + other + "/dismiss"},

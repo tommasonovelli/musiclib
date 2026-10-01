@@ -380,6 +380,12 @@ func TestPlanRemoval(t *testing.T) {
 	if p.AlbumID != s.Album.ID || p.AlbumRevision != s.Album.Revision || p.RenderVersion != Version {
 		t.Fatalf("identity %+v", p)
 	}
+	// A trashed album may have no track left (its tracks were moved): still
+	// a removal.
+	s.Tracks = nil
+	if p := mustPlan(t, s); !p.Removal || len(p.Files()) != 0 {
+		t.Fatalf("removal plan without tracks %+v", p)
+	}
 }
 
 func TestPlanRefusals(t *testing.T) {

@@ -308,7 +308,7 @@ func (a *API) routes(b Backend) nethttp.Handler {
 		nethttp.MethodPost: h.renderAlbum,
 	})
 	// The editor's content (§10.2, round 14): cover, attachments, lyrics,
-	// tracks added and deleted, and the downloads by entity id.
+	// tracks added, deleted and moved, and the downloads by entity id.
 	route("/api/albums/{id}/cover", map[string]nethttp.HandlerFunc{
 		nethttp.MethodGet:    h.downloadCover,
 		nethttp.MethodPut:    h.putCover,
@@ -328,6 +328,9 @@ func (a *API) routes(b Backend) nethttp.Handler {
 	})
 	route("/api/albums/{id}/tracks/{track}", map[string]nethttp.HandlerFunc{
 		nethttp.MethodDelete: h.deleteTrack,
+	})
+	route("/api/albums/{id}/move-tracks", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.moveTracks,
 	})
 	route("/api/albums/{id}/tracks/{track}/original", map[string]nethttp.HandlerFunc{
 		nethttp.MethodGet: h.downloadOriginal,

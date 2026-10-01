@@ -1348,6 +1348,34 @@ func (q *Queries) LockCatalog(ctx context.Context) error {
 	return err
 }
 
+const moveTrack = `-- name: MoveTrack :execrows
+UPDATE tracks SET album_id = $1, disc = $2, no = $3 WHERE id = $4 AND album_id = $5
+`
+
+type MoveTrackParams struct {
+	ToAlbumID uuid.UUID
+	Disc      int32
+	No        int32
+	ID        uuid.UUID
+	AlbumID   uuid.UUID
+}
+
+// A track of an album moved to another album, at its place there
+// (catalog.MoveTracks); everything else of the track goes with it.
+func (q *Queries) MoveTrack(ctx context.Context, arg MoveTrackParams) (int64, error) {
+	result, err := q.db.Exec(ctx, moveTrack,
+		arg.ToAlbumID,
+		arg.Disc,
+		arg.No,
+		arg.ID,
+		arg.AlbumID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const renameArtist = `-- name: RenameArtist :one
 UPDATE artists SET name = $2, folder_key = $3, revision = revision + 1
 WHERE id = $1

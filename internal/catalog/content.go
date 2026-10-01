@@ -410,18 +410,8 @@ func (s *Service) AddTrack(ctx context.Context, albumID uuid.UUID, ifMatch int64
 		if err := checkGenres(ctx, tx, al.ID, albumFields{Genre: al.Genre}, append(all, f), s.genreFits); err != nil {
 			return false, err
 		}
-		if al.CoverHash != nil {
-			cover, err := tx.GetBlobs(ctx, []string{*al.CoverHash})
-			if err == nil && len(cover) != 1 {
-				err = pgx.ErrNoRows
-			}
-			if err != nil {
-				return false, dbErr("reading the cover of album "+al.ID.String(), err)
-			}
-			c := Blob{Hash: cover[0].Hash, Size: cover[0].Size, Format: deref(cover[0].Format)}
-			if err := checkAlbumCoverFits(ctx, tx, al.ID, c, s.coverFits); err != nil {
-				return false, err
-			}
+		if err := checkCoverStillFits(ctx, tx, al, s.coverFits); err != nil {
+			return false, err
 		}
 		return true, nil
 	})
@@ -429,6 +419,24 @@ func (s *Service) AddTrack(ctx context.Context, albumID uuid.UUID, ifMatch int64
 		return 0, uuid.Nil, err
 	}
 	return rev, id, nil
+}
+
+// checkCoverStillFits asks checkAlbumCoverFits about the album's current
+// cover, if it has one, after a change that may have brought it a new audio
+// format: tracks added or moved in.
+func checkCoverStillFits(ctx context.Context, tx *store.CatalogTx, al store.Album, coverFits CoverFits) error {
+	if al.CoverHash == nil {
+		return nil
+	}
+	cover, err := tx.GetBlobs(ctx, []string{*al.CoverHash})
+	if err == nil && len(cover) != 1 {
+		err = pgx.ErrNoRows
+	}
+	if err != nil {
+		return dbErr("reading the cover of album "+al.ID.String(), err)
+	}
+	c := Blob{Hash: cover[0].Hash, Size: cover[0].Size, Format: deref(cover[0].Format)}
+	return checkAlbumCoverFits(ctx, tx, al.ID, c, coverFits)
 }
 
 // CheckTrackAbsent refuses, on a snapshot of the album, a file whose blob
@@ -488,8 +496,10 @@ func landing(occupied Slots, wantDisc, wantNo int) (disc, no int32, err error) {
 // DeleteTrack removes a track of the album (§4.3, §10.2 DELETE
 // /api/albums/{id}/tracks/{track}): the row goes, with its lyrics
 // reference, and no undo; the blobs stay. The album keeps at least one
-// track (CodeNoTracks), in the trash too, since a restore must give an
-// active album with tracks (§4.3). ifMatch as in UpdateAlbum.
+// track (CodeNoTracks), in the trash too: an active album always has a
+// track. Only MoveTracks can empty an album, which then goes to the trash
+// in the same transaction and cannot be restored while it has no track.
+// ifMatch as in UpdateAlbum.
 func (s *Service) DeleteTrack(ctx context.Context, albumID uuid.UUID, ifMatch int64, trackID uuid.UUID) (int64, bool, error) {
 	return s.changeAlbum(ctx, albumID, ifMatch, func(tx *store.CatalogTx, al store.Album) (bool, error) {
 		if _, err := albumTrack(ctx, tx, al.ID, trackID); err != nil {

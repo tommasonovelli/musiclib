@@ -268,7 +268,8 @@ func TestStatusTable(t *testing.T) {
 		catalog.CodeImportBatchNotFound: 404, catalog.CodeJobNotFound: 404, catalog.CodeImportBatchConflict: 409,
 		jobs.CodeNotRetryable: 409, jobs.CodeInProgress: 409, jobs.CodeOverridesNotAllowed: 422,
 		jobs.CodeInvalidOverrides: 422,
-		catalog.CodeBlobMismatch:  0, catalog.CodeInvalidBlob: 0,
+		catalog.CodeAlbumTrashed:  409, catalog.CodeSameAlbum: 422, catalog.CodeTrackExists: 409,
+		catalog.CodeBlobMismatch: 0, catalog.CodeInvalidBlob: 0,
 	} {
 		if statusOf[code] != want {
 			t.Errorf("%s: %d, want %d", code, statusOf[code], want)

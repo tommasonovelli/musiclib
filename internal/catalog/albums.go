@@ -347,12 +347,21 @@ func (s *Service) TrashAlbum(ctx context.Context, albumID uuid.UUID, ifMatch int
 // RestoreAlbum brings an album back from the trash (§4.3, §10.2 POST
 // /api/albums/{id}/restore), with the normal name checks: another active
 // album with the same folder under the artist is CodeAlbumFolderConflict,
-// a path reserved by another album CodePathReserved. Restoring an active
-// album is a no-op. ifMatch as in UpdateAlbum.
+// a path reserved by another album CodePathReserved. An album left without
+// tracks by MoveTracks stays in the trash (CodeNoTracks): an active album
+// always has a track. Restoring an active album is a no-op. ifMatch as in
+// UpdateAlbum.
 func (s *Service) RestoreAlbum(ctx context.Context, albumID uuid.UUID, ifMatch int64) (int64, bool, error) {
 	return s.changeAlbum(ctx, albumID, ifMatch, func(tx *store.CatalogTx, al store.Album) (bool, error) {
 		if al.DeletedAt == nil {
 			return false, nil
+		}
+		n, err := tx.CountAlbumTracks(ctx, al.ID)
+		if err != nil {
+			return false, dbErr("counting the tracks of album "+al.ID.String(), err)
+		}
+		if n == 0 {
+			return false, errorf(CodeNoTracks, "album %s has no tracks: it cannot be restored", al.ID)
 		}
 		if err := checkFolderFree(ctx, tx, al.ArtistID, al.FolderKey, al.ID); err != nil {
 			return false, err

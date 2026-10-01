@@ -110,6 +110,8 @@ var statusOf = map[string]int{
 	// A file uploaded as a track that is already one of the album's: two
 	// tracks are never merged.
 	catalog.CodeTrackExists: nethttp.StatusConflict,
+	// Tracks moved to an album in the trash: restore it first.
+	catalog.CodeAlbumTrashed: nethttp.StatusConflict,
 	// The imports and the queue (round 16, N-193, N-195).
 	catalog.CodeImportBatchNotFound: nethttp.StatusNotFound,
 	catalog.CodeJobNotFound:         nethttp.StatusNotFound,
@@ -131,6 +133,7 @@ var statusOf = map[string]int{
 	catalog.CodeTrackListMismatch:    nethttp.StatusUnprocessableEntity,
 	catalog.CodeNoTracks:             nethttp.StatusUnprocessableEntity,
 	catalog.CodeTooManyFiles:         nethttp.StatusUnprocessableEntity,
+	catalog.CodeSameAlbum:            nethttp.StatusUnprocessableEntity,
 	catalog.CodeInvalidCover:         nethttp.StatusUnprocessableEntity,
 	catalog.CodeGenreNotWritable:     nethttp.StatusUnprocessableEntity,
 	catalog.CodeLyricsAssociation:    nethttp.StatusUnprocessableEntity,
