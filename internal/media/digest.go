@@ -90,7 +90,11 @@ func decodeArgs(demuxer string) []string {
 //     APE tags, only the bytes before them, probed again for the declared
 //     length (mp3AudioEnd, N-154); every other file is read whole.
 //  3. The byte count must be a positive multiple of 8 × channels, and, when
-//     the container declares an exact length, equal to it.
+//     the container declares an exact length, equal to it, less, for an
+//     MP3, the frames its gapless header leaves FFmpeg no padding to trim
+//     (mp3GaplessShortfall): max(0, mp3DecoderDelay − end padding) when
+//     that header is one FFmpeg applies, 0 otherwise. The rule is exact,
+//     never a tolerance. The digest is of the samples actually decoded.
 //
 // A file that is not supported audio fails with CodeNotSupported; one that
 // does not decode completely, with CodeDecode. Timeouts (DecodeTimeout) and
@@ -114,7 +118,7 @@ func (t *Tools) AudioDigest(ctx context.Context, f *os.File) (Digest, error) {
 		}
 		return Digest{}, newErr(CodeNotSupported, "audio digest", msg, nil)
 	}
-	limit := int64(wholeFile)
+	limit, shortfall := int64(wholeFile), int64(0)
 	switch p.Format {
 	case FormatFLAC:
 		if limit, err = flacAudioEnd(f); err != nil {
@@ -129,8 +133,11 @@ func (t *Tools) AudioDigest(ctx context.Context, f *os.File) (Digest, error) {
 				return Digest{}, err
 			}
 		}
+		if shortfall, err = mp3GaplessShortfall(f, p.DeclaredFrames); err != nil {
+			return Digest{}, err
+		}
 	}
-	return t.decode(ctx, f, p, limit)
+	return t.decode(ctx, f, p, limit, shortfall)
 }
 
 // wholeFile is the limit of decode that reads the whole file.
@@ -188,7 +195,9 @@ func hasTrailingID3v1(tail []byte, size int64) bool {
 
 // decode is steps 2 and 3 of AudioDigest, for a file already classified as
 // ClassAudio. limit is wholeFile, or the number of leading bytes of f the
-// decoder gets.
+// decoder gets. shortfall is how many frames fewer than p.DeclaredFrames the
+// decode of a complete file yields: 0, except for an MP3 whose gapless
+// header pads less than the decoder delay (mp3GaplessShortfall).
 //
 // The whole file reaches ffmpeg as descriptor 3 itself. A limited FLAC
 // reaches it as the read end of a pipe on descriptor 3, which a goroutine
@@ -196,7 +205,7 @@ func hasTrailingID3v1(tail []byte, size int64) bool {
 // a path), with the same command line. A limited MP3 is descriptor 3 itself,
 // read through the subfile protocol up to limit (windowed, N-154): the mp3
 // demuxer trims the gapless padding only on a seekable input.
-func (t *Tools) decode(ctx context.Context, f *os.File, p ProbeResult, limit int64) (Digest, error) {
+func (t *Tools) decode(ctx context.Context, f *os.File, p ProbeResult, limit, shortfall int64) (Digest, error) {
 	const op = "ffmpeg decode"
 	in := f
 	args := decodeArgs(demuxerOf[p.Format])
@@ -263,10 +272,14 @@ func (t *Tools) decode(ctx context.Context, f *os.File, p ProbeResult, limit int
 			" bytes of PCM are not a whole number of "+strconv.Itoa(p.Audio.Channels)+"-channel frames", nil)
 	}
 	frames := pcm.n / frameBytes
-	if p.DeclaredFrames > 0 && frames != p.DeclaredFrames {
-		return Digest{}, newErr(CodeDecode, op, "decoded "+strconv.FormatInt(frames, 10)+
-			" frames, the container declares "+strconv.FormatInt(p.DeclaredFrames, 10)+
-			" (truncated, or damaged header)", nil)
+	if p.DeclaredFrames > 0 && frames != p.DeclaredFrames-shortfall {
+		msg := "decoded " + strconv.FormatInt(frames, 10) +
+			" frames, the container declares " + strconv.FormatInt(p.DeclaredFrames, 10)
+		if shortfall > 0 {
+			msg += ", of which the decoder trims " + strconv.FormatInt(shortfall, 10) +
+				" more than the gapless header pads: expected " + strconv.FormatInt(p.DeclaredFrames-shortfall, 10)
+		}
+		return Digest{}, newErr(CodeDecode, op, msg+" (truncated, or damaged header)", nil)
 	}
 	return Digest{
 		SampleRate: p.Audio.SampleRate,

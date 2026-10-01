@@ -5,6 +5,10 @@ Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- MP3 files whose gapless header declares an end padding shorter than the decoder's delay, as written by FFmpeg 1.0 to 3.1, are no longer refused as damaged (`decoded … frames, the container declares …`). MusicLib now expects exactly the length such a header implies, so a file that really lost audio is still refused. After updating, retry the failed imports.
+
 ## [1.1.0] - 2026-09-30
 
 **Upgrading from 1.0.0: MusicLib now asks for a password, and does not start without one.** Before updating, add one to `.env` (this line adds a random one unless `.env` already sets it):

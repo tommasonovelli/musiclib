@@ -220,7 +220,7 @@ func TestAudioDigestTrailingID3v1(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tools.decode(t.Context(), f, pr, wholeFile); err != nil {
+			if _, err := tools.decode(t.Context(), f, pr, wholeFile, 0); err != nil {
 				t.Fatalf("the premise failed: the whole file does not decode: %v", err)
 			}
 			_, err = tools.AudioDigest(t.Context(), open(t, p))
@@ -331,7 +331,7 @@ func TestAudioDigestLimitedInputFailures(t *testing.T) {
 			if err != nil || limit != int64(len(plain)) {
 				t.Fatalf("flacAudioEnd = %d, %v", limit, err)
 			}
-			_, err = tools.decode(ctx, f, pr, limit)
+			_, err = tools.decode(ctx, f, pr, limit, 0)
 			e := wantCode(t, err, tc.code)
 			if !strings.Contains(e.Error(), tc.msg) {
 				t.Fatalf("error %q does not say %q", e.Error(), tc.msg)

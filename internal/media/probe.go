@@ -100,7 +100,8 @@ type ProbeResult struct {
 	// for the audio stream, 0 when it declares none or only an estimate:
 	// the FLAC STREAMINFO total, or the frame count of an MP3 Xing, Info or
 	// VBRI header. AudioDigest requires the decode to produce exactly that
-	// many (NOTES.md N-078).
+	// many, less, for an MP3, the frames its gapless header leaves FFmpeg no
+	// padding to trim (mp3GaplessShortfall).
 	DeclaredFrames int64
 }
 
@@ -412,7 +413,9 @@ func DurationMS(d time.Duration) (ms int64, ok bool) {
 //     1/sample_rate time base; absent when STREAMINFO says 0 (unknown).
 //   - MP3: the Xing/Info/VBRI frame count, already net of the LAME encoder
 //     delay and padding, unless libavformat had to estimate it from the
-//     bitrate. It must be a whole number of frames.
+//     bitrate. It must be a whole number of frames. When the header's end
+//     padding is shorter than mp3DecoderDelay, FFmpeg's decode yields
+//     exactly the difference fewer frames (mp3GaplessShortfall).
 //   - M4A: none. An AAC decode includes the encoder's end padding, so its
 //     count differs from the declared one by design; a truncated M4A fails
 //     in the demuxer, because its sample table points past the end.
