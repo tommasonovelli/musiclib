@@ -30,6 +30,7 @@ const (
 	MaxAttachmentBytes = 256 << 20
 	MaxLyricsBytes     = 2 << 20
 	MaxCoverBytes      = media.MaxCoverBytes
+	MaxTrackBytes      = 2 << 30
 )
 
 // UploadMediaType is the one Content-Type of an upload's body.

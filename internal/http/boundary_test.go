@@ -132,7 +132,7 @@ func TestRouting(t *testing.T) {
 		{"GET", "/api/artists/", notFound404, CodeNotFound, ""},
 		{"GET", "/api//artists", notFound404, CodeNotFound, ""},
 		{"GET", "/api/albums/" + id.String() + "/../" + id.String(), notFound404, CodeNotFound, ""},
-		{"GET", "/api/albums/" + id.String() + "/tracks", notFound404, CodeNotFound, ""},
+		{"GET", "/api/albums/" + id.String() + "/tracks", nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed, "POST"},
 		{"DELETE", "/api/artists", nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed, "GET, HEAD, POST"},
 		{"POST", "/api/artists/" + id.String(), nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed, "GET, HEAD, PUT"},
 		{"POST", "/api/albums/" + id.String(), nethttp.StatusMethodNotAllowed, CodeMethodNotAllowed, "GET, HEAD, PUT, DELETE"},

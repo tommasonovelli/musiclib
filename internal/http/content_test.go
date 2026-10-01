@@ -868,6 +868,7 @@ func TestContentBoundary(t *testing.T) {
 		upload("PUT", albumPath(a.id)+"/cover", tag, pngImage(t, 4, 4)),
 		{method: "DELETE", path: albumPath(a.id) + "/cover", ifMatch: tag},
 		upload("POST", albumPath(a.id)+"/attachments?path=x", tag, []byte("x")),
+		upload("POST", albumPath(a.id)+"/tracks?name=x.flac", tag, []byte("x")),
 		{method: "DELETE", path: albumPath(a.id) + "/attachments/" + a.attachments["notes.html"].String(), ifMatch: tag},
 		upload("PUT", albumPath(a.id)+"/tracks/"+a.tracks[0].String()+"/lyrics", tag, []byte("x")),
 		{method: "DELETE", path: albumPath(a.id) + "/tracks/" + a.tracks[0].String() + "/lyrics", ifMatch: tag},

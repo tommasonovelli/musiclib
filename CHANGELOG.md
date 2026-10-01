@@ -8,6 +8,11 @@ Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
 ### Added
 
 - **Empty trash**: a button on the **Trash** page deletes the albums in the trash for good, after a confirmation. Only the catalog entries go: the original files stay in MusicLib, so no disk space is freed, and an album can come back only by importing its folder again or restoring a backup. An album still being removed from the library folder stays in the trash until its removal is done; the page says how many are waiting. Nothing is ever deleted automatically. Scripts use `POST /api/trash/empty`.
+- **Add tracks** to an album: on the album's page, **Add tracks** chooses audio files, or drop them anywhere on the page except the cover. Each file is checked exactly as an import checks a track (fully decoded, tags read), then added in order: at the disc and number of its tags when that place is free, otherwise after the last track of the last disc. A file already in the album is refused, and the first refused file stops the rest and says why. A track can be up to 2 GiB. Scripts use `POST /api/albums/<id>/tracks?name=<file name>`. In **Needs attention**, an album whose title the artist already has now suggests opening that album and adding the tracks there.
+
+### Changed
+
+- The UI budget of the contributor rules is now 100 KB of CSS and JavaScript (was 90 KB).
 
 ### Fixed
 

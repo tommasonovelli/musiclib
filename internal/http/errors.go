@@ -107,6 +107,9 @@ var statusOf = map[string]int{
 	// Two attachments whose output paths collide are a conflict of names
 	// (§10.1), found when an attachment is uploaded (N-172).
 	catalog.CodeAttachmentCollision: nethttp.StatusConflict,
+	// A file uploaded as a track that is already one of the album's: two
+	// tracks are never merged.
+	catalog.CodeTrackExists: nethttp.StatusConflict,
 	// The imports and the queue (round 16, N-193, N-195).
 	catalog.CodeImportBatchNotFound: nethttp.StatusNotFound,
 	catalog.CodeJobNotFound:         nethttp.StatusNotFound,
@@ -127,6 +130,7 @@ var statusOf = map[string]int{
 	catalog.CodeDuplicateTrackNumber: nethttp.StatusUnprocessableEntity,
 	catalog.CodeTrackListMismatch:    nethttp.StatusUnprocessableEntity,
 	catalog.CodeNoTracks:             nethttp.StatusUnprocessableEntity,
+	catalog.CodeTooManyFiles:         nethttp.StatusUnprocessableEntity,
 	catalog.CodeInvalidCover:         nethttp.StatusUnprocessableEntity,
 	catalog.CodeGenreNotWritable:     nethttp.StatusUnprocessableEntity,
 	catalog.CodeLyricsAssociation:    nethttp.StatusUnprocessableEntity,
@@ -206,6 +210,9 @@ func detailsOf(d catalog.Details) map[string]any {
 	}
 	if d.ArtistID != uuid.Nil {
 		out["artist_id"] = d.ArtistID.String()
+	}
+	if d.TrackID != uuid.Nil {
+		out["track_id"] = d.TrackID.String()
 	}
 	if d.Path != "" {
 		out["path"] = d.Path

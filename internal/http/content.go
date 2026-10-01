@@ -13,11 +13,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"musiclib/internal/blobstore"
 	"musiclib/internal/catalog"
+	"musiclib/internal/importer"
+	"musiclib/internal/media"
 )
 
 // The album editor's content endpoints of §10.2 (round 14): the cover,
-// the attachments, the lyrics of a track and the deletion of a track.
+// the attachments, the lyrics of a track, the addition and the deletion
+// of a track.
 // Every one is a change of the album and requires the album's ETag in
 // If-Match (§10.2), compared by the catalog in the transaction of the
 // change (N-147); every one answers the album as it is after the change,
@@ -29,8 +33,9 @@ import (
 // pinned, the album on a snapshot (404, 412, and 404 or 409 for what the
 // request names); then one of the MaxConcurrentUploads copy slots (§6.1,
 // N-199), held while the body is read, checked and pinned; the body (413,
-// 422); the space (507); the put; the transaction, which decides (404,
-// 412, 409, 422).
+// 422); the space (507); the put; for a track, its reading with the
+// import's checks, outside the slot (409, 422); the transaction, which
+// decides (404, 412, 409, 422).
 
 // attachmentKeys are the keys of the JSON body that chooses an attachment.
 var attachmentKeys = []string{"attachment_id"}
@@ -219,25 +224,151 @@ func (h *handlers) postAttachment(w nethttp.ResponseWriter, r *nethttp.Request) 
 // path: exactly once, and nothing else (N-172). As in any query string, a
 // "+" is a space: a literal plus is sent as %2B.
 func attachmentQuery(r *nethttp.Request) (string, *Error) {
+	return uploadQuery(r, "path", "the attachment's relative path")
+}
+
+// uploadQuery reads the one query parameter of an upload, key: exactly
+// once, and nothing else. what says what it is.
+func uploadQuery(r *nethttp.Request, key, what string) (string, *Error) {
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
-		return "", invalidField("path", "must be one query parameter, URL-encoded (path=<relative path>)")
+		return "", invalidField(key, "must be one query parameter, URL-encoded ("+key+"=<"+what+">)")
 	}
 	for k := range q {
-		if k != "path" {
+		if k != key {
 			return "", newError(nethttp.StatusUnprocessableEntity, CodeUnknownField, "unknown query parameter %q", k).
 				with("field", k)
 		}
 	}
-	switch vs := q["path"]; len(vs) {
+	switch vs := q[key]; len(vs) {
 	case 0:
 		return "", newError(nethttp.StatusUnprocessableEntity, CodeMissingField,
-			"the query parameter \"path\" (the attachment's relative path) is required").with("field", "path")
+			"the query parameter %q (%s) is required", key, what).with("field", key)
 	case 1:
 		return vs[0], nil
 	default:
-		return "", invalidField("path", "must be given once")
+		return "", invalidField(key, "must be given once")
 	}
+}
+
+// postTrack is POST /api/albums/{id}/tracks?name=<file name>: the body is
+// an audio file (UploadMediaType, at most MaxTrackBytes), added to the
+// album as a new track. The name is reduced to its last segment and
+// validated before any byte is read; it is the track's source path and,
+// without a title tag, its title. Once pinned, and the upload slot given
+// back, the file is read with exactly the checks of an import
+// (TrackReader: the probe, the complete decode, the tags), outside any
+// transaction: a file that cannot be a track is 422 with the importer's
+// code. A file already a track of the album is 409 track_exists. 201
+// with the album, its warnings (as an import reports them), and the new
+// track's original as Location.
+func (h *handlers) postTrack(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id, rev, ok := h.albumPrecondition(w, r)
+	if !ok {
+		return
+	}
+	if e := checkUploadType(r.Header); e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	raw, e := uploadQuery(r, "name", "the file's name")
+	if e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	name, err := catalog.TrackFileName(raw)
+	if err != nil {
+		h.api.fail(w, r, err)
+		return
+	}
+	if e := declaredTooLarge(r, MaxTrackBytes); e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	v, ok := h.snapshot(w, r, id, rev)
+	if !ok {
+		return
+	}
+	release, ok := h.acquireUpload(w, r)
+	if !ok {
+		return
+	}
+	// The upload slot goes back before the decode and the transaction: it
+	// covers only the copy of the body.
+	b, e, err := func() (catalog.Blob, *Error, error) {
+		defer release()
+		return h.pinUpload(r, uploadReader(w, r, MaxTrackBytes), estimateOf(r, MaxTrackBytes), MaxTrackBytes)
+	}()
+	if err == nil && e == nil {
+		// On the snapshot, before the decode; AddTrack decides.
+		err = catalog.CheckTrackAbsent(v, b.Hash)
+	}
+	switch {
+	case err != nil:
+		h.api.fail(w, r, err)
+		return
+	case e != nil:
+		h.api.writeError(w, e)
+		return
+	}
+	info, ws, err := h.tracks.ReadTrack(r.Context(), blobstore.Blob{SHA256: b.Hash, Size: b.Size}, name)
+	if err != nil {
+		h.trackRefused(w, r, err)
+		return
+	}
+	b.Format = info.Format
+	if ms, ok := media.DurationMS(info.Duration); ok {
+		b.DurationMS = &ms
+	}
+	_, track, err := h.catalog.AddTrack(r.Context(), id, rev, catalog.NewTrack{
+		Blob: b, SourcePath: name, Title: info.Title, Artist: info.Artist, Genre: info.Genre, Disc: info.Disc, No: info.No,
+	})
+	if err != nil {
+		h.api.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/api/albums/"+id.String()+"/tracks/"+track.String()+"/original")
+	v, err = h.catalog.GetAlbum(r.Context(), id)
+	if err != nil {
+		h.api.fail(w, r, err)
+		return
+	}
+	out := addedTrackJSON{albumJSON: albumRep(v), Warnings: make([]warningJSON, len(ws))}
+	for i, wn := range ws {
+		out.Warnings[i] = warningJSON{Code: string(wn.Code), Message: wn.Message}
+		if wn.Path != "" {
+			p := wn.Path
+			out.Warnings[i].Path = &p
+		}
+	}
+	h.api.writeJSON(w, nethttp.StatusCreated, out)
+}
+
+// addedTrackJSON is the answer of POST /api/albums/{id}/tracks: the album
+// after the change and the warnings of the file's reading, as an import
+// reports them (an empty list without any).
+type addedTrackJSON struct {
+	albumJSON
+	Warnings []warningJSON `json:"warnings"`
+}
+
+// trackRefusals are the importer's codes of a file that cannot be a track,
+// as at an import: 422 with the importer's message. Any other failure of
+// the reading (a tool's timeout or failure, a corrupt blob) is the
+// server's.
+var trackRefusals = map[string]bool{
+	importer.CodeCorruptAudio: true, importer.CodeUnsupportedAudio: true, importer.CodeUnrenderableTag: true,
+	importer.CodeInvalidTag: true, catalog.CodeInvalidDisc: true, catalog.CodeInvalidTrackNumber: true,
+}
+
+// trackRefused answers a failure of TrackReader.ReadTrack.
+func (h *handlers) trackRefused(w nethttp.ResponseWriter, r *nethttp.Request, err error) {
+	var ie *importer.Error
+	if errors.As(err, &ie) && trackRefusals[ie.Code] {
+		h.api.writeError(w, newError(nethttp.StatusUnprocessableEntity, ie.Code, "%s", ie.Message).with("path", ie.Path))
+		return
+	}
+	h.api.fail(w, r, err)
 }
 
 // deleteAttachment is DELETE /api/albums/{id}/attachments/{attachment}:

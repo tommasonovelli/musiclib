@@ -64,6 +64,8 @@ type env struct {
 	// imports is the test's /import, source its root (round 16).
 	imports string
 	source  *fsops.Root
+	// tracks reads uploaded tracks: fakeTracks, or the real importer.
+	tracks TrackReader
 
 	mu     sync.Mutex
 	fatals []error
@@ -100,6 +102,7 @@ func newEnvOn(t *testing.T, db *pgxpool.Pool, enable bool) *env {
 		t.Fatal(err)
 	}
 	e.openStore()
+	e.tracks = fakeTracks{e}
 	if enable {
 		api.Enable(e.backend())
 	}
@@ -418,8 +421,8 @@ func (e *env) openStore() {
 	e.budget = jobs.NewBudget()
 }
 
-// backend is what the API serves in the tests: the real catalog and the
-// real blob store.
+// backend is what the API serves in the tests: the real catalog, the
+// real blob store, and the env's track reader.
 func (e *env) backend() Backend {
-	return Backend{Catalog: e.svc, Blobs: e.blobs, Budget: e.budget, Work: e.work, Source: e.source}
+	return Backend{Catalog: e.svc, Blobs: e.blobs, Budget: e.budget, Work: e.work, Source: e.source, Tracks: e.tracks}
 }

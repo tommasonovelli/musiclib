@@ -561,7 +561,7 @@ Any reverse proxy works if it:
 - passes the browser's `Host` header unchanged, port included. nginx does not by default: set `proxy_set_header Host $http_host;` (`$host` drops the port). Apache: `ProxyPreserveHost On`;
 - leaves the other headers alone, in particular `Origin`, `Cookie`, `Set-Cookie`, `If-Match`, `ETag` and `X-Musiclib-Request`;
 - serves MusicLib at the root of its own name;
-- accepts large request bodies: an extra file can be 256 MiB and a cover 20 MiB. nginx refuses bodies over 1 MB by default, and the upload then fails with "The server doesn't answer": set `client_max_body_size 0;`, MusicLib applies its own limits;
+- accepts large request bodies: a track can be 2 GiB, an extra file 256 MiB and a cover 20 MiB. nginx refuses bodies over 1 MB by default, and the upload then fails with "The server doesn't answer": set `client_max_body_size 0;`, MusicLib applies its own limits;
 - lets long transfers run. For nginx, `proxy_request_buffering off;` and `proxy_buffering off;` pass uploads and downloads through instead of storing them in temporary files, and a longer `proxy_read_timeout` and `proxy_send_timeout` (60 s by default) help large uploads over slow connections.
 
 Response compression is not needed. If you turn it on (Caddy's `encode`, nginx's `gzip`), the `ETag` header changes: the web interface is not affected, and API scripts should take the `etag` field of the JSON body instead of the header.
@@ -614,11 +614,12 @@ The import reports are kept for 90 days, then deleted.
 ### Editing albums and the trash
 
 - Open an album from the **Library** to change its title, artist, year, genre and compilation flag, the tracks (number, title, artist, genre, disc), the cover, lyrics and extra files. When you save, MusicLib writes that album's folder in the library again.
+- **Add tracks**, above the tracks, adds audio files to the album; you can also drop them anywhere on the album's page except the cover (which replaces the cover). Not in the trash. Each file is checked exactly as an import checks a track: FLAC, MP3 or M4A, decoded completely, its tags read. It takes the disc and number of its tags when that place is free, otherwise it goes after the last track of the last disc; its artist and genre are kept when they differ from the album's. The files are added one at a time; the first one refused stops the rest and the page says which and why. The same file (byte for byte) already in the album is refused: nothing is merged. A file without a genre tag takes the album's genre. Only `.flac`, `.mp3` and `.m4a` files are sent; a refused upload stays among the originals, like every upload.
 - If two browser tabs edit the same album, the second save is refused instead of overwriting the first: reload the page and redo the change.
 - **Needs attention**, in the sidebar, lists the albums whose last library update failed. On the album's page, **Update in library** tries again.
 - **Trash.** Moving an album to the trash removes it from the library folder; you can restore it from the **Trash** page until you empty the trash. Its originals stay.
 - **Empty trash**, on the **Trash** page, deletes the albums in the trash for good: their names, tracks, cover choice and extra files leave the catalog. Nothing is deleted automatically, only when you empty the trash. The original files stay in MusicLib (it never deletes one), so no disk space is freed. An album can come back only by importing its folder again (it is no longer skipped as already imported) or by restoring a backup made before. An artist left without albums goes with its last one. The import reports keep their folders, without a link to the album. An album whose removal from the library folder is still waiting, running or failed stays in the trash: the page says how many, and you empty the trash again once Activity is done.
-- Uploads: a cover up to 20 MiB (JPEG or PNG, 40 megapixels), an extra file up to 256 MiB, lyrics (LRC) up to 2 MiB. At most two uploads copy at once; a third waits for its turn.
+- Uploads: a track up to 2 GiB, a cover up to 20 MiB (JPEG or PNG, 40 megapixels), an extra file up to 256 MiB, lyrics (LRC) up to 2 MiB. At most two uploads copy at once; a third waits for its turn.
 
 ## Backups, restore and moving
 
@@ -1079,9 +1080,9 @@ curl -s -b "$J" -X POST "$O/api/trash/empty" -H 'X-Musiclib-Request: 1'         
 - **Emptying the trash** (`POST /api/trash/empty`, no body, no `If-Match`) deletes from the catalog every trashed album whose removal from the library folder is complete, and answers `200` with how many were `deleted` and how many are `waiting` (their removal is still queued, running or failed). The originals stay; a deleted album answers `404 album_not_found`, and its import jobs keep their report with `result_album_id` `null`.
 - Each track of `GET /api/albums/<id>` carries `duration_ms`, its duration in milliseconds, or `null` while unknown: read-only, not a field of the PUT body.
 
-### Covers, extra files and lyrics
+### Covers, extra files, lyrics and tracks
 
-An upload's body is the file itself, `Content-Type: application/octet-stream`; its format is read from the content. Limits: cover 20 MiB (JPEG or PNG, 40 megapixels, embeddable in every audio format of the album), extra file 256 MiB, lyrics 2 MiB of UTF-8 (`413` one byte over; `507 insufficient_space` when the data folder has no room for it beyond the 1 GiB margin). Every change needs the album's `If-Match`. Downloads go by id, never by a path.
+An upload's body is the file itself, `Content-Type: application/octet-stream`; its format is read from the content. Limits: track 2 GiB, cover 20 MiB (JPEG or PNG, 40 megapixels, embeddable in every audio format of the album), extra file 256 MiB, lyrics 2 MiB of UTF-8 (`413` one byte over; `507 insufficient_space` when the data folder has no room for it beyond the 1 GiB margin). Every change needs the album's `If-Match`. Downloads go by id, never by a path.
 
 ```sh
 H=(-H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"')
@@ -1091,6 +1092,7 @@ curl -s -b "$J" -X DELETE "${H[@]}" "$O/api/albums/<id>/cover"
 curl -s -b "$J" -X POST "${H[@]}" -H 'Content-Type: application/octet-stream' --data-binary @booklet.pdf "$O/api/albums/<id>/attachments?path=Scans%2FBooklet.pdf"
 curl -s -b "$J" -X DELETE "${H[@]}" "$O/api/albums/<id>/attachments/<attachment>"
 curl -s -b "$J" -X PUT "${H[@]}" -H 'Content-Type: application/octet-stream' --data-binary @01.lrc "$O/api/albums/<id>/tracks/<track>/lyrics"
+curl -s -b "$J" -X POST "${H[@]}" -H 'Content-Type: application/octet-stream' --data-binary @'06 Bonus.flac' "$O/api/albums/<id>/tracks?name=06%20Bonus.flac"
 curl -s -b "$J" -X DELETE "${H[@]}" "$O/api/albums/<id>/tracks/<track>"
 curl -sOJ -b "$J" "$O/api/albums/<id>/tracks/<track>/original"      # also .../lyrics, .../cover, .../attachments/<attachment>/content
 ```
@@ -1098,6 +1100,7 @@ curl -sOJ -b "$J" "$O/api/albums/<id>/tracks/<track>/original"      # also .../l
 - `H` is a bash array with the two headers every change needs; `"${H[@]}"` passes them to `curl`. Update the revision after every change: each one gives the album a new ETag.
 - The second line chooses an extra file of the album as its cover; the third removes the cover.
 - An extra file's `path` is a percent-encoded query parameter: a `+` in it is read as a space, as in any query string, so a literal plus is sent as `%2B` (`?path=Side%20A%2BB.pdf` is `Side A+B.pdf`).
+- **Adding a track** (`POST .../tracks?name=<file name>`) checks the file as an import does and answers `201` with the album, a `warnings` list (as in an import report, often empty) and the new track's original as `Location`. `name` is the file's name (only its last segment is kept): the track's source path and, without a title tag, its title. The track takes the disc and number of its tags when free, otherwise it is appended to the last disc. A file that is not a track is `422` with the import's code (`unsupported_audio`, `corrupt_audio`, `unrenderable_tag`, `invalid_tag`, …); the same file (byte for byte) already in the album is `409 track_exists` with its `track_id`. The upload is kept as an original even when it is refused.
 - `-OJ` saves a download under the name the server gives it.
 
 ### Importing and the queue

@@ -16,8 +16,8 @@ import (
 )
 
 // The album editor's content operations of §10.2 (NOTES.md N-172 to
-// N-180): the cover, the attachments, the lyrics of a track and the
-// deletion of a track. Each is one change of the album through
+// N-180): the cover, the attachments, the lyrics of a track, the addition
+// and the deletion of a track. Each is one change of the album through
 // changeAlbum: the album's revision (the ETag of §10.2: "Gli endpoint
 // relativi a cover/allegati/tracce richiedono l'ETag dell'album") compared
 // in the transaction, and an effective change bumps the revision and
@@ -29,7 +29,7 @@ import (
 // transaction (§7.5, §10.2: "il blob viene fissato prima della
 // transazione con If-Match"), and their content already checked: a cover
 // is a JPEG or PNG validated by media.ValidateCover, a lyrics file valid
-// UTF-8. The catalog records the blob, checks it against what it already
+// UTF-8, a track read and decoded as an import reads one. The catalog records the blob, checks it against what it already
 // knows (N-102), and never reads it.
 //
 // An album in the trash accepts them all, like the rename of §4.3: its
@@ -50,6 +50,10 @@ const (
 	// CodeInvalidLyrics: an attachment chosen as a track's lyrics that is
 	// not an .lrc file (§10.2).
 	CodeInvalidLyrics = "invalid_lyrics"
+	// CodeTrackExists: a file added as a track is already a track of the
+	// album, the same audio blob (409). Details.TrackID is that track,
+	// Details.Names its title. Two tracks are never merged.
+	CodeTrackExists = "track_exists"
 )
 
 // CoverChoice is a cover chosen for an album (§10.2 PUT
@@ -295,6 +299,190 @@ func (s *Service) RemoveLyrics(ctx context.Context, albumID uuid.UUID, ifMatch i
 		}
 		return true, setLyrics(ctx, tx, al.ID, trackID, nil)
 	})
+}
+
+// NewTrack is a file read as a track of an existing album, as an import
+// reads one (importer.ReadTrack), to append to the album with AddTrack.
+// Blob is pinned, with its audio format and its duration (nil unknown).
+// SourcePath is the file's name. Title is required; Artist, Genre, Disc and
+// No are the file's tags as read: "" and 0 for an absent tag.
+type NewTrack struct {
+	Blob       Blob
+	SourcePath string
+	Title      string
+	Artist     string
+	Genre      string
+	Disc       int
+	No         int
+}
+
+// TrackFileName is the source path of an uploaded track: the last
+// "/"-separated segment of name, which must be a valid relative path
+// (names.SplitRelPath, the rule of the import's source paths: not empty,
+// not "." or "..", valid UTF-8, no NUL). It needs no database, so the API
+// refuses an invalid name before it reads any byte of the upload.
+func TrackFileName(name string) (string, error) {
+	base := name
+	if name != "" {
+		base = path.Base(name)
+	}
+	if _, err := names.SplitRelPath(base); err != nil {
+		return "", textError("track file name "+name, err)
+	}
+	return base, nil
+}
+
+// AddTrack adds a file as a new track of the album (POST
+// /api/albums/{id}/tracks), in one change of the album: the revision of
+// ifMatch compared in the transaction, the revision bumped and the render
+// enqueued. The audio blob already a track of the album is
+// CodeTrackExists, naming that track: nothing is merged. The track keeps
+// the disc and number of its tags when they are free, otherwise it is
+// appended (landing). Its artist is the tag when it is not the album's
+// artist (SameArtistName), otherwise inherited; its genre the tag when it
+// is not the album's genre, otherwise inherited. With the new track, every
+// genre of the album must fit every audio format of its tracks
+// (CodeGenreNotWritable) and the cover must stay embeddable in them
+// (CodeCoverNotEmbeddable). An album keeps at most MaxTracks tracks. It
+// returns the album's revision and the new track's id.
+func (s *Service) AddTrack(ctx context.Context, albumID uuid.UUID, ifMatch int64, t NewTrack) (int64, uuid.UUID, error) {
+	if err := checkBlob(t.Blob); err != nil {
+		return 0, uuid.Nil, err
+	}
+	if err := checkRole(t.Blob.Hash, t.Blob.Format, roleAudio); err != nil {
+		return 0, uuid.Nil, err
+	}
+	base, err := TrackFileName(t.SourcePath)
+	if err != nil {
+		return 0, uuid.Nil, err
+	}
+	if base != t.SourcePath {
+		return 0, uuid.Nil, errorf(CodeInvalidArgument, "the source path of a new track is a file name, not %q", t.SourcePath)
+	}
+	id := store.NewID()
+	rev, _, err := s.changeAlbum(ctx, albumID, ifMatch, func(tx *store.CatalogTx, al store.Album) (bool, error) {
+		current, err := tx.ListAlbumTracks(ctx, al.ID)
+		if err != nil {
+			return false, dbErr("listing the tracks of album "+al.ID.String(), err)
+		}
+		occupied := Slots{}
+		all := make([]trackFields, 0, len(current)+1)
+		for _, c := range current {
+			if c.BlobHash == t.Blob.Hash {
+				return false, trackExists(al.ID, c.ID, c.Title)
+			}
+			occupied[[2]int32{c.Disc, c.No}] = true
+			all = append(all, trackFields{Genre: c.Genre})
+		}
+		if len(current) >= MaxTracks {
+			return false, errorf(CodeTooManyFiles, "album %s has %d tracks, the maximum", al.ID, len(current))
+		}
+		disc, no, err := landing(occupied, t.Disc, t.No)
+		if err != nil {
+			return false, err
+		}
+		ar, err := tx.GetArtist(ctx, al.ArtistID)
+		if err != nil {
+			return false, dbErr("reading artist "+al.ArtistID.String(), err)
+		}
+		var artist, genre *string
+		if t.Artist != "" && !SameArtistName(t.Artist, ar.Name) {
+			artist = &t.Artist
+		}
+		if t.Genre != "" && t.Genre != deref(al.Genre) {
+			genre = &t.Genre
+		}
+		f, err := normalizeTrack("track "+t.SourcePath, int(disc), int(no), t.Title, artist, genre)
+		if err != nil {
+			return false, err
+		}
+		if err := registerBlob(ctx, tx, t.Blob, roleAudio); err != nil {
+			return false, err
+		}
+		_, err = tx.InsertTracks(ctx, []store.InsertTracksParams{{
+			ID: id, AlbumID: al.ID, Disc: f.Disc, No: f.No, Title: f.Title, Artist: f.Artist, Genre: f.Genre,
+			BlobHash: t.Blob.Hash, SourcePath: t.SourcePath,
+		}})
+		if err != nil {
+			return false, dbErr("adding a track to album "+al.ID.String(), err)
+		}
+		// The album's formats now include the new track's.
+		if err := checkGenres(ctx, tx, al.ID, albumFields{Genre: al.Genre}, append(all, f), s.genreFits); err != nil {
+			return false, err
+		}
+		if al.CoverHash != nil {
+			cover, err := tx.GetBlobs(ctx, []string{*al.CoverHash})
+			if err == nil && len(cover) != 1 {
+				err = pgx.ErrNoRows
+			}
+			if err != nil {
+				return false, dbErr("reading the cover of album "+al.ID.String(), err)
+			}
+			c := Blob{Hash: cover[0].Hash, Size: cover[0].Size, Format: deref(cover[0].Format)}
+			if err := checkAlbumCoverFits(ctx, tx, al.ID, c, s.coverFits); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return 0, uuid.Nil, err
+	}
+	return rev, id, nil
+}
+
+// CheckTrackAbsent refuses, on a snapshot of the album, a file whose blob
+// is already one of its tracks (CodeTrackExists): the API asks it before
+// it reads an uploaded track, so that a duplicate is refused without its
+// decode. AddTrack asks it again in its transaction, which decides.
+func CheckTrackAbsent(v AlbumView, hash string) error {
+	for _, t := range v.Tracks {
+		if t.Blob.Hash == hash {
+			return trackExists(v.ID, t.ID, t.Title)
+		}
+	}
+	return nil
+}
+
+func trackExists(albumID, trackID uuid.UUID, title string) *Error {
+	return &Error{Code: CodeTrackExists,
+		Message: fmt.Sprintf("this file is already track %s (%q) of album %s", trackID, title, albumID),
+		Details: Details{TrackID: trackID, Names: []string{title}}}
+}
+
+// Slots are the (disc, number) places taken by an album's tracks.
+type Slots map[[2]int32]bool
+
+// landing is where a track lands among the occupied places: the place it
+// asks for (wantDisc, wantNo) when it is valid and free; a number without
+// a disc asks for disc 1, as at the import. Otherwise, or without a
+// number (wantNo 0), it is appended: on the album's last disc (the highest
+// disc number present, 1 when there is none), after its highest number.
+// A disc already numbered up to MaxTrackNumber is CodeInvalidTrackNumber.
+// Several tracks land one after the other: the caller adds each place to
+// occupied before the next. It is pure.
+func landing(occupied Slots, wantDisc, wantNo int) (disc, no int32, err error) {
+	if wantDisc == 0 && wantNo > 0 {
+		wantDisc = 1
+	}
+	if wantDisc >= 1 && wantDisc <= MaxDisc && wantNo >= 1 && wantNo <= MaxTrackNumber &&
+		!occupied[[2]int32{int32(wantDisc), int32(wantNo)}] {
+		return int32(wantDisc), int32(wantNo), nil
+	}
+	disc = 1
+	for k := range occupied {
+		disc = max(disc, k[0])
+	}
+	for k := range occupied {
+		if k[0] == disc {
+			no = max(no, k[1])
+		}
+	}
+	if no >= MaxTrackNumber {
+		return 0, 0, errorf(CodeInvalidTrackNumber,
+			"disc %d already has a track %d, the highest number: renumber its tracks to make room", disc, no)
+	}
+	return disc, no + 1, nil
 }
 
 // DeleteTrack removes a track of the album (§4.3, §10.2 DELETE

@@ -116,7 +116,7 @@ async function run(b, body = b.dataset.attachment && json({ attachment_id: b.dat
 }
 
 // One sentence per code (N-261).
-const exists = 'This artist already exists: choose it from the list.';
+const exists = 'This artist already exists: choose it from the list.', badTag = 'A tag of this file can’t be kept: fix its tags.';
 const sentences = {
   precondition_failed: 'This album was changed in another window.',
   artist: 'Choose an artist from the list, or create it.',
@@ -130,6 +130,13 @@ const sentences = {
   cover_not_embeddable: 'This image is too large for the album’s files: choose a smaller one.',
   invalid_lyrics: 'Lyrics files must be UTF-8: save it as UTF-8.',
   attachment_path_collision: 'An extra file has this name: change “Save as”.',
+  track_exists: 'This file is already a track of the album.',
+  corrupt_audio: 'This file is damaged and can’t be played.',
+  unsupported_audio: 'Only FLAC, MP3 and M4A files can be tracks.',
+  unrenderable_tag: badTag,
+  invalid_tag: badTag,
+  genre_not_writable: 'A genre can’t be written to the album’s MP3 files: change it.',
+  insufficient_space: 'There isn’t enough disk space.',
   body_too_large: 'The file is too large.',
   network: 'The server doesn’t answer: try again.',
   login_required: 'You’re signed out. Sign in again in another tab, then save.',
@@ -239,6 +246,26 @@ async function addLyrics(files) {
   if (tag) await refresh(tag);
 }
 
+// Audio files become tracks one at a time, each with the previous answer's
+// ETag; the first refusal stops the rest and names its file. Only .flac,
+// .mp3 and .m4a files are sent: a refused upload still stays as an original.
+async function addTracks(all) {
+  const box = $('#tracks-notice'), audio = f => /\.(flac|mp3|m4a)$/i.test(f.name), files = all.filter(audio), skipped = all.filter(f => !audio(f)).map(f => f.name), notes = skipped.length ? [`Not added, not FLAC, MP3 or M4A: ${skipped.join(', ')}.`] : [];
+  let tag;
+  for (const [i, file] of files.entries()) {
+    $('#tracks-status').textContent = `Adding ${i + 1} of ${files.length}: ${file.name}…`;
+    const a = await call(`${base}/tracks?name=${encodeURIComponent(file.name)}`, 'POST', file, box);
+    if (!a) {
+      $('p', box).textContent = `${file.name}: ${$('p', box).textContent}`;
+      break;
+    }
+    etag = tag = a.etag;
+    notes.push(...a.warnings.map(w => w.message));
+  }
+  if (tag) await refresh(tag);
+  $('#tracks-status').textContent = notes.join(' ');
+}
+
 on('input', e => {
   const t = e.target, r = t.closest('[data-track]');
   if (t.name == 'nogenre' && t.checked) $('[name=genre]', r).value = '';
@@ -249,6 +276,7 @@ on('input', e => {
 on('change', e => {
   const t = e.target, file = t.files?.[0];
   if (t.id == 'lrc-files' && file) addLyrics([...t.files]);
+  else if (t.id == 'track-files' && file) addTracks([...t.files]);
   else if (t.id == 'extra-file' && file) {
     $('#extra-row').hidden = false;
     $('#extra-path').value = file.name;
@@ -292,14 +320,15 @@ on('beforeinput', e => {
   }
 });
 
-// An image dropped on the cover replaces it.
+// An image dropped on the cover replaces it; files dropped anywhere else
+// on the editor of an album outside the trash are added as tracks.
 for (const type of ['dragover', 'dragleave', 'drop']) {
   on(type, e => {
-    const box = e.target.closest?.('#cover-drop');
+    const cover = e.target.closest?.('#cover-drop'), box = cover || editor.dataset.trashed == 'false' && e.target.closest?.('#editor') && $('.tracks');
     if (!box || !e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     box.classList.toggle('is-drop', type == 'dragover');
-    if (type == 'drop') run($('#cover-file'), e.dataTransfer.files[0]);
+    if (type == 'drop') cover ? run($('#cover-file'), e.dataTransfer.files[0]) : addTracks([...e.dataTransfer.files]);
   });
 }
 

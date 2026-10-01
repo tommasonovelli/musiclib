@@ -1190,16 +1190,17 @@ func (q *Queries) ListAlbumTrackViews(ctx context.Context, albumID uuid.UUID) ([
 }
 
 const listAlbumTracks = `-- name: ListAlbumTracks :many
-SELECT id, disc, no, title, artist, genre FROM tracks WHERE album_id = $1 ORDER BY disc, no, id
+SELECT id, disc, no, title, artist, genre, blob_hash FROM tracks WHERE album_id = $1 ORDER BY disc, no, id
 `
 
 type ListAlbumTracksRow struct {
-	ID     uuid.UUID
-	Disc   int32
-	No     int32
-	Title  string
-	Artist *string
-	Genre  *string
+	ID       uuid.UUID
+	Disc     int32
+	No       int32
+	Title    string
+	Artist   *string
+	Genre    *string
+	BlobHash string
 }
 
 func (q *Queries) ListAlbumTracks(ctx context.Context, albumID uuid.UUID) ([]ListAlbumTracksRow, error) {
@@ -1218,6 +1219,7 @@ func (q *Queries) ListAlbumTracks(ctx context.Context, albumID uuid.UUID) ([]Lis
 			&i.Title,
 			&i.Artist,
 			&i.Genre,
+			&i.BlobHash,
 		); err != nil {
 			return nil, err
 		}

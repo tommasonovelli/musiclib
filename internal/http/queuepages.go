@@ -91,7 +91,7 @@ const (
 var problems = map[string]problem{
 	importer.CodeMixedAlbum:           {"The tracks have different album names. Give the album one title.", fixTitle},
 	importer.CodeAlbumTitleMissing:    {"The album has no name. Give it a title.", fixTitle},
-	catalog.CodeAlbumFolderConflict:   {"The artist already has an album with this title. Give this one another title.", fixTitle},
+	catalog.CodeAlbumFolderConflict:   {"The artist already has an album with this title: open it and add the tracks there, or give this one another title.", fixTitle},
 	catalog.CodePathReserved:          {"Another album is using this name in the library folder. Give this one another title.", fixTitle},
 	importer.CodeAmbiguousAlbumArtist: {"The tracks name different album artists. Choose the album’s artist.", fixArtist},
 	catalog.CodeArtistFolderConflict:  {"An artist with almost the same name is already in your library. Type the name as it is there, or another one.", fixArtist},

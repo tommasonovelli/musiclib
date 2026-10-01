@@ -17,6 +17,7 @@
 package http
 
 import (
+	"context"
 	"crypto/sha256"
 	"log/slog"
 	nethttp "net/http"
@@ -31,6 +32,7 @@ import (
 	"musiclib/internal/catalog"
 	"musiclib/internal/failpoint"
 	"musiclib/internal/fsops"
+	"musiclib/internal/importer"
 	"musiclib/internal/jobs"
 	"musiclib/internal/store"
 )
@@ -79,6 +81,15 @@ type Backend struct {
 	// Source is /import, listed by GET /api/import-source (importer.Browse):
 	// names and types only, never a file opened (§7.1, §10.4).
 	Source *fsops.Root
+	// Tracks reads an uploaded track with the checks of an import: the
+	// importer.
+	Tracks TrackReader
+}
+
+// TrackReader reads a pinned blob as one track, with exactly the checks of
+// an import, and writes nothing: importer.(*Importer).ReadTrack.
+type TrackReader interface {
+	ReadTrack(ctx context.Context, b blobstore.Blob, name string) (importer.TrackInfo, []jobs.Warning, error)
 }
 
 // API serves /api. It is safe for concurrent use.
@@ -250,7 +261,7 @@ func notFound() *Error {
 // also has a pattern without a method, so that a wrong method is a JSON
 // 405 with Allow, and /api/ catches the rest as a JSON 404.
 func (a *API) routes(b Backend) nethttp.Handler {
-	h := &handlers{api: a, catalog: b.Catalog, blobs: b.Blobs, budget: b.Budget, work: b.Work, source: b.Source}
+	h := &handlers{api: a, catalog: b.Catalog, blobs: b.Blobs, budget: b.Budget, work: b.Work, source: b.Source, tracks: b.Tracks}
 	mux := nethttp.NewServeMux()
 	route := func(pattern string, methods map[string]nethttp.HandlerFunc) {
 		var allow []string
@@ -297,7 +308,7 @@ func (a *API) routes(b Backend) nethttp.Handler {
 		nethttp.MethodPost: h.renderAlbum,
 	})
 	// The editor's content (§10.2, round 14): cover, attachments, lyrics,
-	// track deletion, and the downloads by entity id.
+	// tracks added and deleted, and the downloads by entity id.
 	route("/api/albums/{id}/cover", map[string]nethttp.HandlerFunc{
 		nethttp.MethodGet:    h.downloadCover,
 		nethttp.MethodPut:    h.putCover,
@@ -311,6 +322,9 @@ func (a *API) routes(b Backend) nethttp.Handler {
 	})
 	route("/api/albums/{id}/attachments/{attachment}/content", map[string]nethttp.HandlerFunc{
 		nethttp.MethodGet: h.downloadAttachment,
+	})
+	route("/api/albums/{id}/tracks", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.postTrack,
 	})
 	route("/api/albums/{id}/tracks/{track}", map[string]nethttp.HandlerFunc{
 		nethttp.MethodDelete: h.deleteTrack,
@@ -368,4 +382,5 @@ type handlers struct {
 	budget  *jobs.Budget
 	work    *fsops.Root
 	source  *fsops.Root
+	tracks  TrackReader
 }

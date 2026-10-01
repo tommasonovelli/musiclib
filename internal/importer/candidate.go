@@ -218,8 +218,28 @@ func (im *Importer) checkUnchanged(ctx context.Context, r *fsops.Root, depth int
 	return nil
 }
 
-// readFile classifies one verified copy by its content (§7.2) and, for a
-// track, decodes it completely (§7.6) and reads its tags (§7.3):
+// readFile reads one verified copy of a candidate with readAudio and, for
+// a track, keeps what it read.
+func (im *Importer) readFile(ctx context.Context, f *importFile) ([]jobs.Warning, error) {
+	a, audio, ws, err := im.readAudio(ctx, f.blob.SHA256, f.src.Rel)
+	if err == nil && audio {
+		f.audio, f.format, f.tags, f.duration = true, a.format, a.tags, a.duration
+	}
+	return ws, err
+}
+
+// audioRead is what readAudio reads from a track: its format, its tags and
+// the duration its container declares (0 when it declares none).
+type audioRead struct {
+	format   string
+	tags     media.Inspection
+	duration time.Duration
+}
+
+// readAudio classifies one verified copy, the blob hash, by its content
+// (§7.2) and, for a track, decodes it completely (§7.6) and reads its tags
+// (§7.3). rel names the file in errors and warnings. It is the one check
+// of a track, for an import (readFile) and for an upload (ReadTrack):
 //   - supported audio is a track: FLAC, MP3 and M4A (AAC or ALAC), which
 //     may share a candidate (NOTES.md N-157);
 //   - an M4A the tag reader does not handle (fragmented, encrypted, more
@@ -227,52 +247,51 @@ func (im *Importer) checkUnchanged(ctx context.Context, r *fsops.Root, depth int
 //     refuses;
 //   - audio that is not supported is CodeUnsupportedAudio;
 //   - no audio or unreadable, with a known audio extension, is
-//     CodeCorruptAudio; without one, an attachment;
+//     CodeCorruptAudio; without one, audio is false and the error nil (an
+//     attachment of an import);
 //   - a track that does not decode completely is CodeCorruptAudio;
 //   - a field the tag writer cannot save back is CodeUnrenderableTag
 //     (N-092), except ID3 tags in a FLAC, which the output drops (N-090):
 //     accepted with a warning.
-func (im *Importer) readFile(ctx context.Context, f *importFile) (_ []jobs.Warning, err error) {
-	rel := f.src.Rel
-	bf, err := im.blobs.Open(f.blob.SHA256)
+func (im *Importer) readAudio(ctx context.Context, hash, rel string) (_ audioRead, audio bool, _ []jobs.Warning, err error) {
+	bf, err := im.blobs.Open(hash)
 	if err != nil {
-		return nil, err
+		return audioRead{}, false, nil, err
 	}
-	defer func() { err = errors.Join(err, closeErr(bf, "blob "+f.blob.SHA256)) }()
+	defer func() { err = errors.Join(err, closeErr(bf, "blob "+hash)) }()
 	p, err := im.tools.Probe(ctx, bf)
 	if err != nil {
-		return nil, err
+		return audioRead{}, false, nil, err
 	}
 	switch p.Class {
 	case media.ClassAudio:
 	case media.ClassUnsupportedAudio:
-		return nil, &Error{Code: CodeUnsupportedAudio, Path: rel,
+		return audioRead{}, false, nil, &Error{Code: CodeUnsupportedAudio, Path: rel,
 			Message: fmt.Sprintf("%q is audio that is not supported (%s: %s)", rel, p.Reason, p.Detail)}
 	default:
 		if media.HasKnownAudioExtension(rel) {
-			return nil, &Error{Code: CodeCorruptAudio, Path: rel,
+			return audioRead{}, false, nil, &Error{Code: CodeCorruptAudio, Path: rel,
 				Message: fmt.Sprintf("%q has an audio extension but no readable audio", rel)}
 		}
-		return nil, nil // an attachment
+		return audioRead{}, false, nil, nil // an attachment
 	}
 	if _, err := im.tools.AudioDigest(ctx, bf); err != nil {
-		return nil, corrupt(rel, err, decodeFailures...)
+		return audioRead{}, false, nil, corrupt(rel, err, decodeFailures...)
 	}
 	in, err := im.tools.Inspect(ctx, bf, p.Format)
 	var me *media.Error
 	if media.Code(err) == media.CodeTagsUnsupported && errors.As(err, &me) {
-		return nil, &Error{Code: CodeUnsupportedAudio, Path: rel, Err: err,
+		return audioRead{}, false, nil, &Error{Code: CodeUnsupportedAudio, Path: rel, Err: err,
 			Message: fmt.Sprintf("%q is audio that is not supported: %s", rel, me.Msg)}
 	}
 	if err != nil {
-		return nil, corrupt(rel, err, readerFailures...)
+		return audioRead{}, false, nil, corrupt(rel, err, readerFailures...)
 	}
-	f.audio, f.format, f.tags, f.duration = true, p.Format, in, p.Audio.Duration
 	ws, err := tagWarnings(rel, in)
 	if p.Format == media.FormatMP3 {
 		ws = append(ws, genreWarnings(rel, in.Managed.Genre)...)
 	}
-	return ws, err
+	return audioRead{format: p.Format, tags: in, duration: p.Audio.Duration}, true, ws, err
 }
 
 // corruptMessages are the messages of the failures of the decode and of the

@@ -143,7 +143,7 @@ INSERT INTO tracks (id, album_id, disc, no, title, artist, genre, blob_hash, sou
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- name: ListAlbumTracks :many
-SELECT id, disc, no, title, artist, genre FROM tracks WHERE album_id = $1 ORDER BY disc, no, id;
+SELECT id, disc, no, title, artist, genre, blob_hash FROM tracks WHERE album_id = $1 ORDER BY disc, no, id;
 
 -- The audio formats of an album's tracks, for the per-format rules of a
 -- change (N-162).

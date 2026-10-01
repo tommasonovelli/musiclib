@@ -234,7 +234,8 @@ func (d *daemon) boot(ctx context.Context) error {
 	if err := d.startWorkers(ctx); err != nil {
 		return err
 	}
-	d.api.Enable(apihttp.Backend{Catalog: d.catalog, Blobs: d.blobs, Budget: d.budget, Work: d.vol.Work(), Source: d.source})
+	d.api.Enable(apihttp.Backend{Catalog: d.catalog, Blobs: d.blobs, Budget: d.budget, Work: d.vol.Work(), Source: d.source,
+		Tracks: d.importer})
 	d.log.Info("ready", "store_id", d.vol.StoreID().String())
 	d.ready.Store(d.pool)
 	return nil

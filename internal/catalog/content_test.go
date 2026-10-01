@@ -568,3 +568,179 @@ func TestDeleteTrackConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// trackRow is a track of the album by its id, as stored.
+func (e *env) trackRow(id uuid.UUID) (disc, no int32, title string, artist, genre *string, source, blob string) {
+	e.t.Helper()
+	if err := e.db.QueryRow(context.Background(),
+		`SELECT disc, no, title, artist, genre, source_path, blob_hash FROM tracks WHERE id = $1`, id).
+		Scan(&disc, &no, &title, &artist, &genre, &source, &blob); err != nil {
+		e.t.Fatalf("track %s: %v", id, err)
+	}
+	return
+}
+
+// A file added as a track of an existing album: one change of the album
+// (If-Match in the transaction, revision bumped, render enqueued), the
+// place of its tags or the end of the album, the artist and genre
+// inherited when they are the album's, never a second track of the same
+// blob, and the album's per-format rules checked with the new format.
+func TestAddTrack(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	id := e.importAlbum("Miles Davis", "Kind of Blue") // Jazz, a JPEG cover, FLAC tracks 1 and 2
+	e.clearRenders()
+	rev := e.album(id).Revision
+	w0 := e.wakes.Load()
+	flac := func(title, artist, genre string, disc, no int) catalog.NewTrack {
+		return catalog.NewTrack{Blob: catalog.Blob{Hash: newHash(), Size: 4000, Format: catalog.FormatFLAC, DurationMS: ptr(int64(337_000))},
+			SourcePath: title + ".flac", Title: title, Artist: artist, Genre: genre, Disc: disc, No: no}
+	}
+	add := func(nt catalog.NewTrack) uuid.UUID {
+		t.Helper()
+		got, track, err := e.svc.AddTrack(ctx, id, rev, nt)
+		if err != nil {
+			t.Fatalf("AddTrack %q: %v", nt.Title, err)
+		}
+		e.bumped(id, rev, got)
+		rev++
+		w0 = e.wakes.Load()
+		return track
+	}
+
+	// Preconditions, in the transaction; refusals before it.
+	bg := flac("Blue in Green", "", "", 1, 3)
+	_, _, err := e.svc.AddTrack(ctx, id, 0, bg)
+	wantCode(t, err, catalog.CodePreconditionRequired)
+	_, _, err = e.svc.AddTrack(ctx, id, rev+1, bg)
+	wantCode(t, err, catalog.CodePreconditionFailed)
+	_, _, err = e.svc.AddTrack(ctx, uuid.New(), 1, bg)
+	wantCode(t, err, catalog.CodeAlbumNotFound)
+	for format, code := range map[string]string{"": catalog.CodeInvalidBlobFormat, catalog.FormatJPEG: catalog.CodeInvalidBlobFormat, "ogg": catalog.CodeInvalidBlobFormat} {
+		nt := flac("x", "", "", 0, 0)
+		nt.Blob.Format, nt.Blob.DurationMS = format, nil
+		_, _, err = e.svc.AddTrack(ctx, id, rev, nt)
+		wantCode(t, err, code)
+	}
+	for p, code := range map[string]string{"dir/x.flac": catalog.CodeInvalidArgument, "": names.CodePathEmpty, "..": names.CodePathDotSegment} {
+		nt := flac("x", "", "", 0, 0)
+		nt.SourcePath = p
+		_, _, err = e.svc.AddTrack(ctx, id, rev, nt)
+		wantCode(t, err, code)
+	}
+	nt := flac("", "", "", 0, 0)
+	_, _, err = e.svc.AddTrack(ctx, id, rev, nt)
+	wantCode(t, err, names.CodeTextEmpty)
+	e.unchanged(id, rev, w0)
+	if n := e.count(`SELECT count(*) FROM tracks WHERE album_id = $1`, id); n != 2 {
+		t.Fatalf("%d tracks after the refusals", n)
+	}
+
+	// The place of its tags, free: kept. The album's artist (in another
+	// case) and genre: inherited. The blob is recorded with its format
+	// and duration.
+	bg.Artist, bg.Genre = "MILES DAVIS", "Jazz"
+	tr := add(bg)
+	disc, no, title, artist, genre, source, blob := e.trackRow(tr)
+	if disc != 1 || no != 3 || title != "Blue in Green" || artist != nil || genre != nil || source != "Blue in Green.flac" || blob != bg.Blob.Hash {
+		t.Fatalf("track %d %d %q %v %v %q", disc, no, title, artist, genre, source)
+	}
+	if e.blobFormat(bg.Blob.Hash) != catalog.FormatFLAC || e.count(`SELECT count(*) FROM blobs WHERE hash = $1 AND duration_ms = 337000`, bg.Blob.Hash) != 1 {
+		t.Fatal("the blob's format or duration")
+	}
+	// A taken place: appended after the last number of the last disc. Its
+	// own artist and genre are kept.
+	tr = add(flac("All Blues", "Cannonball Adderley", "Modal", 1, 2))
+	disc, no, _, artist, genre, _, _ = e.trackRow(tr)
+	if disc != 1 || no != 4 || deref(artist) != "Cannonball Adderley" || deref(genre) != "Modal" {
+		t.Fatalf("appended: %d %d %v %v", disc, no, artist, genre)
+	}
+	// Another disc, free: kept; then no number: appended to that disc.
+	tr = add(flac("Flamenco Sketches", "", "", 2, 1))
+	if disc, no, _, _, _, _, _ = e.trackRow(tr); disc != 2 || no != 1 {
+		t.Fatalf("disc 2: %d %d", disc, no)
+	}
+	tr = add(flac("Bonus", "", "", 0, 0))
+	if disc, no, _, _, _, _, _ = e.trackRow(tr); disc != 2 || no != 2 {
+		t.Fatalf("no number: %d %d", disc, no)
+	}
+
+	// The same audio is never a second track: 409 naming it, on the
+	// snapshot too.
+	dup := flac("Again", "", "", 0, 0)
+	dup.Blob = bg.Blob
+	_, _, err = e.svc.AddTrack(ctx, id, rev, dup)
+	if ce := wantCode(t, err, catalog.CodeTrackExists); ce.Details.TrackID == uuid.Nil || len(ce.Details.Names) != 1 || ce.Details.Names[0] != "Blue in Green" {
+		t.Fatalf("details %+v", ce.Details)
+	}
+	v, err := e.svc.GetAlbum(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCode(t, catalog.CheckTrackAbsent(v, bg.Blob.Hash), catalog.CodeTrackExists)
+	if err := catalog.CheckTrackAbsent(v, newHash()); err != nil {
+		t.Fatal(err)
+	}
+	e.unchanged(id, rev, w0)
+
+	// The genre rule with the new format: an MP3 with a genre an MP3 cannot hold,
+	// and an MP3 in an album where a FLAC track has such a genre.
+	mp3 := func(genre string) catalog.NewTrack {
+		nt := flac("MP3 "+genre, "", genre, 0, 0)
+		nt.Blob.Format = catalog.FormatMP3
+		return nt
+	}
+	bad := mp3("(Rock)")
+	_, _, err = e.svc.AddTrack(ctx, id, rev, bad)
+	wantCode(t, err, catalog.CodeGenreNotWritable)
+	u := e.update(id)
+	u.Tracks[0].Genre = ptr("13")
+	if rev, _, err = e.svc.UpdateAlbum(ctx, id, rev, u); err != nil {
+		t.Fatal(err)
+	}
+	e.clearRenders()
+	w0 = e.wakes.Load()
+	_, _, err = e.svc.AddTrack(ctx, id, rev, mp3(""))
+	wantCode(t, err, catalog.CodeGenreNotWritable)
+	// The cover rule with the new format: the album's cover cannot be embedded in
+	// an MP3.
+	e.mu.Lock()
+	e.fits = func(c catalog.Blob, format string) error {
+		if format == catalog.FormatMP3 {
+			return errors.New("too large for mp3")
+		}
+		return nil
+	}
+	e.mu.Unlock()
+	u.Tracks[0].Genre = nil
+	if rev, _, err = e.svc.UpdateAlbum(ctx, id, rev, u); err != nil {
+		t.Fatal(err)
+	}
+	e.clearRenders()
+	w0 = e.wakes.Load()
+	ok := mp3("")
+	_, _, err = e.svc.AddTrack(ctx, id, rev, ok)
+	if ce := wantCode(t, err, catalog.CodeCoverNotEmbeddable); ce.Details.Names[0] != catalog.FormatMP3 {
+		t.Fatalf("details %+v", ce.Details)
+	}
+	e.unchanged(id, rev, w0)
+	if n := e.count(`SELECT count(*) FROM blobs WHERE hash = ANY($1)`, []string{bad.Blob.Hash, ok.Blob.Hash}); n != 0 {
+		t.Fatal("a refused track registered its blob")
+	}
+	e.mu.Lock()
+	e.fits = nil
+	e.mu.Unlock()
+	add(ok)
+
+	// In the trash, like every content operation.
+	if rev, _, err = e.svc.TrashAlbum(ctx, id, rev); err != nil {
+		t.Fatal(err)
+	}
+	e.clearRenders()
+	add(flac("Trashed", "", "", 0, 0))
+
+	// A last disc numbered up to the end: nowhere to append.
+	e.exec(`UPDATE tracks SET no = 999 WHERE album_id = $1 AND disc = 2 AND no = 2`, id)
+	_, _, err = e.svc.AddTrack(ctx, id, rev, flac("Too many", "", "", 0, 0))
+	wantCode(t, err, catalog.CodeInvalidTrackNumber)
+}

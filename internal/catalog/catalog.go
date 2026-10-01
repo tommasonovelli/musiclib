@@ -147,6 +147,7 @@ const (
 type Details struct {
 	AlbumID  uuid.UUID
 	ArtistID uuid.UUID
+	TrackID  uuid.UUID
 	Path     string
 	Names    []string
 	Revision int64

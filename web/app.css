@@ -441,7 +441,7 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 .cover, .thumbs img { border-radius: var(--r-cover); box-shadow: var(--shadow-cover); object-fit: cover; }
 .cover { display: grid; place-items: center; width: 240px; height: 240px; view-transition-name: album-cover; }
 .cover-none { container-type: inline-size; }
-.is-drop .cover { outline: 3px solid var(--accent); outline-offset: 6px; }
+.is-drop .cover, .tracks.is-drop { outline: 3px solid var(--accent); outline-offset: 6px; }
 .album-fields { display: grid; gap: var(--s2); }
 .album :is(input:not([type="checkbox"]), textarea) { min-height: 0; margin-inline: -4px; padding: 1px 4px; border: 0; border-radius: 6px; background: none; field-sizing: content; appearance: textfield; }
 .album :is(input, textarea):is(:hover, :focus):not([readonly]) { background: color-mix(in srgb, var(--ink) 7%, transparent); }
@@ -469,6 +469,7 @@ input[type="checkbox"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; ac
 
 .track-list, .files, .picks, .thumbs { margin: 0; padding: 0; list-style: none; }
 .section-head { padding: var(--s5) 0 var(--s3); }
+.head-links { display: flex; gap: var(--s4); }
 .track { display: grid; grid-template: "no title artist genre lyr time dots" / 2rem minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1.4fr) 2.5rem 3.25rem 2rem; align-items: center; gap: var(--s3); }
 .t-no { grid-area: no; } .t-title { grid-area: title; } .t-artist { grid-area: artist; } .t-genre { grid-area: genre; } .t-lyrics { grid-area: lyr; } .t-time { grid-area: time; } .track .dots { grid-area: dots; }
 /* The duration (N-302): read, never edited; right-aligned figures. */

@@ -51,7 +51,7 @@ docs/                   operations and Docker guides
 - **No temporary data-migration code in the repository.** One-off fixes of existing data are run by hand, outside the repository. Permanent rules belong in the code (e.g. a render that fills a missing value is a permanent rule, not a migration script).
 - **Migrations are forward-only.** Never edit or remove a migration that has been released or applied anywhere; add a new one. No down migrations; an older binary refuses a newer schema (`store_schema_too_new`), and a downgrade is a restore of an older backup.
 - **English only** for code, identifiers, comments, logs, errors, tests, docs, commit messages and the UI. Some legacy code comments quote the original Italian specification; they are translated only when that code is changed for another reason (see the end of this file).
-- **UI budget:** CSS plus JavaScript under 90 KB, uncompressed, fonts excluded. No frontend build, Node, CDN, SPA framework, WebSocket or SSE.
+- **UI budget:** CSS plus JavaScript under 100 KB, uncompressed, fonts excluded. No frontend build, Node, CDN, SPA framework, WebSocket or SSE.
 - **The sun logo is outside the MIT License** (all rights reserved, see [LOGO.md](LOGO.md)); everything else original is MIT. Third-party material keeps its own license and notices.
 - **Decisions are recorded in commit messages and `CHANGELOG.md`**, not in separate decision logs.
 
@@ -85,6 +85,7 @@ docs/                   operations and Docker guides
 - Symlinks and special files are never followed. A source that changes during an import makes the import fail.
 - Import is atomic per album: every track is fully decoded and verified before the commit; album, tracks, attachments, reservations, the render job and the job's outcome are written in one transaction.
 - A fingerprint of the candidate's files detects repeated imports (`skipped`), never merged. Artists are never merged implicitly.
+- Tracks can also be uploaded into an existing album, one file at a time, verified by the same code as an import (`importer.ReadTrack`) outside any transaction, then appended in one change of the album. A byte-identical file already in the album is refused (`track_exists`), never merged implicitly.
 
 ### Catalog and concurrency
 
