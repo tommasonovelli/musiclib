@@ -30,6 +30,7 @@ async function fetchPage(url, signal) {
 }
 
 function announce(text) { if (announcer) announcer.textContent = text; }
+function reveal() { for (const node of results.querySelectorAll('[data-js]')) node.hidden = false; }
 function tiles() { return [...results.querySelectorAll('#grid > .tile')]; }
 
 // Arrow keys, Enter and Esc turn the links into buttons that open in place;
@@ -71,6 +72,7 @@ async function search() {
   opened = null;
   results.replaceChildren(...[...fresh.childNodes].map(node => document.adoptNode(node)));
   tiles().forEach(enhance);
+  reveal();
   history.replaceState(null, '', url);
   document.title = doc.title;
   const count = tiles().length;
@@ -81,6 +83,44 @@ if (input) {
   input.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 250); });
   input.form.addEventListener('submit', event => { event.preventDefault(); clearTimeout(searchTimer); search(); });
 }
+
+// ---- Empty trash -------------------------------------------------------------
+// The server deletes the trashed albums whose removal from the library
+// folder is complete and counts the others; the trash view is then fetched
+// again.
+
+const emptyAsk = document.querySelector('#empty-ask');
+reveal();
+results.addEventListener('click', event => {
+  if (!event.target.closest('#empty-trash')) return;
+  emptyAsk.returnValue = '';
+  emptyAsk.showModal();
+});
+let emptying = false;
+emptyAsk?.addEventListener('close', async () => {
+  if (emptyAsk.returnValue !== 'ok' || emptying) return;
+  emptying = true;
+  let data, error;
+  try {
+    const response = await fetch('/api/trash/empty', { method: 'POST', headers: { 'X-Musiclib-Request': '1' }, cache: 'no-store' });
+    data = await response.json().catch(() => ({}));
+    if (!response.ok) error = { status: response.status, ...data };
+  } catch { error = { code: 'network' }; }
+  emptying = false;
+  const box = document.querySelector('#trash-error');
+  if (error && box) {
+    box.querySelector('p').textContent = error.status ? 'The trash wasn’t emptied. Try again.' : 'The library didn’t respond. Try again in a moment.';
+    box.querySelector('details').hidden = !error.status;
+    box.querySelector('pre').textContent = JSON.stringify(error, null, 2);
+    box.hidden = false;
+    box.focus();
+    return;
+  }
+  await search();
+  const note = document.querySelector('#trash-note'), n = data.waiting;
+  if (note && n) note.textContent = `${n} album${n === 1 ? ' is' : 's are'} still being removed from the library folder, or the removal failed: empty the trash again once Activity is done.`;
+  document.querySelector('#empty-trash')?.focus();
+});
 
 // ---- More albums on scroll: the sentinel is the real «Load more» link ----
 

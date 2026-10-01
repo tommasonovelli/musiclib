@@ -304,6 +304,24 @@ func (h *handlers) restoreAlbum(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.albumCommand(w, r, h.catalog.RestoreAlbum)
 }
 
+// emptyTrash is POST /api/trash/empty: the trashed albums whose removal
+// from library/ is complete are deleted from the catalog for good; their
+// originals stay. No body and no If-Match: it changes no revision of an
+// album that remains, and an album still being removed is left in the
+// trash and counted. 200 with both counts.
+func (h *handlers) emptyTrash(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if e := refuseBody(w, r); e != nil {
+		h.api.writeError(w, e)
+		return
+	}
+	deleted, waiting, err := h.catalog.EmptyTrash(r.Context())
+	if err != nil {
+		h.api.fail(w, r, err)
+		return
+	}
+	h.api.writeJSON(w, nethttp.StatusOK, map[string]int{"deleted": deleted, "waiting": waiting})
+}
+
 // albumCommand runs a bodiless change of an album with the revision of
 // If-Match, then answers the album.
 func (h *handlers) albumCommand(w nethttp.ResponseWriter, r *nethttp.Request,

@@ -214,7 +214,7 @@ By default only the machine MusicLib runs on can open it; from other devices use
 - import album folders, including multi-disc albums, and report what it imported and what it skipped, and why;
 - read and write tags of **FLAC**, **MP3** and **M4A** (AAC or ALAC) files;
 - manage **JPEG and PNG covers**, **LRC lyrics** and **extra files** (booklets, scans, logs);
-- let you search the library, move albums to the trash and restore them;
+- let you search the library, move albums to the trash, restore them or empty the trash (the originals stay);
 - verify its work: every copy is checked against the original, and the audio of each track is checked before and after its tags are written;
 - check, back up and restore the whole collection.
 

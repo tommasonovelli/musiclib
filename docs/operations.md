@@ -251,7 +251,7 @@ library/
 - Plan for about **twice the size of the music you import**: one copy for the originals and one for the library, plus room for work in progress and at least 1 GiB free.
 - Every import, album update and upload first reserves its estimated size, and starts only if the free space of the data folder, minus a 1 GiB safety margin and every other reservation, covers it. Otherwise it fails with `insufficient_space` (an upload answers `507`). A disk can still fill up during a write: then the published album and the originals stay intact. Free some space and retry.
 - Each backup needs about the size of the originals again, plus the database dump, on the backup disk.
-- MusicLib never deletes an original: trashing an album or deleting a track frees no space. Never delete originals to make room.
+- MusicLib never deletes an original: trashing an album, emptying the trash or deleting a track frees no space. Never delete originals to make room.
 
 ### The data in a host folder
 
@@ -616,7 +616,8 @@ The import reports are kept for 90 days, then deleted.
 - Open an album from the **Library** to change its title, artist, year, genre and compilation flag, the tracks (number, title, artist, genre, disc), the cover, lyrics and extra files. When you save, MusicLib writes that album's folder in the library again.
 - If two browser tabs edit the same album, the second save is refused instead of overwriting the first: reload the page and redo the change.
 - **Needs attention**, in the sidebar, lists the albums whose last library update failed. On the album's page, **Update in library** tries again.
-- **Trash.** Moving an album to the trash removes it from the library folder; you can restore it from the **Trash** page at any time. Its originals stay.
+- **Trash.** Moving an album to the trash removes it from the library folder; you can restore it from the **Trash** page until you empty the trash. Its originals stay.
+- **Empty trash**, on the **Trash** page, deletes the albums in the trash for good: their names, tracks, cover choice and extra files leave the catalog. Nothing is deleted automatically, only when you empty the trash. The original files stay in MusicLib (it never deletes one), so no disk space is freed. An album can come back only by importing its folder again (it is no longer skipped as already imported) or by restoring a backup made before. An artist left without albums goes with its last one. The import reports keep their folders, without a link to the album. An album whose removal from the library folder is still waiting, running or failed stays in the trash: the page says how many, and you empty the trash again once Activity is done.
 - Uploads: a cover up to 20 MiB (JPEG or PNG, 40 megapixels), an extra file up to 256 MiB, lyrics (LRC) up to 2 MiB. At most two uploads copy at once; a third waits for its turn.
 
 ## Backups, restore and moving
@@ -1029,7 +1030,7 @@ Everything the interface does is also available through a JSON HTTP API under `/
 - **`Origin`**, if sent, must be exactly `PUBLIC_ORIGIN` (`403 origin_not_allowed`). `curl` sends none.
 - **A session.** Without a live session every `/api` request answers `401 login_required`, and every page redirects (`303`) to `/login`. Only `/login`, `/logout`, `/static/*` and the health endpoints answer without one.
 - **`X-Musiclib-Request: 1`** is required on every request other than GET and HEAD (`403 request_header_required`), except the two plain HTML forms `POST /login` and `POST /logout`, which keep the `Host` and `Origin` checks.
-- **`If-Match`** with the `ETag` you just read is required on every change of an existing album or artist, covers, extra files, lyrics, tracks, trash and manual renders included: `428 precondition_required` without it, `412 precondition_failed` if someone changed it in between (read it again and redo the change). Creating an artist, starting an import, `POST /api/render-all` and the job actions take no `If-Match`.
+- **`If-Match`** with the `ETag` you just read is required on every change of an existing album or artist, covers, extra files, lyrics, tracks, trash and manual renders included: `428 precondition_required` without it, `412 precondition_failed` if someone changed it in between (read it again and redo the change). Creating an artist, starting an import, `POST /api/render-all`, `POST /api/trash/empty` and the job actions take no `If-Match`.
 - **JSON bodies**: `Content-Type: application/json`, 16 MiB at most, no unknown or duplicate keys, every field present (`null` where allowed).
 - **Errors** are `{"code": …, "message": …, "details": …}` with a stable `code`.
 - No CORS header is ever sent, and every response has `X-Content-Type-Options: nosniff`.
@@ -1070,10 +1071,12 @@ curl -s -b "$J" -X PUT "$O/api/artists/<id>" -H 'X-Musiclib-Request: 1' -H 'Cont
 curl -s -b "$J" -X POST "$O/api/albums/<id>/render" -H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"'
 curl -s -b "$J" -X DELETE "$O/api/albums/<id>" -H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"'           # to the trash
 curl -s -b "$J" -X POST "$O/api/albums/<id>/restore" -H 'X-Musiclib-Request: 1' -H 'If-Match: "album:<id>:<revision>"'    # back from the trash
+curl -s -b "$J" -X POST "$O/api/trash/empty" -H 'X-Musiclib-Request: 1'                                                     # {"deleted": n, "waiting": m}
 ```
 
 - **Saving an album** (`PUT /api/albums/<id>`) takes every key of `{artist_id, new_artist, title, year, genre, compilation, tracks}`. The album's artist is exactly one of `artist_id` (an existing artist) and `new_artist` (the name of an artist to create with this save, in the same transaction); the other is `null`. A save that fails (428, 412, 422, 409) creates nothing; a `new_artist` that already exists is `409 artist_exists` (or `artist_folder_conflict`) with the existing artist's `artist_id` and both names in `details`.
 - An artist left without any album, trashed ones included, by a save that moves its last album elsewhere is deleted by that save. `POST /api/artists` creates an artist without an album; it stays until an album arrives and leaves it.
+- **Emptying the trash** (`POST /api/trash/empty`, no body, no `If-Match`) deletes from the catalog every trashed album whose removal from the library folder is complete, and answers `200` with how many were `deleted` and how many are `waiting` (their removal is still queued, running or failed). The originals stay; a deleted album answers `404 album_not_found`, and its import jobs keep their report with `result_album_id` `null`.
 - Each track of `GET /api/albums/<id>` carries `duration_ms`, its duration in milliseconds, or `null` while unknown: read-only, not a field of the PUT body.
 
 ### Covers, extra files and lyrics

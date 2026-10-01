@@ -24,6 +24,20 @@ func (q *Queries) BumpAlbumRevision(ctx context.Context, id uuid.UUID) (int64, e
 	return revision, err
 }
 
+const clearJobResultAlbums = `-- name: ClearJobResultAlbums :execrows
+UPDATE jobs SET result_album_id = NULL WHERE result_album_id = ANY($1::uuid[])
+`
+
+// An import's report keeps its folder and outcome; only the link to the
+// purged album goes.
+func (q *Queries) ClearJobResultAlbums(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearJobResultAlbums, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countAlbumTracks = `-- name: CountAlbumTracks :one
 SELECT count(*) FROM tracks WHERE album_id = $1
 `
@@ -47,6 +61,17 @@ func (q *Queries) CountFailedAlbums(ctx context.Context) (int64, error) {
 	var failed int64
 	err := row.Scan(&failed)
 	return failed, err
+}
+
+const countTrashedAlbums = `-- name: CountTrashedAlbums :one
+SELECT count(*)::bigint AS trashed FROM albums WHERE deleted_at IS NOT NULL
+`
+
+func (q *Queries) CountTrashedAlbums(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countTrashedAlbums)
+	var trashed int64
+	err := row.Scan(&trashed)
+	return trashed, err
 }
 
 const deleteAttachment = `-- name: DeleteAttachment :execrows
@@ -93,6 +118,54 @@ WHERE ar.id = $1 AND NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar
 // N-297). One row or none: an artist that still has an album is kept.
 func (q *Queries) DeleteOrphanArtist(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteOrphanArtist, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePurgedAlbums = `-- name: DeletePurgedAlbums :execrows
+DELETE FROM albums WHERE id = ANY($1::uuid[]) AND deleted_at IS NOT NULL
+`
+
+func (q *Queries) DeletePurgedAlbums(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePurgedAlbums, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePurgedAttachments = `-- name: DeletePurgedAttachments :execrows
+DELETE FROM attachments WHERE album_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeletePurgedAttachments(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePurgedAttachments, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePurgedClaims = `-- name: DeletePurgedClaims :execrows
+DELETE FROM path_claims WHERE album_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeletePurgedClaims(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePurgedClaims, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePurgedTracks = `-- name: DeletePurgedTracks :execrows
+DELETE FROM tracks WHERE album_id = ANY($1::uuid[])
+`
+
+func (q *Queries) DeletePurgedTracks(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePurgedTracks, ids)
 	if err != nil {
 		return 0, err
 	}
@@ -1209,6 +1282,45 @@ func (q *Queries) ListArtists(ctx context.Context) ([]Artist, error) {
 			&i.FolderKey,
 			&i.Revision,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPurgeableAlbums = `-- name: ListPurgeableAlbums :many
+SELECT al.id, al.artist_id FROM albums al
+WHERE al.deleted_at IS NOT NULL AND al.published_path IS NULL
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'render' AND j.album_id = al.id)
+  AND NOT EXISTS (SELECT 1 FROM publication p WHERE p.album_id = al.id)
+ORDER BY al.id
+`
+
+type ListPurgeableAlbumsRow struct {
+	ID       uuid.UUID
+	ArtistID uuid.UUID
+}
+
+// Emptying the trash (POST /api/trash/empty): the catalog rows of the
+// trashed albums whose removal from library/ is complete are deleted,
+// never a blob. An album is purgeable when it is in the trash, has no
+// published output, no render job (pending, running or failed) and no
+// publication journal. Every row that could change that is written under
+// the catalog lock (enqueue, PREPARE, FINALIZE), which the caller holds.
+func (q *Queries) ListPurgeableAlbums(ctx context.Context) ([]ListPurgeableAlbumsRow, error) {
+	rows, err := q.db.Query(ctx, listPurgeableAlbums)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPurgeableAlbumsRow
+	for rows.Next() {
+		var i ListPurgeableAlbumsRow
+		if err := rows.Scan(&i.ID, &i.ArtistID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

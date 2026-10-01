@@ -125,10 +125,10 @@ func insertArtist(ctx context.Context, tx *store.CatalogTx, name string) (Artist
 	return Artist{ID: id, Name: name, Revision: 1}, nil
 }
 
-// leaveArtist is the owner's rule N-297 (2026-09-28), applied by the one
-// change that takes an album away from an artist (the album update, §10.2):
-// an artist left without any album, active or trashed, is deleted in the
-// same transaction. It runs under the catalog lock like every catalog
+// leaveArtist is the owner's rule, applied by the changes that take an
+// album away from an artist (the album update and EmptyTrash): an artist
+// left without any album, active or trashed, is deleted in the same
+// transaction. It runs under the catalog lock like every catalog
 // mutation (§5.3), so an album arriving at the artist in another
 // transaction is either already committed (the artist stays) or waits for
 // this one (and then finds no artist: CodeArtistNotFound). An artist that

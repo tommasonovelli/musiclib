@@ -351,6 +351,9 @@ func (a *API) routes(b Backend) nethttp.Handler {
 	route("/api/render-all", map[string]nethttp.HandlerFunc{
 		nethttp.MethodPost: h.renderAll,
 	})
+	route("/api/trash/empty", map[string]nethttp.HandlerFunc{
+		nethttp.MethodPost: h.emptyTrash,
+	})
 	mux.HandleFunc("/api/", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		a.writeError(w, notFound())
 	})

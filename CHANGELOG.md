@@ -5,6 +5,10 @@ Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- **Empty trash**: a button on the **Trash** page deletes the albums in the trash for good, after a confirmation. Only the catalog entries go: the original files stay in MusicLib, so no disk space is freed, and an album can come back only by importing its folder again or restoring a backup. An album still being removed from the library folder stays in the trash until its removal is done; the page says how many are waiting. Nothing is ever deleted automatically. Scripts use `POST /api/trash/empty`.
+
 ### Fixed
 
 - MP3 files whose gapless header declares an end padding shorter than the decoder's delay, as written by FFmpeg 1.0 to 3.1, are no longer refused as damaged (`decoded … frames, the container declares …`). MusicLib now expects exactly the length such a header implies, so a file that really lost audio is still refused. After updating, retry the failed imports.

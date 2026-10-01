@@ -159,7 +159,7 @@ func TestAuthRequiredEverywhere(t *testing.T) {
 		{"GET", "/api/albums"}, {"GET", "/api/albums?q=secret"}, {"GET", "/api/import-source"},
 		{"POST", "/api/imports"}, {"GET", "/api/imports/" + other}, {"GET", "/api/jobs"},
 		{"POST", "/api/jobs/" + other + "/retry"}, {"POST", "/api/jobs/" + other + "/dismiss"},
-		{"POST", "/api/jobs/retry-failed"}, {"POST", "/api/render-all"},
+		{"POST", "/api/jobs/retry-failed"}, {"POST", "/api/render-all"}, {"POST", "/api/trash/empty"},
 		{"GET", "/api"}, {"GET", "/api/"}, {"GET", "/api/nope"}, {"PATCH", "/api/artists"},
 	}
 	pages := []string{"/", "/?trash=true", "/?fix=true", "/?q=secret", "/import", "/activity", "/albums/" + id.String(), "/nope"}

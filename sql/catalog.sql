@@ -301,3 +301,36 @@ LIMIT @lim::int;
 -- count the albums in §10.3 "Errore", active or trashed (NOTES.md N-245).
 -- name: CountFailedAlbums :one
 SELECT count(*)::bigint AS failed FROM jobs WHERE kind = 'render' AND state = 'failed';
+
+-- Emptying the trash (POST /api/trash/empty): the catalog rows of the
+-- trashed albums whose removal from library/ is complete are deleted,
+-- never a blob. An album is purgeable when it is in the trash, has no
+-- published output, no render job (pending, running or failed) and no
+-- publication journal. Every row that could change that is written under
+-- the catalog lock (enqueue, PREPARE, FINALIZE), which the caller holds.
+-- name: ListPurgeableAlbums :many
+SELECT al.id, al.artist_id FROM albums al
+WHERE al.deleted_at IS NOT NULL AND al.published_path IS NULL
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'render' AND j.album_id = al.id)
+  AND NOT EXISTS (SELECT 1 FROM publication p WHERE p.album_id = al.id)
+ORDER BY al.id;
+
+-- name: CountTrashedAlbums :one
+SELECT count(*)::bigint AS trashed FROM albums WHERE deleted_at IS NOT NULL;
+
+-- An import's report keeps its folder and outcome; only the link to the
+-- purged album goes.
+-- name: ClearJobResultAlbums :execrows
+UPDATE jobs SET result_album_id = NULL WHERE result_album_id = ANY(@ids::uuid[]);
+
+-- name: DeletePurgedClaims :execrows
+DELETE FROM path_claims WHERE album_id = ANY(@ids::uuid[]);
+
+-- name: DeletePurgedAttachments :execrows
+DELETE FROM attachments WHERE album_id = ANY(@ids::uuid[]);
+
+-- name: DeletePurgedTracks :execrows
+DELETE FROM tracks WHERE album_id = ANY(@ids::uuid[]);
+
+-- name: DeletePurgedAlbums :execrows
+DELETE FROM albums WHERE id = ANY(@ids::uuid[]) AND deleted_at IS NOT NULL;
