@@ -86,7 +86,7 @@ services:
   # -------------------------------------------------------------------------
   # The application.
   app:
-    image: ghcr.io/tommasonovelli/musiclib:1.1.0
+    image: ghcr.io/tommasonovelli/musiclib:1.2.0
     # `musiclib`, or the project's name, as for postgres.
     container_name: ${COMPOSE_PROJECT_NAME:-musiclib}
     init: true

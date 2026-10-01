@@ -5,6 +5,10 @@ Versions follow [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-01
+
+Upgrading from 1.1.0 needs no extra step: take the new `compose.yaml` and update as usual. The database schema does not change.
+
 ### Added
 
 - **Empty trash**: a button on the **Trash** page deletes the albums in the trash for good, after a confirmation. Only the catalog entries go: the original files stay in MusicLib, so no disk space is freed, and an album can come back only by importing its folder again or restoring a backup. An album still being removed from the library folder stays in the trash until its removal is done; the page says how many are waiting. Nothing is ever deleted automatically. Scripts use `POST /api/trash/empty`.
@@ -81,6 +85,7 @@ The first release of Vibrance MusicLib: a self-hosted web app, for one person, t
 - **Upgrades are one-way**: a new version can upgrade the database, and an older version refuses it afterwards. Back up before every update: going back to an older version means restoring that backup.
 - **Third-party software**: `ffmpeg` and `ffprobe` in the image are under GPL-2.0-or-later; MusicLib's own code is under the MIT License. `THIRD_PARTY_NOTICES.md` lists every component of the image with its license, and is attached to this release together with the source tarballs of FFmpeg and TagLib.
 
-[Unreleased]: https://github.com/tommasonovelli/vibrance-musiclib/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/tommasonovelli/vibrance-musiclib/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/tommasonovelli/vibrance-musiclib/releases/tag/v1.2.0
 [1.1.0]: https://github.com/tommasonovelli/vibrance-musiclib/releases/tag/v1.1.0
 [1.0.0]: https://github.com/tommasonovelli/vibrance-musiclib/releases/tag/v1.0.0

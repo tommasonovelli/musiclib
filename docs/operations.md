@@ -918,7 +918,7 @@ The script exits with the command's exit code (0, 1 or 2, as above).
 docker compose run --rm --no-deps app version
 ```
 
-It prints two lines, `version: 1.1.0` (the release; `devel` for a source build) and `render_version: …` (the identity of the renderer, the naming rules and the pinned tools), and exits 0. It needs neither the database nor the data folder, and can run while the app runs. The app also logs its version in its first log line, `starting`.
+It prints two lines, `version: 1.2.0` (the release; `devel` for a source build) and `render_version: …` (the identity of the renderer, the naming rules and the pinned tools), and exits 0. It needs neither the database nor the data folder, and can run while the app runs. The app also logs its version in its first log line, `starting`.
 
 ## Troubleshooting
 

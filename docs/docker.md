@@ -277,7 +277,7 @@ Every image is pinned by exact version **and** by the digest of its multi-arch i
 | Go 1.25.14, Debian 13 | `Dockerfile` `GO_IMAGE` | `golang:1.25.14-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73` |
 | runtime base, Debian 13 | `Dockerfile` `RUNTIME_IMAGE` | `debian:trixie-20260918-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a` |
 | PostgreSQL 17.11 | `compose.yaml` (`postgres`), `compose.dev.yaml` (`postgres`, `postgres-test`) | `postgres:17.11-trixie@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232` |
-| Vibrance MusicLib (the app) | `compose.yaml` (`app`) | `ghcr.io/tommasonovelli/musiclib:1.1.0`: the release version, without a digest |
+| Vibrance MusicLib (the app) | `compose.yaml` (`app`) | `ghcr.io/tommasonovelli/musiclib:1.2.0`: the release version, without a digest |
 | Caddy 2.11.4 (documentation example only) | [operations guide, "Caddy in Docker"](operations.md#caddy-in-docker) | `caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b` |
 | shellcheck 0.11.0 | `scripts/lint-shell.sh` | `koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d` |
 | sqlc 1.31.1 | `scripts/lib/common.sh` | `sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537` |
